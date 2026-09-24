@@ -1,0 +1,29 @@
+---
+id: "0002"
+title: '0a: libp2p wire primitives: keys, PeerId, multiaddr subset, signed peer records'
+status: todo
+priority: 1
+created: "2026-09-24"
+updated: "2026-09-24"
+depends_on:
+    - "0001"
+spec_refs:
+    - 'D8. The libp2p subset (v1: QUIC only)'
+---
+
+## Description
+The encoding layer of the libp2p subset (`p2p/wire`). No networking yet.
+
+- Keys: ed25519 (our own identity: generate, load and store the node key as a 0600 file per Q26). *Verify-only* support for secp256k1 (Ethereum), ECDSA and RSA peer keys. Protobuf key encoding per the libp2p peer-id spec.
+- PeerId: identity multihash / sha256 rules; string forms base58btc and CIDv1 `libp2p-key` in base32/base36 (base36 is needed for DNS labels, D13).
+- Multiaddr subset: `/ip4`, `/ip6`, `/dns`, `/dns4`, `/dns6`, `/dnsaddr`, `/udp`, `/quic-v1`, `/p2p`, `/p2p-circuit`. Other protocols parse opaquely and round-trip.
+- Signed envelopes + peer records (libp2p RFC 0002/0003).
+- Hand-rolled or minimal protobuf for the messages we need.
+
+**Acceptance**
+- Round-trip and spec test vectors (from the libp2p specs / go-libp2p test data) pass.
+- A fuzz target for every decoder; no panics after 10 min of fuzzing each.
+
+## Acceptance criteria
+
+## Work log

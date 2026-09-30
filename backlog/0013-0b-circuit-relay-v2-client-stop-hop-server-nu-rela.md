@@ -7,17 +7,19 @@ created: "2026-09-24"
 updated: "2026-09-24"
 depends_on:
     - "0010"
+    - "0012"
+    - "0035"
 spec_refs:
-    - D10. Home relays that always work
+    - docs/networking.md#D10. Home relays
 ---
 
 ## Description
 Circuit relay v2 (`/libp2p/circuit/relay/0.2.0/hop` + `/stop`) and the `nu relay` server.
 
 - Client: reservations (with vouchers), renewal before TTL, connect-through-relay, and accepting STOP.
-- Hop server (`nu relay`): QUIC/UDP 443 in v1. Standard limited circuits for everyone; **full-service circuits** (no duration/data cap) for admitted peers, where admission for now = a config allow-list (the policy is deferred, Q10).
+- Hop server (`nu relay`): initial QUIC/UDP 443. Standard limited circuits for non-admitted peers; admitted Nu circuits support sustained transfers. Development may use bounded allow-lists. Production admission/abuse/quotas/operators/cost are explicitly owned by 0039, not a deferred policy hidden inside zero-config. This implementation supports the selected controls without requiring account identity for content commands.
 - Relays also run identify and an AutoNAT v2 server, and answer from an alternate IP/port on request (used by NAT profiling).
-- Relayed connections to *standard* libp2p peers (Noise + yamux) are **not** in scope here (Phase 3); this task provides the circuit streams that `/nu/qpath/1` runs over.
+- Relayed connections to *standard* libp2p peers (Noise + yamux) are **not** in scope here (standard-peer extensions); production Nu HTTPS-compatible reach is separate 0041. This task provides the circuit streams that `/nu/qpath/1` runs over.
 
 **Acceptance**
 - Interop: a go-libp2p client reserves on `nu relay`; a Nu client reserves on a go-libp2p relay.

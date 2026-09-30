@@ -10,7 +10,7 @@ depends_on:
     - "0019"
     - "0003"
 spec_refs:
-    - 'D11c. Hole punching: maximum effort'
+    - docs/networking.md#D11c. NAT traversal and relay optimization
 ---
 
 ## Description

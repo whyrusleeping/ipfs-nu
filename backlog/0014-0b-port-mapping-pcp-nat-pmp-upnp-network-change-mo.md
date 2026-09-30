@@ -8,8 +8,8 @@ updated: "2026-09-24"
 depends_on:
     - "0005"
 spec_refs:
-    - D12. Network changes
-    - 'D11c. Hole punching: maximum effort'
+    - docs/networking.md#D12. Network changes
+    - docs/networking.md#D11c. NAT traversal and relay optimization
 ---
 
 ## Description

@@ -9,7 +9,7 @@ depends_on:
     - "0010"
     - "0002"
 spec_refs:
-    - D13. Finding a peer's addresses (iroh's address lookup, in libp2p formats)
+    - docs/networking.md#D13. Peer-address discovery
 ---
 
 ## Description

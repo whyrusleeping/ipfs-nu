@@ -10,13 +10,14 @@ depends_on:
     - "0016"
     - "0017"
     - "0012"
+    - "0040"
 spec_refs:
-    - 'D9. Peer sessions: dial peers, not addresses'
-    - D10. Home relays that always work
+    - docs/networking.md#D9. Peer sessions
+    - docs/networking.md#D10. Home relays
 ---
 
 ## Description
-`p2p/host` session layer (D9) + home relay management (D10).
+Extend the minimal direct session layer (0040) with public path racing and home relay management (D9/D10). This is not a prerequisite for the direct/LAN/private-archive fetcher. Public mode alone reserves relays; private/isolated mode disables defaults.
 
 - `connect(PeerId)` → session: owns all connections to a peer (a nu-path connection for Nu peers; direct QUIC for public libp2p peers); new streams go to the best path; resolves addresses via the lookup task.
 - **Dial race:** all known routes concurrently with short staggers (LAN → IPv6 → public IPv4 → relay; relay immediately if no direct address has worked recently). The first success carries data.

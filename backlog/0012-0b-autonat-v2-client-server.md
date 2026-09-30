@@ -8,8 +8,8 @@ updated: "2026-09-24"
 depends_on:
     - "0010"
 spec_refs:
-    - 'D8. The libp2p subset (v1: QUIC only)'
-    - D10. Home relays that always work
+    - docs/networking.md#D8. Wire profile and compatibility
+    - docs/networking.md#D10. Home relays
 ---
 
 ## Description

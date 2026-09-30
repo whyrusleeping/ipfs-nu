@@ -8,7 +8,7 @@ updated: "2026-09-24"
 depends_on:
     - "0005"
 spec_refs:
-    - 'D8. The libp2p subset (v1: QUIC only)'
+    - docs/networking.md#D8. Wire profile and compatibility
 ---
 
 ## Description

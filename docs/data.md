@@ -1,0 +1,236 @@
+# Data, transfer and storage
+
+[Spec overview](../spec.md) · [Names](names.md) · [Networking](networking.md) · [Following](follow.md) · [Clusters](cluster.md) · [Operations](operations.md)
+
+## D1. CIDs
+
+- CIDv1; text form is lowercase base32.
+- Codecs: `raw` (0x55) and DRISL / `dag-cbor` (0x71).
+- **Structure** (every DRISL node Nu produces): SHA-256 (0x12), core DASL, as in atproto.
+- **Raw blobs:** BLAKE3 (0x1e, BDASL) by default, for Bao verified ranges; SHA-256 raw blobs
+  (`--hash sha256`, atproto/DASL imports) are first-class but only verified as a whole,
+  so they are limited to 8 MiB like every whole-object-verified object.
+- Nu-produced DRISL blocks are at most 1 MiB.
+
+Nu accepts every DASL and BDASL CID and produces nothing else. Hashes are not aliased; the
+same bytes under two hashes are two CIDs. Conformance, limits and the atproto profile are
+in [D21](dasl.md#d21-dasl-conformance). DRISL is a strict subset of DAG-CBOR, but IPLD
+compatibility does not imply IPFS data-transfer compatibility: whole-file blobs can exceed
+Bitswap's approximately 2 MiB block limit.
+
+## D2. Blobs
+
+A blob is `CIDv1(raw, blake3(whole file))` by default: identical bytes always have the same
+blob CID, independent of filenames or import settings other than the hash choice. Bao
+applies only to BLAKE3 blobs. SHA-256 blobs are fetched and verified whole, as
+[D21](dasl.md#cids-and-hash-profiles) specifies.
+
+Store a Bao outboard with **16 KiB chunk groups** (16 BLAKE3 chunks), approximately 0.4%
+space overhead. Use `lukechampine.com/blake3/bao`; cross-check encoding vectors against
+`bao-tree` at the same group size. BLAKE3 roots match iroh-blobs, but Nu uses its own
+transfer protocol and does not depend on iroh-blobs.
+
+Downloads support independently verified ranges, resume and multiple providers. Verify data
+before exposing or serving it; drop peers that supply invalid data. Completed ranges can be
+served onward before the whole blob is present.
+
+## D3. Directory trees
+
+Each directory is a canonical MST mapping **entry name → entry**, using the same structure
+at every size, with no sharding threshold. The selected fanout is **16**, to be validated by
+benchmarks and cross-implementation vectors. Node sizes vary and remain subject to D1's cap.
+It is the Nu directory profile of the shared MST implementation: SHA-256 key depth counted
+in 4-bit units, SHA-256 node CIDs and inline entries. The atproto profile is the other
+([D21](dasl.md#atproto-repository-profile)).
+
+Per-directory trees preserve shared-subdirectory deduplication and allow moves by relinking
+subtree CIDs. Sorted MST keys support listing, prefix queries and name-range pagination.
+Expected lookup and update cost is O(log n); full listings remain O(n). A path lookup follows
+the MST search path in each directory, not every entry in those directories.
+
+```text
+entry: { kind: "file"|"dir"|"symlink", cid, size, mode?, mime? }
+header: { $type: "io.ipfs.nu.tree", v: 1, root: <dir cid>, files, bytes }
+```
+
+`size` describes total bytes below an entry for progress and quota planning. Files in a
+directory point directly to raw blobs; their entries carry the metadata. A directory can
+span multiple MST nodes. Tree transfer streams path proofs in one request and skips shared
+subtrees during updates.
+
+## D3a. Single-file nodes
+
+`nu add photo.jpg` returns a small single-mode [MASL](dasl.md#masl) document:
+
+```text
+{ $type: "ing.dasl.masl", src: <raw blob cid>, content-type?,
+  "io.ipfs.nu": { size, name?, mode? } }
+```
+
+The wrapper supplies download/gateway metadata, so DASL tools can read it without knowing
+Nu. Different names can produce different file nodes referring to the same blob.
+`nu add --raw` returns the blob CID instead. Tree entries keep their own `mime`; the
+gateway applies the MASL header allowlist in D21.
+
+The intended `scope: entry` tree response includes the file node and its blob, inlining small
+blobs. Its relationship to large-blob streaming needs to be made explicit in D14's framing.
+
+### Type discovery
+
+The CID codec distinguishes raw bytes from structure; `$type` distinguishes structured
+node kinds (`ing.dasl.masl` for file nodes and bundles, `io.ipfs.nu.tree`, atproto commits
+by shape), and walk profiles ([D21](dasl.md#walk-profiles)) decide which links to follow.
+Directory entries and name records carry `kind`/`size` hints, and `/nu/have/1`
+reports `{codec, size}`. Every object can also be fetched as bytes by hash without
+understanding its schema.
+
+## D14. Transfer protocols
+
+Binary protocols on libp2p streams have two layers: bytes by hash is sufficient for
+correctness; tree sync is an optional accelerator. Names travel through atproto instead.
+
+### `/nu/bytes/1`
+
+- Request: `{mh, ranges?}`, keyed by multihash (the codec does not affect the bytes).
+  For BLAKE3, `ranges` are expressed in 16 KiB chunk groups. Whole-object-verified objects
+  (≤ 8 MiB) are sent whole.
+- Response: Bao slice data and proofs for BLAKE3, verified as they arrive, or plain bytes for
+  SHA-256, verified at the end ([D21](dasl.md#cids-and-hash-profiles)). There is no blob-size
+  cap; D1's structured-block cap still applies to Nu-produced nodes.
+- A minimal client can fetch every Nu object with this protocol and walk DRISL links itself.
+- The fetcher divides large BLAKE3 blobs across peers and re-requests outstanding ranges from
+  multiple peers during the endgame. Serving reads blob data and its outboard.
+
+### `/nu/tree/1`
+
+```text
+{ root, path?, name_range?, limit?, scope: node|entry|subtree,
+  have?: [roots], inline_max?: bytes, cursor? }
+```
+
+- Stream DRISL nodes in fixed pre-order: the directory/MST chain along `path`, then the
+  requested subtree. Verify each node by hash as it arrives.
+- `have` supplies existing roots. Walk the requested and existing trees side by side,
+  skipping identical directories or MST subtrees. If the server lacks the existing tree,
+  the client descends itself and fetches only changed nodes.
+- `name_range` and `limit` provide sorted pagination and allow parallel range requests to
+  different peers. Ranges carry boundary proofs.
+- `inline_max` allows blobs of at most one 16 KiB group inline, checked by hashing them whole.
+- Responses stop at a node/byte budget and return a cursor. Resume is stateless across
+  connections and peers; the planned cursor is path + last name, derived from verified
+  progress. Traversal is fixed, not an arbitrary IPLD selector.
+- `nodes: [cid…]` with `scope: node` returns a bounded batch of structure nodes. This is used
+  for client-driven diffs when the server lacks the client's old tree. Publishers and seeds
+  retain recent targets' structure so they can answer `have` diffs directly
+  ([D19](follow.md#delta-sync)).
+- The root's walk profile selects the traversal. `nu-tree` walks a Nu tree. `atrepo` walks
+  commit → MST → records; `path` and `name_range` become repo-path keys, and `have` takes
+  held commits. This is how state repositories and atproto datasets sync
+  ([D21](dasl.md#walk-profiles)).
+
+### `/nu/have/1`
+
+Request `{cids[], blob range queries}`; return a presence bitmap, `{codec, size}` for held
+CIDs and held ranges for partial BLAKE3 blobs. Encode ranges as a list, or a bitmap when
+fragmented.
+Send only to candidate peers (name context, providers or hints), not to every connected peer.
+
+### Framing and limits
+
+```text
+→ multistream-select: /nu/bytes/1
+→ <uvarint len> DRISL {hash, ranges: [[0,64]]}
+← <uvarint len> DRISL {status: 0, size: …, meta?}
+← body: Bao slice or ordered DRISL node stream; FIN
+```
+
+Use optimistic multistream-select and one stream per request. Reset cancels; QUIC per-stream
+flow control supplies backpressure. Requests and response headers are DRISL maps. Ignore
+unknown keys; breaking changes require a new protocol ID. Bound request size, response
+budget and concurrent requests per peer and protocol.
+
+Convenience HTTP/HTTPS gateway reads, listings/downloads and `Range` arrive in the sharing
+track; ordinary browsers trust the serving gateway/TLS. The gateway also answers RASL
+(`/.well-known/rasl/<cid>`, [D21](dasl.md#rasl)); SHA-256 objects fetched that way are
+browser-verifiable with WebCrypto. A separately specified verified
+HTTP mapping (`GET /bytes/<cid>` and tree/proof responses) must define range/proof framing,
+aligned with BDASL's range rules, before Nu-aware HTTP clients claim independent Bao
+verification. Browser-native p2p is not
+required for first browser access. IPFS import is a later [verified one-way bridge](migration.md);
+Nu-native content is not served over Bitswap. Graphsync is not used.
+
+## D15. Content-provider discovery
+
+Try sources in this order:
+
+1. Link hints (`peer=`, `via=` → `nu.node`).
+2. Publisher nodes from the name context, seeds first.
+3. For followed names, the [dataset swarm](follow.md#dataset-swarm), found through its swarm
+   key and checked via `/nu/have/1`.
+4. Candidate connected/LAN peers via `/nu/have/1`.
+5. Amino DHT provider records.
+6. Delegated routing: `GET /routing/v1/providers/{cid}`.
+
+Cluster members fetching cluster datasets instead use [D20 placement](cluster.md#placement):
+owners by rank, surplus holders, then other members. Private and isolated clusters never use
+steps 5–6.
+
+HTTPS sources complement libp2p providers. RASL hints from links, and configured FISL
+indexers ([D21](dasl.md#fisl)), yield URLs that are fetched statelessly and verified by
+CID. Private and isolated clusters do not query public indexers.
+
+Announce pinned blob, file-node and tree-root CIDs through Amino and, if configured, delegated
+routing; never announce interior directory shards. Tree roots and file nodes use standard
+SHA-256 keys; only BLAKE3 blob keys depend on Q2. Follow pins default to announcing only
+the swarm key and current root (`follow.provide`, D19). A wrapped standalone file announces both
+wrapper and blob; providing scales with files/roots rather than transfer chunks. Amino
+acceptance of BLAKE3 keys and protocol citizenship with non-Bitswap providers need an early
+bounded experiment. See [validation](validation.md). Hint/LAN/explicit-member retrieval does
+not depend on Amino; a routing fallback is not a second content model.
+
+## D17. Store and replication
+
+- Store BLAKE3 blobs as files with Bao outboards and SHA-256 blobs as files without one;
+  small blobs may be inline. Objects are keyed by multihash. `--nocopy` references source
+  files in place.
+- Use an embedded DB (bbolt or pure-Go SQLite) for DRISL blocks, pins, name cache, follow state,
+  and peer/address caches. Files in `~/.nu` have mode `0600`.
+- Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster or
+  cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)). Recursive pins name a walk
+  profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
+  links count and when the pin is complete.
+  GC is mark-and-sweep with a size watermark.
+- `nu follow` pins newly resolved targets according to policy. Retain the previous pinned
+  target as a replication safeguard, not as publication history. Large, frequently updated
+  trees use delta sync, completeness marks, atomic pin switches, scopes and quotas
+  ([D19](follow.md)).
+- Seed nodes follow their owner's DID under specified lifecycle/budgets. Laptop publication
+  → exact-target seed completion wait → laptop sleep is the intended workflow; a fresh third
+  client must retrieve the acknowledged CID. Proof/publication alone is not readiness.
+- Shared quota/headroom/staging and recovery rules are in [operations](operations.md).
+  Pins needed by held views, retained archives or unconfirmed handoffs survive disk pressure;
+  GC reclaims only unpinned content. `--nocopy` is not an independent archive copy: source
+  mutation/deletion must invalidate availability until reverified or reacquired.
+- Linux/macOS import/extraction needs explicit filename, Unicode, case, symlink and metadata
+  semantics. Reject traversal/unsafe extraction and report unsupported transformations.
+  Stable content export and clean-machine restore are production requirements.
+
+## Details still to specify
+
+The design above selects the format and protocol families, not yet every wire byte. Remaining
+precision work includes canonical MST/node encoding and overflow behavior, filename and
+symlink rules, exact `size` semantics, Bao multi-range framing, and tree proof/cursor
+validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
+vectors and wrapper/stream behavior still require implementation validation. Logical size,
+unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches,
+export compatibility and no-copy invalidation remain to specify. Benchmarks must validate
+fanout/node-size behavior and actual archive update/storage costs.
+
+## References
+
+- [DASL / DRISL / BDASL / RASL / MASL](https://dasl.ing/); Nu conformance in [D21](dasl.md)
+- [Bao Go package](https://pkg.go.dev/lukechampine.com/blake3/bao)
+- [bao-tree](https://docs.rs/bao-tree/latest/bao_tree/)
+- [iroh-blobs protocol](https://docs.rs/iroh-blobs/latest/iroh_blobs/protocol/)
+- [IPFS trustless gateway](https://specs.ipfs.tech/http-gateways/trustless-gateway/)
+- [Delegated routing](https://specs.ipfs.tech/routing/http-routing-v1/)

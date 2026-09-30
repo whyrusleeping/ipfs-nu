@@ -8,9 +8,10 @@ updated: "2026-09-24"
 depends_on:
     - "0015"
     - "0010"
+    - "0035"
 spec_refs:
-    - 'D11. Nu ↔ Nu: one QUIC connection over relay and direct paths ("nu-path")'
-    - 'D11c. Hole punching: maximum effort'
+    - docs/networking.md#D11. Nu-path
+    - docs/networking.md#D11c. NAT traversal and relay optimization
 ---
 
 ## Description
@@ -24,7 +25,7 @@ The disco layer of nu-path (D11 steps 3–6, baseline part of D11c steps 2–3).
 **Acceptance (NAT lab)**
 - Every pair where both sides are EIM, or one side is public/IPv6/mapped, goes direct, with time to direct reported.
 - **A 1 GB transfer survives an interface flap and a Wi-Fi → hotspot style address change without the QUIC connection closing.**
-- Forged probes (wrong MAC) are ignored.
+- Forged/replayed probes and unauthorized destinations are rejected under the specified 0035 contract, not only a MAC check. Safe limits and negative tests precede shipping.
 
 ## Acceptance criteria
 

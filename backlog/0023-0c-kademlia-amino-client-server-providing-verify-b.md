@@ -8,17 +8,19 @@ updated: "2026-09-24"
 depends_on:
     - "0010"
     - "0004"
+    - "0012"
+    - "0037"
 spec_refs:
-    - D15. Finding peers that have a CID
+    - docs/data.md#D15. Content-provider discovery
 ---
 
 ## Description
 `kad/`: Amino-compatible Kademlia (`/ipfs/kad/1.0.0`).
 
 - Client: routing table, iterative FIND_NODE / GET_PROVIDERS / ADD_PROVIDER / FIND_PEER, with bounded parallelism; plugs into address lookup as a FIND_PEER source.
-- Server mode when AutoNAT v2 confirms public reachability, with conservative limits (Q23).
+- Server mode when AutoNAT v2 confirms public reachability, with conservative per-peer/global limits and measured resource budgets.
 - Providing: blob, file-node and tree-root CIDs of pinned content (never interior shards), with batched/"sweep"-style reproviding by keyspace region.
-- **Q2 verification first:** confirm that Amino servers (Kubo, and other popular DHT server implementations) accept, store and return provider records for BLAKE3 (0x1e) multihash keys. Record the result in the spec. If they don't, fall back to delegated routing and/or a Nu kad protocol ID.
+- Apply the standalone Q2/citizenship decision from 0037 and record integration evidence in docs/validation.md. If deployed Amino cannot support the keys/profile responsibly, use the selected explicit routing fallback. Hint/LAN/private-member fetches do not depend on this implementation.
 
 **Acceptance**
 - Interop: our provider records are found by Kubo and vice versa (for BLAKE3 keys if Q2 passes).

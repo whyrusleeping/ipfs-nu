@@ -9,8 +9,8 @@ depends_on:
     - "0022"
     - "0007"
 spec_refs:
-    - D14. Sync protocols (replacing Bitswap / Graphsync for Nu data)
-    - 'D3. Trees: one DRISL node per directory, MST, no sharding threshold'
+    - docs/data.md#D14. Transfer protocols
+    - docs/data.md#D3. Directory trees
 ---
 
 ## Description
@@ -20,6 +20,7 @@ Layer 2 of the sync protocols (D14): the optional accelerator. Never needed for 
 - **`have` diffs:** walk the requested and `have` trees side by side and skip identical subtrees; if the server lacks `have`, the client descends and fetches only changed nodes.
 - `name_range` + `limit` for paging and multi-peer splitting (with boundary proofs); `inline_max` inlines small blobs (≤ 16 KiB, whole-hash checked); file nodes with `scope: entry` stream/inline their blob.
 - Bounded responses (node/byte budget); resume without server state (the client computes the cursor from the last verified node).
+- Walk profiles: `nu-tree`, and `atrepo` (commit → MST → records; `have` = held commits; repo-path paging), used by cluster state repos and atproto datasets (D21).
 - Extend the protocol spec document.
 
 **Acceptance**

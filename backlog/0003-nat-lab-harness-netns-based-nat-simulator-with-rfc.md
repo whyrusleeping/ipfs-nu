@@ -8,8 +8,8 @@ updated: "2026-09-24"
 depends_on:
     - "0001"
 spec_refs:
-    - D16. "Just works" is an engineering requirement
-    - 'D11c. Hole punching: maximum effort'
+    - docs/networking.md#D16. Testing and diagnostics
+    - docs/networking.md#D11c. NAT traversal and relay optimization
 ---
 
 ## Description

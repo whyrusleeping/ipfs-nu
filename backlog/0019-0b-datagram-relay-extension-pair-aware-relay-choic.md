@@ -9,8 +9,8 @@ depends_on:
     - "0013"
     - "0015"
 spec_refs:
-    - 'D11c. Hole punching: maximum effort'
-    - D10. Home relays that always work
+    - docs/networking.md#D11c. NAT traversal and relay optimization
+    - docs/networking.md#D10. Home relays
 ---
 
 ## Description

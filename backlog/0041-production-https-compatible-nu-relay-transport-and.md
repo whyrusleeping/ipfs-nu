@@ -1,0 +1,22 @@
+---
+id: "0041"
+title: Production HTTPS-compatible Nu relay transport and reach
+status: todo
+priority: 2
+created: "2026-09-29"
+updated: "2026-09-29"
+depends_on:
+    - "0013"
+spec_refs:
+    - docs/networking.md#D8. Wire profile and compatibility
+    - Milestones
+---
+
+## Description
+Specify and implement WSS/TCP-443 (or explicitly approved HTTPS-compatible mapping) plus necessary standard security/multiplexing and Nu relay adaptation for UDP-blocked Nu paths. Preserve negotiated libp2p compatibility and keep this networking component separate from optional IPFS import build tags. Exact wire mapping/security is design work first, not settled in product docs.
+
+Acceptance: UDP-blocked Nu↔Nu verified resumable transfer through declared admitted endpoints, limits/auth/resource controls and endpoint/proxy support matrix; unsupported middleboxes fail clearly; no unconditional wherever-HTTPS-works claim; browser-native p2p and standard-peer DCUtR not prerequisites.
+
+## Acceptance criteria
+
+## Work log

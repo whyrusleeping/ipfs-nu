@@ -1,0 +1,514 @@
+# Clusters
+
+[Spec overview](../spec.md) · [Data and replication](data.md) · [Names](names.md) · [Networking](networking.md) · [Following](follow.md)
+
+A **cluster** is a group of Nu nodes under shared administration that together store a set
+of datasets according to a replication policy and track the datasets' updates over time. It
+succeeds IPFS Cluster: a shared pinset with placement, status and repair. Unlike IPFS
+Cluster, it is part of the daemon rather than a sidecar, places data per blob instead of
+pinning whole DAGs on every allocated peer, and can run in a private or fully isolated network
+without a DHT, public relays or atproto services.
+
+A node following a dataset ([D19](follow.md)) is the one-node case. A cluster adds signed
+shared state, membership, placement across members, handoff and repair. Members reuse D19's
+delta sync, completeness marks and atomic switches, restricted to the blobs they own.
+
+## D20. Clusters
+
+### Design target
+
+Basic versioned archival is a first real-user workflow, not gated on public names or hard
+NAT. An individual can use the same archive preset with one storage member, with honest
+single-copy status; adding members changes placement, not the content model. The [product
+brief](product.md) and [operational contracts](operations.md) define the experience.
+
+These figures are scale-track sizing targets, not initial supported limits or measured
+results. Pilot limits come from [validation](validation.md):
+
+| Quantity | Target |
+|---|---|
+| Members | 3–100 storage members per cluster, plus clients |
+| Datasets | 10k per cluster; single datasets up to the [D19 target](follow.md#design-target) (10M entries) |
+| Stored | about 1 PB in aggregate; about 100M blobs per member |
+| Cluster state | 10k datasets and 100 members in a few MB; a new member syncs it in seconds |
+| Repair | starts within `repair.down_after`; lost copies are recreated in parallel from all survivors |
+
+### Concepts
+
+| Term | Meaning |
+|---|---|
+| Cluster | Identified by the CID of its genesis record; owns keys, members, datasets and policy |
+| Key | A P-256 `did:key` (atproto-valid; hardware/Secure Enclave-backed where available) held by a person or automation: `root`, `admin`, or `writer` for listed datasets |
+| Member | A node (PeerId) admitted by an admin, with role `storage` or `client` |
+| Dataset | A named pinset entry: a source that yields a current target, plus a placement policy |
+| Head | The current target of a cluster-local dataset |
+| Version | A past or current head recorded in the dataset's version tree when history is enabled |
+| Placement | A deterministic function of cluster state that maps each blob to its owning members |
+
+Authority belongs to keys, not nodes. A node can hold keys; for example, an admin laptop is a
+`client` member holding an admin key. Nodes authenticate as members with their PeerIds.
+
+### Cluster state
+
+Each authorized key has its own **state repository**: a byte-exact atproto v3 repository
+(SHA-256 MST, signed commits with `rev`; [D21](dasl.md#atproto-repository-profile)) signed
+by that key's `did:key` and served only inside the cluster. It is not hosted on a PDS or
+visible on the firehose, which lets the same design run air-gapped. Its CAR export can be
+inspected and verified with stock atproto tooling.
+
+```text
+io.ipfs.nu.cluster.key/<did>          { role: "admin"|"writer", revoked?: {after: <commit cid>}, hlc }
+io.ipfs.nu.cluster.member/<peerId>    { roles, capacity, store_limit, tags?: {zone: …}, addrs?, label?,
+                                        state: "active"|"draining"|"unavailable"|"removed", hlc }
+io.ipfs.nu.cluster.invite/<id>        { secretHash, roles, tags?, capacity?, expires, hlc }
+io.ipfs.nu.cluster.dataset/<name>     { source, policy, writers?: [<did>], note?, hlc }
+io.ipfs.nu.cluster.head/<name>        { target: "<cid>", kind, size?, note?, hlc }
+io.ipfs.nu.cluster.history/<name>     { tree: <version-tree cid>, hlc }      # see Version history
+io.ipfs.nu.cluster.config/self        { defaults, repair, clock, hlc }
+any key → { deleted: true, hlc }       # tombstone
+```
+
+- **Genesis:** `nu cluster init <name> --mode public|private|isolated` creates a root key and
+  the genesis record `{name, mode, rootKey, createdAt}`. The cluster ID is the genesis CID.
+  The root key is exported for offline storage. By default the init node also receives an
+  admin key and becomes the first storage member.
+- **Merge:** the cluster state is a last-writer-wins map over all authorized repositories.
+  For each record key, the entry with the greatest `(hlc, signer did)` wins; tombstones
+  compete the same way and are retained. `hlc` is a hybrid logical clock value (physical
+  milliseconds plus a counter), so a writer with a lagging clock still orders after the
+  state it has seen. Records more than `clock.max_future` (default 5 min) ahead are held back.
+- **Authorization:** root and admins may write any record. Writers may write only
+  `head/<name>` and `history/<name>` for datasets that list them. The root key is fixed by
+  genesis and cannot be revoked or replaced by a record. Out-of-scope records are ignored.
+  A revocation names the revoked key's last accepted commit, and later commits from that key
+  are ignored. Root-signed `key` records override
+  admin-signed ones, which resolves disputes such as two admins revoking each other.
+- **Replication:** every member stores and serves every state repository. When connected
+  members meet, they exchange `{did → (rev, commit cid)}` heads, then fetch newer commits with
+  `/nu/tree/1` diffs against the commits they hold. Changes are also pushed to watchers. A
+  write from a client returns after one storage member acknowledges **signed state**; a
+  metadata wait can require more. This does not confirm stored content. Exact-version
+  content/policy waits are separate and return evidence, age, epoch and unmet requirements.
+
+Because each repository holds its signer's current state rather than an operation log, a new
+member syncs O(state), not O(history). This avoids the uncompactable Merkle-CRDT DAG of
+IPFS Cluster's CRDT mode and needs no Raft majority. Concurrent writes to the same record
+resolve by LWW; there are no multi-record transactions. CLI/API outcomes must expose the
+resulting head and displaced intent. An observed-head guard is not global compare-and-swap;
+conflict detection/reconciliation remains protocol design work. Archive history preserves
+concurrent snapshots subject to explicit retention and content availability.
+
+### Datasets and updates
+
+| Source | Target |
+|---|---|
+| `{local: true}` | The merged `head/<name>` record, written by admins or listed writers |
+| `{name: "at://…/io.ipfs.nu.name/<n>"}` | An external Nu name, followed as in D19; requires name-plane access or [bundles](#air-gap-bundles) |
+| `{atrepo: "<did>", collections?, blobs?}` | The latest verified commit of an atproto account ([D21](dasl.md#atproto-accounts-as-archive-datasets)); third-party history is private by default |
+
+A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <cid>`.
+
+| Policy | Meaning |
+|---|---|
+| `replicas` | Copies per blob: team default `k=2` or explicit `all`; one-node archive preset visibly requests `k=1` |
+| `where` | Tag filter selecting eligible storage members, e.g. `zone in [eu-1, eu-2]` |
+| `spread` | Required distinct tag values. Team default `zone` is fixed at creation only if all eligible members are tagged and enough distinct zones exist; otherwise choose/warn. One-node preset explicitly has no spread requirement |
+| `path` | Replicate only a subtree, as in D19 scopes |
+| `max_size` | Logical referenced-byte quota per dataset/scope; separate physical and transfer budgets apply |
+| `history` | Explicit [version retention](#version-history): enabled by archive preset, off for mirror preset |
+| `announce` | Public mode only: provide the swarm key and roots publicly (default off) |
+| `publish` | Public mode only: mirror the head to an atproto name once it is replicated |
+
+Writers change a local dataset by writing a new head:
+
+```text
+nu cluster dataset add <ds> -r ./dir      # incremental import (D19), then write head
+nu cluster dataset edit <ds> --put p=<cid> --rm p
+nu cluster dataset update <ds> <cid>
+```
+
+Members learn about the new head through state replication and delta-sync toward it.
+
+- **Protected-version rule:** planned updates keep the last policy-ready head pinned until
+  fresh authenticated evidence confirms the new target at the required copies/domains in
+  the applicable policy/placement epoch. Only then may old unique, non-retained blobs be
+  released. A failure may reduce available copies immediately; repair depends on surviving
+  content, connectivity, eligible capacity and online repair authority. Unknown/stale or
+  conflicting evidence cannot authorize release. Intermediate heads may be skipped, but
+  archive-selected versions remain retention obligations with visible incomplete status.
+  The partition/concurrent-epoch evidence protocol must be specified and fault-tested
+  before safe release is claimed; LWW state convergence alone is not that protocol.
+  If no version was ever policy-ready, protect the last fully held usable view and pause
+  policy advancement; keep at most bounded incoming staging, not every observed head.
+  Explicit retained snapshots remain obligations. A one-node preset can be ready at its
+  explicit one-copy policy, but never implies redundant storage. Conservative pilot mode
+  may disable automatic protected/surplus release until the evidence protocol passes tests.
+- Without `history`, a dataset tracks current state as names do. Public `nu.name` records
+  remain current-state either way; cluster history is served to members, and outside the
+  cluster only through `announce` or bundles.
+- Removing a dataset writes a tombstone. Members release its unique blobs after
+  `dataset.remove_grace` (default 24 h), allowing undo while content still exists. Destructive
+  dry runs show affected versions/content and remaining references; metadata restoration
+  after GC does not recover deleted bytes.
+
+### Version history
+
+The archive preset enables `policy.history` with an explicit visible retention schedule;
+the mirror preset follows current state with the protected-version safeguard. Exact preset
+schedules require pilot validation, not silent unbounded retention. Retained versions share
+structure/blobs through content addressing. O(changes) adding/pruning/restoring is a design
+target to benchmark, not yet an established bound.
+
+Each version separately reports observed, fetching, retained-complete, degraded/unknown or
+skipped/never-completed or metadata-only/pruned content. A history entry is not proof the
+bytes were ever replicated.
+Time/label lookup selects a version and reports its availability, rather than silently falling
+back to another snapshot. Version HLC times are ordering metadata, not trusted timestamps.
+
+**Version tree.** Each dataset with history has a version tree: an atproto-profile MST
+([D21](dasl.md#atproto-repository-profile)) keyed by version TID (the writer's HLC time),
+whose values link to entry records:
+
+```text
+<tid> → { root: <cid>, kind, parent?: <tid>, author: <did>, note?, files, bytes, newBytes,
+          label?, restoredFrom?: <tid>, observed?: {rev, commit: <cid>},
+          imported?: {source: "<original IPFS root>", manifest: <Nu manifest cid>}, hlc }
+```
+
+- A writer that writes a new head also appends an entry and writes `history/<name>` in the same
+  commit. The signed state commit covers the record that points to the tree, so every entry is
+  authenticated without separate signatures. The version tree is kept apart from the `head`
+  record, so a label edit cannot overwrite a newer head.
+- `newBytes` is the size of blobs absent from the parent version. It comes from the diff the
+  writer already computes, so each version's marginal cost is known without a scan.
+- **Merge:** history unions authorized version trees. A version's root, author, parent,
+  restore/source/provenance references and creation identity are immutable. An existing
+  version cannot be redefined by a higher-HLC annotation write. Label/note edits follow
+  separately defined authority; annotation LWW applies only when immutable fields agree.
+  Same-ID conflicting immutable entries are visible conflicts, never silent replacement;
+  canonical identity/collision and validation rules must be specified before history ships.
+  Preserve concurrent versions subject to retention, even when only one head wins. The
+  next write folds the validated union into its tree; history remains administratively
+  prunable, not a compliance log.
+- Entries are estimated at about 200 bytes and sync as MST diffs. Pruned versions keep
+  metadata until `history.compact_after` permits removal. Expose that policy; history is
+  neither permanently complete nor a compliance/append-only guarantee.
+
+**Retention.**
+
+```text
+history: { keep_last: 10, hourly: 24, daily: 30, weekly: 12, monthly: 12, yearly: all,
+           max_bytes?: … }
+```
+
+- The schedule uses grandfather-father-son thinning: keep the `keep_last` newest versions,
+  then the newest version in each hour, day, week, month and year bucket, up to each count.
+  Buckets are measured back from the newest version's timestamp, not the wall clock. Every
+  member therefore derives the same retained set from the merged version tree, and nothing
+  is pruned while no new versions arrive.
+- The current served head, the last policy-ready head and labeled versions retain content,
+  not just metadata. A known incoming head selected by retention remains an acquisition
+  obligation only while it remains selected by the current schedule or an explicit label.
+  Superseded never-completed versions outside retention can be skipped with that status;
+  repeated `keep_last` reevaluation does not protect every observed head indefinitely.
+  Labeling unavailable content reports absence and requires explicit reacquisition intent,
+  not an instant retained-complete claim. `max_bytes` may prune eligible oldest unlabeled
+  versions, but never overrides protected/labeled content. Excess protected bytes pause acquisition and warn. Logical
+  quotas, physical budgets and transfer limits follow [capacity contracts](operations.md#capacity-and-transfer-budgets).
+- With thinning, a dataset that publishes every minute retains a few hundred versions. At the
+  D19 target, that is on the order of a GB of structure plus the changed blobs.
+
+**Storage and pruning.**
+
+- Every eligible storage member holds the structure of all retained versions; shared MST
+  nodes are stored once. Blob placement is unchanged: a blob retained in 50 versions still
+  has only `k` owners.
+- **Span index:** for each blob in a dataset, members keep the version spans `[added, removed)`
+  during which some path referenced it. Applying a version's diff against its predecessor
+  updates only changed entries. A late version from a concurrent writer is spliced in by
+  diffing it against both neighbors.
+- **Pruning** version v, with retained neighbors p (older) and n (newer), can free only blobs
+  in v that are in neither p nor n. Two MST diffs find these candidates. Each candidate is
+  released only if the span index shows no other retained version in this or any other
+  dataset. Released blobs go to GC after `dataset.remove_grace`, as for removed datasets.
+- Archive-wide readiness in epoch E requires feasible copies/domains and fresh completeness
+  confirmations for the retention live set bound to its version-tree root and policy, as
+  in [status](#status). A newly observed incomplete version can block archive-wide readiness
+  without erasing the separate availability result for a previously complete snapshot.
+
+**Use.**
+
+```text
+nu cluster dataset versions <ds>                  # tid, time, author, note, files, newBytes, label
+nu get <ds>@<tid|label|2025-01-31T12:00Z>/path     # a time selects the newest version at or before it
+nu cluster dataset diff <ds> <v1> <v2>            # MST diff: paths added, removed and changed
+nu cluster dataset label <ds> <v> release-3       # label, exempting the version from pruning
+nu cluster dataset rollback <ds> <v>              # append restored head; existing snapshot identity unchanged
+```
+
+- Available retained-complete versions can be read without reacquisition. A rollback
+  appends a new head/version with `restoredFrom`; metadata acceptance and readiness of
+  that head in the current epoch are separate results. Incomplete/pruned versions require
+  recovery from a provider/export or fail with missing-content status, not false immediate
+  success. Concurrent head writes still resolve by LWW.
+- Inside the cluster, any retained version can serve as the `have` root for `/nu/tree/1`
+  diffs. For datasets with history, this replaces D19's `retain_structure`.
+- The gateway serves `/c/<dataset>@<version>/<path>`.
+
+**Name sources.** For a dataset following an external name, admin daemons append each
+verified target they observe, with the proof's `rev` and commit CID in `observed`, and keep
+the proof blocks. This is observed history: versions superseded before any member saw them
+are missing. It archives observed public snapshots, not a complete publication history.
+Preserve verification provenance and specify historical signing-key/identity evidence before
+claiming proofs remain verifiable after key/account changes.
+
+### Placement
+
+- **Structure** (directory and MST nodes, file nodes, tree header) of every placed head goes to
+  every eligible storage member. At roughly 0.1–1% of bytes ([D19](follow.md#design-target)),
+  this lets any eligible member enumerate blobs, compute placement, and serve tree requests
+  and diffs.
+- **Blobs** use weighted rendezvous hashing. For blob digest `b` and member `p`, compute
+  `u = (uint64(blake3("nu.place\0" ‖ peerId_p ‖ b)[0:8]) + 1) / (2^64 + 1)` and
+  `score = −capacity_p / ln(u)`. The owners are the `k` highest-scoring eligible members in
+  state `active`. Prefer distinct `spread` values, then fill up to `k` with best remaining
+  eligible members to preserve useful copies. Duplicate domains do not satisfy strict
+  spread: report policy-unsatisfied, not ready. Fewer than `k` members likewise cannot meet
+  policy. Defaults are stored in dataset policy, not recomputed when tags change; preview
+  tag/weight/member edits for feasibility and movement impacts.
+- Scores do not depend on the dataset. A blob shared by datasets with the same eligible set
+  therefore has the same owners and is stored once. A blob referenced by several datasets is
+  owned by the union of their owner sets.
+- Only `member` records affect placement. Adding or removing a member moves roughly that
+  member's share, not the whole cluster. The **placement epoch** is a hash of the eligible
+  members with their capacities, tags and states; completeness and status are keyed by it.
+- No per-blob allocation is stored or agreed on. Each member determines its own blobs while
+  walking structure. An epoch change triggers a rescan: about 10⁹ short hashes for 10M
+  entries × 100 members. Benchmarks must confirm the cost.
+- **Capacity** is an admin-set placement weight; `store_limit` is a separate physical budget.
+  A member that reaches its store limit stops
+  acquiring blobs and reports `full`, and affected datasets report under-replication.
+  Placement never spills automatically, which keeps it a pure function of signed state.
+  Preflight/status explain blocked owners even if other nodes have free space, and guide
+  an admin through weight/quota/membership adjustment. Logical/physical/transfer accounting
+  and protected-content behavior follow [operations](operations.md#capacity-and-transfer-budgets).
+- All `k` owners of a large blob hold the whole blob. **Later:** place stripes of very large
+  blobs by `(b, stripe index)`, because Bao ranges verify independently.
+
+### Sync, handoff and repair
+
+- Each storage member runs the D19 sync for every dataset for which it is eligible, fetching
+  only blobs it owns. A completeness mark per `(subtree, epoch)` means that the structure and
+  all owned blobs are present.
+- Blob sources are tried in this order: owners by rank, members holding surplus copies, then
+  other members found with `/nu/have/1`. There is no DHT lookup.
+- **Handoff:** a blob that a member held but no longer owns becomes **surplus**. Keep its
+  `cluster-surplus` pin until fresh authenticated complete-content evidence for the current
+  target/policy/epoch permits release. A sampled audit alone is not a full-blob completion
+  acknowledgment. Surplus holders serve new owners; unknown/partitioned evidence preserves
+  their pins. The exact release protocol is a prerequisite, not implied by `/nu/have/1`.
+- **Liveness and repair:** members send signed heartbeats. Admin daemons running with
+  `repair = auto` mark a member `unavailable` after `repair.down_after` (default 15 min) of
+  missed heartbeats, and `active` again after `repair.up_after` of resumed heartbeats. These
+  daemons should run on always-on members, with at least two recommended. Excluding the
+  member from placement makes the next-ranked members acquire its blobs. When it returns,
+  handoff removes the temporary extra copies. Without an online admin daemon, nothing is
+  re-placed automatically, and status reports the reduced copy count.
+- **Draining:** a `draining` member owns nothing but keeps serving. `nu cluster member rm`
+  refuses, unless forced, until the member has no unconfirmed surplus.
+- **Scrub and audit:** members periodically verify stored blobs against their outboards. They
+  also challenge owners for random 16 KiB groups of owned blobs. The challenger can verify the
+  answer from Bao proofs against the blob CID without holding the blob. Failures are reported;
+  with automatic repair, repeated failures mark the member `unavailable`. Audits show that a
+  member can supply the data in time, not that it stores the data locally.
+
+### Status
+
+- **Heartbeats**, signed by the member's node key every 30 s:
+  `{peer, seq, time, free, used, epoch, datasets: [{name, head, state, owned, missing, bytes}]}`.
+  Dataset lists are sent as deltas against the previous heartbeat, and full status is fetched
+  on demand.
+- A dataset is **replicated** at head H in epoch E only when policy is feasible (`k` eligible
+  owners and required domains for each blob) and fresh authenticated reports confirm
+  completion bound to H, policy and E. Archive-wide status covers the retention live set
+  and version-tree root; snapshot availability is also separate. Per-member summaries are
+  trusted completeness assertions, not byzantine storage proofs. Stale reports yield
+  unknown/degraded evidence, never a green result because all remaining nodes are complete.
+  Freshness windows and partition/concurrent-epoch rules must be specified and tested.
+- `nu cluster status` shows observed, syncing and served roots, mode/retention, exact-target
+  readiness, replication from → to and progress, under-replicated, unknown, paused or error.
+  Report missing members/domains, evidence age, capacity and unavailable repair authority,
+  with a next action. CLI/API waits and alerts follow [operations](operations.md#readiness-and-status).
+  It also shows each member's last heartbeat, free space, clock skew and lag. `nu cluster
+  where <cid>` computes the owners of a blob and queries them. Metrics are exported to
+  Prometheus.
+
+### Membership and access
+
+```text
+nu cluster invite [--role storage|client] [--tags zone=eu-1] [--capacity 8T]
+                  [--peer <peerId>] [--expires 24h]
+  → nuc1…  (cluster ID, genesis, root/admin PUBLIC verification keys, bootstrap addresses,
+            and either a pre-authorized PeerId or a one-time secret; never authority private keys)
+nu cluster join nuc1…
+```
+
+- **Pre-authorized invites** write the member record immediately. They work offline and suit
+  provisioning of air-gapped machines.
+- **Secret invites** write an `invite` record. The joiner proves knowledge of the secret, bound
+  to its PeerId, to a bootstrap member. Any online admin daemon then writes the member record
+  and a tombstone for the invite.
+- **Roles:** `storage` members receive placement. `client` members may fetch and serve but
+  receive no placement; examples are laptops, applications and admin workstations. In public
+  mode, a member may also run `nu relay` for others, as in D10.
+- **Trust:** members are trusted to store and serve data. There is no read access control
+  between members and no confidentiality from them. OS/disk protections are the initial
+  boundary; content encryption and finer read permissions are later work. Private HTTP
+  gateways require their own reader restrictions; libp2p gating is not HTTP authentication.
+
+### Network modes
+
+The mode is fixed at genesis.
+
+| | public | private | isolated |
+|---|---|---|---|
+| libp2p peers contacted | anyone | members only | members only |
+| Amino DHT and provider records | per dataset `announce` | no | no |
+| Relays and NAT traversal | [D10–D11c](networking.md#d10-home-relays) | none; members connect directly | none; members connect directly |
+| Peer addresses | [D13](networking.md#d13-peer-address-discovery) plus member records | invite bootstrap, member records and heartbeats, optional cluster mDNS | same as private; IPs or internal DNS only |
+| Name-plane HTTPS (PDS, Jetstream) | yes | only for `name` sources | no; bundles only |
+| Default infrastructure / telemetry | configured public endpoints allowed; field telemetry opt-in | no | no |
+
+Private mode may span sites over routed links or a VPN; isolated mode also has no egress.
+Neither mode sends any traffic, even encrypted, through third parties.
+
+- **One network per daemon in v1:** a private/isolated node does not join the public network.
+  A private archive's public edge is a separate public Nu daemon/store populated by explicit
+  complete/incremental export-import of selected content, then public-serving consent.
+  No private authority keys go to the edge; publish under separately configured identity.
+  A public-mode cluster may instead keep datasets member-only until explicit `announce`.
+  Live private→public automation without bundles is an open extension, not implicit dual
+  networking or zero-egress. Separate PeerIds avoid automatic identity linkage.
+- **Wire:** the libp2p profile is unchanged (QUIC-v1, TLS, multistream-select), so standard
+  libp2p tooling with an allowlisted key can still interoperate. libp2p private networks
+  (pnet PSK) are unavailable over QUIC; go-libp2p rejects that combination. Isolation
+  therefore comes from mutual authentication and connection gating. Private and isolated
+  nodes accept and dial only PeerIds with non-removed member records. Joiners are admitted
+  only for the join exchange on `/nu/cluster/1`. In public mode, gating covers cluster
+  protocols, and local datasets are served only to members unless `announce` is set.
+- **Exposure:** a non-member that reaches a listening port can complete the server's half of
+  the TLS handshake and learn its PeerId, but cannot open streams. Deployments needing
+  concealment rely on network isolation, which isolated mode assumes, or a VPN.
+- **Connectivity:** private and isolated modes assume no NAT between members. Storage members
+  must be directly reachable from each other on one UDP port, over a flat or routed network,
+  a VPN, or public addresses restricted by firewall. Clients need only outbound reachability,
+  because members answer on the connection a client opens. These modes do not run relays,
+  circuit reservations, AutoNAT, port mapping, nu-path or hole punching. Members dial the
+  addresses in member records and heartbeats. `nu cluster status` and `nu doctor` report a
+  pair of members that cannot connect as a configuration error, not a condition to work
+  around. mDNS uses a service name derived from the cluster ID and can be disabled.
+- **Egress safety:** at startup, isolated mode refuses configuration that names a non-member
+  endpoint, including bootstrap, relay, lookup, PDS or telemetry endpoints, and compiled-in
+  defaults are inactive. Private mode applies the same check to everything except the
+  name-plane hosts of its `name` sources. CI runs an isolated cluster in network namespaces
+  with no default route. A packet capture must show no packets to non-member addresses and no
+  DNS queries for public names.
+- **Clocks:** HLC ordering tolerates skew. Heartbeats measure it, and status warns above
+  `clock.warn_skew` (default 30 s).
+
+### Air-gap bundles
+
+```text
+nu cluster export <ds> [--since <root>] [--history] -o update.nub
+nu cluster import update.nub [--as <ds>]
+```
+
+- A bundle is an ordered CAR whose header carries a MASL-compatible manifest under
+  `io.ipfs.nu` ([D21](dasl.md#car)). The body starts with the signed state-repository
+  commit plus an inclusion path for the head record, or the atproto proof for a `name`
+  source. Structure nodes new since `--since` follow (or the whole tree if that option is
+  omitted), then blobs. Import verifies every block and rebuilds outboards. `--history`
+  also carries the version tree and the new content of retained versions after `--since`.
+- Import applies the head if a key authorized in the cluster signed it and it is newer.
+  Otherwise, import stores the content, and an admin must assign it with `--as`.
+- Isolated clusters cannot resolve DIDs. A `name` source for such a cluster therefore pins
+  the publisher's atproto signing key when it is configured. Bundles carrying newer proofs
+  signed by that key advance the dataset, and key rotation requires an admin to pin the new
+  key.
+- Exporting an incremental bundle needs a baseline root, not receiver feedback, so it can
+  traverse a one-way link. Import must preflight that the receiver actually holds required
+  baseline content; report missing CIDs and preserve its served version if not. Verification
+  of metadata alone is not a usable import. Complete exports/recovery precede advanced
+  air-gap use. Bundles do not contain private authority keys or replace key/state backups.
+
+### Public mode
+
+- With `announce`, members provide the dataset's [swarm key](follow.md#dataset-swarm) and
+  current root, serve its content to anyone and join its watch mesh.
+- `publish` requires explicit public-serving consent (`announce` in this design); reject
+  publish-with-member-only-serving rather than silently change access. A designated member
+  with atproto login writes `nu.name` only after exact-head policy readiness. Outside
+  followers follow it as in D19; members serve the blobs they own. Public history retrieval
+  exposes only explicitly retained/available versions under the serving policy.
+- Collaborative replication by outsiders, formerly the role of `ipfs-cluster-follow`, is
+  plain `nu follow` of published datasets. Followers are not members and do not affect
+  placement.
+
+### Interfaces
+
+```text
+nu cluster init | invite | join | leave | status
+nu cluster member ls | set <peer> [--capacity --store-limit --tags --state] | drain <peer> | rm <peer>
+nu cluster key new | grant <did> admin|writer [--dataset <ds>] | revoke <did>
+nu cluster dataset create <ds> [--replicas k|all] [--where …] [--spread zone] [--source at://…]
+                           [--history daily=30,monthly=12]
+nu cluster dataset add | edit | update | ls | status | rm
+nu cluster dataset versions | diff | label | rollback <ds> …
+nu cluster pin <cid> [--name ds]
+nu cluster where <cid>
+nu cluster export | import
+```
+
+The local API adds `/v1/cluster/…`. The gateway serves cluster datasets at
+`/c/<dataset>[@<version>]/<path>`.
+
+### Out of scope
+
+Byzantine members, storage proofs beyond audits, incentives, erasure coding, linearizable
+operations and multi-cluster federation, except through bundles and public names, are out of
+scope. Importing IPFS Cluster/Kubo pinsets follows the [migration contract](migration.md).
+Transient over-replication is expected. `k` fresh confirmed copies is a readiness condition,
+not a guarantee that failures never reduce available copies. [Operations](operations.md)
+require key/state backup, root-compromise recovery, destructive dry runs and clean-machine
+restore before a production recommendation.
+
+## Details still to specify
+
+- Fresh authenticated exact-target/live-set/policy/epoch readiness evidence, feasibility,
+  release coordination under partitions/concurrent state, and unknown/degraded thresholds.
+- Immutable version identity/collision validation and annotation authority; import manifest
+  references authenticated by signed versions, plus historical key/identity evidence.
+- Mirror/archive preset defaults, historical availability, provenance/key evidence, budgets,
+  capacity adjustment, conflict reconciliation and key/state recovery/export procedures.
+- Version tree encoding, span-index storage cost at 10M entries × hundreds of versions,
+  exact bucket boundaries for the retention schedule, and `compact_after` defaults.
+- `/nu/cluster/1` messages: head exchange, watch, heartbeat and join; mesh degree once full
+  mesh stops scaling; and heartbeat delta encoding.
+- Record lexicons, HLC encoding, tombstone compaction and the authorization matrix in full.
+- Exact placement encoding, `spread` selection, cross-implementation vectors, rescan
+  benchmarks and the mapping from capacity to weight.
+- Storage cost and invalidation of per-epoch completeness marks.
+- `down_after`/`up_after` defaults, flap damping, and handoff when an owner is `full`.
+- Invite token encoding, secret proof and expiry handling.
+- Bundle size limits and splitting, and atproto proof verification against a pinned key.
+- Audit rate, deadlines and failure thresholds.
+
+## References
+
+- [IPFS Cluster consensus components](https://ipfscluster.io/documentation/guides/consensus/)
+  and [collaborative clusters](https://ipfscluster.io/documentation/collaborative/)
+- [libp2p private networks (PSK)](https://github.com/libp2p/specs/blob/master/pnet/Private-Networks-PSK-V1.md)
+- Rendezvous hashing: Thaler & Ravishankar, "Using name-based mappings to increase hit rates"
+  (1998); weighted variant: Schindelhauer & Schomaker (2005)
+- Hybrid logical clocks: Kulkarni et al., "Logical Physical Clocks" (2014)
+- [atproto repository format](https://atproto.com/specs/repository)

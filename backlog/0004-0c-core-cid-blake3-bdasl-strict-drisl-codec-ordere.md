@@ -1,27 +1,31 @@
 ---
 id: "0004"
-title: '0c: core CID (BLAKE3/BDASL), strict DRISL codec, ordered CAR'
+title: '0c: core DASL/BDASL CIDs, strict DRISL codec, DASL CAR'
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-09-29"
 depends_on:
     - "0001"
 spec_refs:
-    - D1. CIDs = DASL/BDASL CIDs
+    - docs/data.md#D1. CIDs
+    - docs/dasl.md#D21. DASL conformance
 ---
 
 ## Description
-`core/cid`, `core/drisl`, `core/car`: the pure data-model foundation (no I/O).
+`core/cid`, `core/drisl`, `core/car`: the pure data-model foundation (no I/O). See docs/dasl.md (D21).
 
-- CID: CIDv1 only, base32-lowercase string form, codecs `raw` 0x55 / `dag-cbor` 0x71, multihash **blake3 0x1e with a 32-byte digest only** (BDASL). Reject everything else in the native format. SHA-256 parses (read-only) for bridge use.
-- DRISL: a strict encoder/decoder (CBOR/c tag-42 profile: tag 42 only, string map keys, canonical ordering, no indefinite lengths, no undefined, float rules). Struct mapping for Go types, and `$type` handling.
-- CAR v1: streaming writer/reader with verification as blocks arrive and a deterministic ordering helper.
+- CID: CIDv1, `b` + lowercase base32, codecs `raw` 0x55 / DRISL 0x71, multihash **sha2-256 0x12 or blake3 0x1e, 32-byte digests only** (DASL + BDASL). All four combinations are first-class. Nu produces SHA-256 for DRISL structure, and BLAKE3 (default) or SHA-256 for raw blobs; it never produces BLAKE3 DRISL. Reject everything else as a block CID. Keep foreign CIDs found inside record contents as opaque links (atproto import profile).
+- Hashing API keyed by multihash. Enforce the fixed 8 MiB whole-object limit (all SHA-256 objects, BLAKE3 DRISL) in the CID/CAR/DRISL entry points.
+- DRISL: strict encoder/decoder (CBOR/c tag-42 profile: tag 42 only with a 0x00 prefix, string map keys, length-first canonical order, minimal ints/lengths, no indefinite lengths, only false/true/null simple values, 64-bit floats only with no NaN/±Inf/−0, no trailing bytes). Nesting/memory bounds. Struct mapping for Go types and `$type` handling. atproto data-model validation mode (no floats, blob refs, legacy blob refs).
+- JSON: atproto `$link`/`$bytes` conventions both ways.
+- CAR v1 (DASL CAR): streaming reader/writer, verifying every block as it arrives. Full header metadata exposed (MASL-compatible headers). Tolerate duplicates and arbitrary order; report unreferenced blocks. Reject CARv2 with an explanation. Ordering helpers for Nu tree pre-order and atproto streamable order.
 
 **Acceptance**
-- DASL/DRISL test suites pass (where applicable to BDASL); round-trip property tests; non-canonical encodings rejected.
-- Fuzz targets for the CID parser, DRISL decoder and CAR reader.
-- Blocks decode with an independent DAG-CBOR decoder (e.g. go-ipld-prime) in a cross-check test.
+- The DASL test suite (hyphacoop/dasl-testing) passes for CID/DRISL/CAR, including BDASL cases. The atproto-interop-tests data-model vectors pass. Record results in the DASL compliance matrix format where possible.
+- Round-trip property tests; non-canonical encodings rejected.
+- Fuzz targets for the CID parser, DRISL decoder, JSON converter and CAR reader.
+- Cross-check: blocks decode with an independent DAG-CBOR decoder (go-ipld-prime) and indigo's atproto data packages.
 
 ## Acceptance criteria
 

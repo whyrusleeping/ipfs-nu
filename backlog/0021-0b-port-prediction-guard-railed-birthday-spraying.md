@@ -8,8 +8,9 @@ updated: "2026-09-24"
 depends_on:
     - "0017"
     - "0018"
+    - "0035"
 spec_refs:
-    - 'D11c. Hole punching: maximum effort'
+    - docs/networking.md#D11c. NAT traversal and relay optimization
 ---
 
 ## Description
@@ -22,7 +23,7 @@ The hard-NAT strategies (D11c step 4), selected from both peers' NAT profiles.
 - **Guardrails:** Nu↔Nu only, negotiated in `/nu/path/1`; only after cheaper methods fail; per-peer and global rate limits; socket cap; back off on ICMP/IPS-like drops; `holepunch.aggressive = false` switch.
 
 **Acceptance (NAT lab)**
-- ≥ 98 % success for EIM ↔ random-EDM over 200 trials.
+- Measure the conditional ≥98% EIM ↔ random-EDM hypothesis with trial count/uncertainty and negative results recorded in docs/validation.md. This is an optimizer experiment, not a first-share, archival or v1 release requirement.
 - Measured success for sequential EDM with jitter and concurrent background traffic.
 - Guardrails verified: the IPS-drop rule triggers backoff; the socket cap is respected; nothing is sprayed toward non-Nu peers.
 

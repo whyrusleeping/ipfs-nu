@@ -10,7 +10,7 @@ depends_on:
     - "0014"
     - "0003"
 spec_refs:
-    - D16. "Just works" is an engineering requirement
+    - docs/networking.md#D16. Testing and diagnostics
 ---
 
 ## Description

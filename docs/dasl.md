@@ -52,8 +52,9 @@ Unstable specs (FISL, Tiles protocols) may change without breaking Nu's own form
   dataset or store default. Files over 8 MiB are refused and listed, never silently
   switched to BLAKE3. Measured costs are in [validation](validation.md).
 - **Whole-object limit: 8 MiB (8,388,608 bytes).** Every object that can only be verified
-  as a whole (all SHA-256 objects, BLAKE3 DRISL, and BLAKE3 blobs Nu fetches over plain
-  HTTP) must fit.
+  as a whole (all SHA-256 objects, BLAKE3 DRISL, and BLAKE3 blobs Nu fetches by known CID over
+  plain HTTP) must fit. Importing a URL without a known CID is ingest rather than
+  verification and is not limited for BLAKE3 ([D17](data.md#d17-store-and-replication)).
   This is a fixed protocol limit, not a per-node setting, so peers agree on it. Nu refuses
   larger such objects on add, import and transfer with an explanation. DASL itself sets no
   cap, and this is Nu's one documented conformance limitation. Large content uses BLAKE3
@@ -170,7 +171,7 @@ Pins, CAR export, `/nu/tree/1` and completeness marks share explicit walk profil
 
 | Profile | Follows | Complete when |
 |---|---|---|
-| `nu-tree` | tree header → directory MST → file nodes → blobs | [D3](data.md#d3-directory-trees) |
+| `nu-tree` | tree header → directory MST → entry metadata, file nodes → blobs | [D3](data.md#d3-directory-trees) |
 | `atrepo` | commit → MST → records; blob refs only with `blobs` | all structure and records present; blobs if selected |
 | `drisl` | every tag-42 link, within bounds | every reachable block present |
 | `direct` | nothing | the object itself is present |

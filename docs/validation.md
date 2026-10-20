@@ -35,6 +35,50 @@ work, not initial validated operating limits. Establish supported pilot limits f
 and publish them before release. Promote sub-file reuse or placement changes only when
 representative workloads justify the cost and complexity.
 
+### Pilot candidates
+
+**Decentralized Sentinel Collaborative Ground Segment** (vmx, IPFS Foundation;
+[architecture](https://hackmd.io/@vmx/decentralized-collgs-202609),
+[implementation](https://hackmd.io/@vmx/decentralized-collgs-implementation-202609)). This is
+a Python/libtorrent prototype. Nodes discover each other by LAN multicast, and each scene is
+a private BitTorrent v2 torrent. Ingest takes [Matadisco](https://matadisco.org/) records from
+Jetstream, fetches each Earth Search STAC item, uses GDAL to extract a reduced true-colour
+COG, and delivers it to one node over a web seed. Per-node data-managers select scenes by
+bbox, sensing time and cloud cover, including 6 h/24 h/7 d rolling holdings. Rescuer nodes
+with 50–100 GiB budgets take the least-replicated scenes. A shared collector answers copy,
+rarity, holder and transfer queries. This is the [D22 collections](collections.md) workload.
+
+Observed on 2026-10-20 from the prototype's public dashboard (`http://57.128.118.215`,
+`/api/overview|nodes|transfers|dataset/<hash>`):
+
+| Measure | Value |
+|---|---|
+| Nodes | 7 (`europe`, `maxcloud-5`, `rolling-6h`, `rolling-7d`, three `rescue*gib`), apparently containers sharing one host's disk |
+| Items | 127,054 scenes, 3.49 TB stored; the 7-day rolling node held 93,508 (2.26 TB), about 13k scenes/day |
+| Item shape | One COG file per item. In the 2,000 rarest: p10 0.12 MiB, p50 15.7 MiB, p90 58.9 MiB, max 78.6 MiB; 60% over 8 MiB, so BLAKE3 blobs |
+| Metadata | About 1.5 KiB per item: the Matadisco record (`at://` URI, resource, preview) plus a STAC subset (id, collection, bbox, geometry, datetime, cloud cover, platform, EPSG) |
+| Replication | 112,159 of 127,054 items (88%) had a single copy |
+
+The rarest-first sample is biased, and the size percentiles are not a whole-collection
+distribution. The full Sentinel-2 L2A rate the architecture targets is "tens of thousands
+of datasets per day". Production products would be much larger than reduced COGs.
+
+Pilot success criteria:
+
+- Reproduce the regional, cloud-cover, rolling and rescue policies as D22 rules, and the
+  collector's questions through the holdings index.
+- Keep the torrentizer's Matadisco/Jetstream discovery and GDAL step, but replace torrent
+  building, the publisher and the web seed with pushes to the
+  [collection item API](collections.md#ingest). Use uploads, `--nocopy` paths or URLs, with
+  retries after producer restarts and no lost or duplicated items.
+- Sustain at least 20k items/day from at least two union writers without lost or
+  duplicated items.
+- After a member restart, an outage longer than its log or a late join, holdings converge
+  with no missed items. The prototype's data-manager documents missed takes as a known
+  limitation.
+- Measure catalog bytes per item, index memory/disk, and selection re-evaluation cost.
+- Run unchanged on a multi-host private-mode deployment without multicast.
+
 ## Reporting method
 
 Each result records code/dependency versions, OS/architecture, hardware, network path and

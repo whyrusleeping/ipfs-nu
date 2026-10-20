@@ -37,8 +37,9 @@ Readiness is conditional on trusted members' reports, policy feasibility and cur
 evidence. It is not consensus, indefinite availability, or proof of independent physical
 storage. An audit shows timely supply of sampled bytes. Require sufficient eligible copies
 and mandatory failure-domain spread; do not weaken policy when a node fails or during setup.
-If strict spread cannot be satisfied, report the shortfall. An explicit best-effort policy
-may be designed later; it must not use the same green status.
+If strict spread cannot be satisfied, report the shortfall. Best-effort copies, such as
+member-selected collection holdings ([D22](collections.md#guaranteed-copies)), are reported
+as holder counts and never use the same green status.
 
 Before update/handoff may release protected content, specify fresh authenticated evidence
 bound to target, retention live set, policy and placement epoch; stale, partitioned or

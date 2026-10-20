@@ -34,6 +34,7 @@ prototype, is the goal.
 | Publisher | Publish updates from a workstation | A stable public name and an exact readiness result before the workstation sleeps |
 | Mirror operator | Follow a changing dataset | A consistent served snapshot, visible lag, bounded resources and resumable updates |
 | Archive team | Preserve selected versions across machines | Explicit retention, policy-confirmed copies, historical retrieval and tested recovery |
+| Collaborating operators | Share a fast-growing item collection, each node choosing what to hold | Local metadata rules, rolling holdings, visible copies per item and rescue of rare items ([D22](collections.md)) |
 | Administrator | Keep the archive healthy | Understand and fix capacity, failures, authority loss and upgrades without assembling another control plane |
 
 Linux servers and Linux/macOS workstations are initial targets. Trusted cluster members and

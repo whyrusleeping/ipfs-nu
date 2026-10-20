@@ -49,14 +49,20 @@ Expected lookup and update cost is O(log n); full listings remain O(n). A path l
 the MST search path in each directory, not every entry in those directories.
 
 ```text
-entry: { kind: "file"|"dir"|"symlink", cid, size, mode?, mime? }
-header: { $type: "io.ipfs.nu.tree", v: 1, root: <dir cid>, files, bytes }
+entry: { kind: "file"|"dir"|"symlink", cid, size, mode?, mime?, meta?: <cid> }
+header: { $type: "io.ipfs.nu.tree", v: 1, root: <dir cid>, files, bytes, collection? }
 ```
 
 `size` describes total bytes below an entry for progress and quota planning. Files in a
 directory point directly to raw blobs; their entries carry the metadata. A directory can
 span multiple MST nodes. Tree transfer streams path proofs in one request and skips shared
 subtrees during updates.
+
+`meta` links a file or directory entry to an application metadata record: generic SHA-256
+DRISL of at most 64 KiB, such as a STAC item subset or a catalogue record. Metadata is
+structure. It is walked, pinned, transferred and diffed with the tree, and a metadata change
+is an entry change. Nu does not interpret metadata except through the facets that a
+`collection` header declares ([D22](collections.md#items-and-facets)).
 
 ## D3a. Single-file nodes
 
@@ -193,10 +199,20 @@ not depend on Amino; a routing fallback is not a second content model.
 - Store BLAKE3 blobs as files with Bao outboards and SHA-256 blobs as files without one;
   small blobs may be inline. Objects are keyed by multihash. `--nocopy` references source
   files in place.
+- **URL import:** `nu add https://…` and collection item pushes with URL files
+  ([D22](collections.md#ingest)) fetch over HTTPS with `httpsrc`'s SSRF and
+  redirect guards. They hash on arrival and store the result as a local add would. This is
+  ingest, not verification. The CID names the bytes received, and trust in the source rests
+  on TLS plus any checksum the caller supplies. Resume uses `Range` with `If-Range` on a
+  strong validator; without one, the download restarts. BLAKE3 URL imports have no size
+  limit, while `--hash sha256` imports keep the 8 MiB whole-object limit. The add result
+  records the URL, validators and size as provenance, and `--meta` can carry them into a
+  tree entry.
 - Use an embedded DB (bbolt or pure-Go SQLite) for DRISL blocks, pins, name cache, follow state,
   and peer/address caches. Files in `~/.nu` have mode `0600`.
-- Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster or
-  cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)). Recursive pins name a walk
+- Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster,
+  cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)), or collection-select,
+  collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk
   profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
   links count and when the pin is complete.
   GC is mark-and-sweep with a size watermark.

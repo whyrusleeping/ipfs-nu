@@ -175,6 +175,7 @@ edits, not insertions.
 | (default) | Full tree and all blobs pinned |
 | `--path <prefix>` | Pin the proof chain plus one subtree (e.g. one language, one namespace) |
 | `--lazy` | Pin all structure; fetch blobs on access and cache them unpinned |
+| `--select <rules>` | Collections only: pin all structure (the catalog) plus items chosen by local metadata rules ([D22](collections.md#following-collections)) |
 | `--max-size <bytes>` | Logical referenced-byte quota for the selected dataset/scope; not cumulative download allowance |
 
 Before syncing B, estimate logical size and additional unique physical bytes/headroom where
@@ -198,13 +199,20 @@ user to manage. Explicit unfollow releases that follow's pins only; other pin so
 DID-wide following (existing/future names, non-tree targets, per-name/aggregate quotas and
 recreation after deletion) needs explicit lifecycle rules before its CLI form ships.
 
-### Out of scope
+### Scope boundaries
 
-Nu does not produce datasets: converting MediaWiki dumps or change feeds into files is a
-publisher tool. Search indexes and bundles are ordinary files. Datasets that rewrite them
-wholesale each epoch transfer them in full, so publishers should shard such files. Nu does
-not reconcile multiple publishers of the same dataset. Identical content still shares blobs,
-and therefore providers, across datasets.
+Producing datasets is in scope, sequenced after following. The first producer paths are
+URL import and the [collection item push API](collections.md#ingest), which external
+producers feed after doing their own source discovery.
+Converters for other sources, such as MediaWiki dumps and change feeds, are later producer
+work, not excluded. Until they exist, external tools build those datasets with `nu tree edit`
+or the API.
+
+Search indexes and bundles are ordinary files. Datasets that rewrite them wholesale each
+epoch transfer them in full, so publishers should shard such files. Nu does not reconcile
+multiple publishers of the same dataset; only cluster collections merge several writers'
+heads ([D22](collections.md#union-heads)). Identical content still shares blobs, and
+therefore providers, across datasets.
 
 ## Details still to specify
 

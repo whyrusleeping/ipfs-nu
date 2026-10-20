@@ -28,6 +28,7 @@ nu get alice.example.com/site/index.html
 | [Networking](docs/networking.md) | Wire profiles, sessions, relays, NAT traversal, discovery and testing (D8–D13, D16) |
 | [Following datasets](docs/follow.md) | Current mirrors, delta sync, update notification, swarms, scopes and budgets (D19) |
 | [Clusters](docs/cluster.md) | Integrated versioned archives, signed state, placement, repair, history, network modes and bundles (D20) |
+| [Collections](docs/collections.md) | Growing item collections: metadata facets, member-selected and rolling holdings, rescue, union heads, item push API, holdings index (D22) |
 | [IPFS migration](docs/migration.md) | Installation migration and verified one-way content import, provenance and cutover |
 | [Validation and measurements](docs/validation.md) | Experiments, pilot workloads, measurement method and release evidence |
 
@@ -102,6 +103,7 @@ nu add -r ./dir                      # tree CID; unchanged files not rehashed
 nu tree edit <root> --put p=<cid> --rm p
 nu add --no-announce photo.jpg       # unannounced, not private
 nu add --nocopy photo.jpg            # mutable local source, not an independent archive copy
+nu add https://example.org/f.tif     # URL import: hashed on arrival, provenance recorded
 nu cat <cid>
 nu get <cid-or-link> [-o path]
 nu ls <tree-cid>[/sub/path]
@@ -128,6 +130,8 @@ nu devices
 nu cluster init|invite|join|status   # integrated; a one-node archive needs no PDS
 nu cluster dataset create|add|edit|update|status <ds>   # sources: local, Nu name, atproto account
 nu cluster dataset versions|diff|label|rollback <ds>
+nu cluster collection items|rules|where <ds>        # item metadata, local selection, copies per item
+nu cluster collection put <ds> <path> --meta m.json … # producer pushes an item (upload, path or URL)
 nu cluster export|import             # verified content bundles; keys backed up separately
 
 nu relay                            # circuit relay + dnsaddr/peer-routing server
@@ -211,9 +215,12 @@ proto/                  nu/bytes, nu/tree, nu/have, nu/name
 follow/                 update state, notification sources, delta sync, swarm
 cluster/                state repos, membership, placement, history, handoff, repair,
                         audit, status, bundles; proto /nu/cluster/1
+collection/             facets, selection rules, union heads, holdings log and index,
+                        item push API
 store/ names/ fetch/ node/ api/ gateway/ client/
 atproto/                record fetch, repo snapshot/diff sync, atrepo dataset source (indigo)
-httpsrc/                RASL/FISL HTTPS retrieval with SSRF guards, shared by fetch/names
+httpsrc/                RASL/FISL HTTPS retrieval and URL import with SSRF guards, shared by
+                        fetch/names/ingest
 relay/                  circuit HOP + dnsaddr/routing server
 bridge/                 later IPFS import: Bitswap, UnixFS; enabled in standard Linux/macOS
                         production distribution, optional/build-tagged for minimal embedders
@@ -236,7 +243,7 @@ release order. Sharing and keeping must reuse foundations but have independent t
 |---|---|---|
 | **0 — Foundations and risk retirement** | Scaffold, Linux/macOS, canonical DASL formats/store and atproto repo core, libp2p wire, security contracts, Q2/Nu-path spikes, pilot selection | Fuzz/vector/interop evidence, including DASL test suite and atproto interop vectors; bounded discovery/path experiments; defined browser and readiness mechanisms before dependent features ship |
 | **1 — First magic preview** | Hint/LAN/direct + bounded development relay retrieval, bytes/trees, resumable fetch, CLI/local gateway (incl. RASL, `dag`/`car`), explicitly operated preview HTTPS seed | Fresh users add/share/get/browse without an account on declared networks; two laptops share 10 GB/10k-file tree; 3-peer verified download and restart; HTTPS via a supplied preview seed or operator's domain/TLS, not automatic project hosting; no DHT/hard-NAT prerequisite |
-| **2 — Real users pilot** | Trusted archive track parallel with 1: one-node mirror/archive presets, clusters, basic history, policy readiness, repair/drain, capacity and restore, atproto-account datasets. Public seed track adds OAuth/names/follow and `at://` record fetch after gate 1 connectivity and naming security | Linux/macOS one-node archive/update/historical read/restore (including APFS crash/sleep/filename tests); 3+ Linux storage members enforce copies/zones and honest unknown/degraded status; repair with surviving data/capacity/authority, crash/disk/partition/key-restore tests. Separately, named publication + exact-seed wait survives laptop sleep |
+| **2 — Real users pilot** | Trusted archive track parallel with 1: one-node mirror/archive presets, clusters, basic history, policy readiness, repair/drain, capacity and restore, atproto-account datasets, collections for the CollGS pilot. Public seed track adds OAuth/names/follow and `at://` record fetch after gate 1 connectivity and naming security | Linux/macOS one-node archive/update/historical read/restore (including APFS crash/sleep/filename tests); 3+ Linux storage members enforce copies/zones and honest unknown/degraded status; repair with surviving data/capacity/authority, crash/disk/partition/key-restore tests; [CollGS pilot criteria](docs/validation.md#pilot-candidates). Separately, named publication + exact-seed wait survives laptop sleep |
 | **3 — Production v1 and adoption** | Combine magic + archival, names/public mirrors, HTTPS-compatible relay reach, secure HTTPS gateway (RASL, MASL bundles on isolated origins), FISL discovery client, packaging/upgrades/ops/security review, IPFS migration | Linux/macOS first-run UX; UDP-blocked Nu relay path when declared HTTPS endpoint reachable; tested restore/upgrade, published support limits and operated infrastructure; verified resumable pinset/network import before recommending IPFS cutover |
 | **4 — Scale and optimization** | D19/D20 scale targets, full retention schedules/span index, large swarms, hard-NAT tuning/datagram/peer relays, air-gap workflows | Measured representative update/storage/repair costs; 10M-entry churn and 1k-follower PDS-load benchmark; PB/100-member sizing validated progressively; complete/incremental bundle tests; published hardware/field NAT pair results |
 | **5 — Extensions** | Standard-peer DCUtR, FISL serving/Web Tiles rendering, browser-native transports/client adapters, optional gossipsub, encryption/Spaces, self-hosted single-account names, other OSes | Separate negotiated interoperability/security gates; do not imply stock Helia serves Nu formats or encrypted sharing exists sooner |
@@ -260,7 +267,8 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
 - **Pilot performance:** data/change shape, whole-file costs, capacity adjustment UX and
   whether sub-file reuse must move forward. Publish measured support limits, not sizing guesses.
 - **Format precision:** [data details](docs/data.md#details-still-to-specify),
-  [DASL/atproto details](docs/dasl.md#details-still-to-specify), version-tree /
+  [DASL/atproto details](docs/dasl.md#details-still-to-specify),
+  [collection details](docs/collections.md#details-still-to-specify), version-tree /
   span-index encoding, canonical placement and tombstone/revocation behavior.
 - **Connectivity:** [network verification](docs/networking.md#details-still-to-verify), stock
   path recovery/MTU/congestion, HTTPS-compatible fallback and independent security review.

@@ -47,6 +47,8 @@ results. Pilot limits come from [validation](validation.md):
 
 Authority belongs to keys, not nodes. A node can hold keys; for example, an admin laptop is a
 `client` member holding an admin key. Nodes authenticate as members with their PeerIds.
+The exception is [collections](collections.md): beyond their guaranteed placement, each
+member's operator chooses which items the member also holds.
 
 ### Cluster state
 
@@ -61,8 +63,9 @@ io.ipfs.nu.cluster.key/<did>          { role: "admin"|"writer", revoked?: {after
 io.ipfs.nu.cluster.member/<peerId>    { roles, capacity, store_limit, tags?: {zone: …}, addrs?, label?,
                                         state: "active"|"draining"|"unavailable"|"removed", hlc }
 io.ipfs.nu.cluster.invite/<id>        { secretHash, roles, tags?, capacity?, expires, hlc }
-io.ipfs.nu.cluster.dataset/<name>     { source, policy, writers?: [<did>], note?, hlc }
+io.ipfs.nu.cluster.dataset/<name>     { source, policy, writers?: [<did>], collection?, note?, hlc }
 io.ipfs.nu.cluster.head/<name>        { target: "<cid>", kind, size?, note?, hlc }
+io.ipfs.nu.cluster.drop/<name>        { … }                                  # union collections, D22
 io.ipfs.nu.cluster.history/<name>     { tree: <version-tree cid>, hlc }      # see Version history
 io.ipfs.nu.cluster.config/self        { defaults, repair, clock, hlc }
 any key → { deleted: true, hlc }       # tombstone
@@ -105,12 +108,13 @@ concurrent snapshots subject to explicit retention and content availability.
 | `{local: true}` | The merged `head/<name>` record, written by admins or listed writers |
 | `{name: "at://…/io.ipfs.nu.name/<n>"}` | An external Nu name, followed as in D19; requires name-plane access or [bundles](#air-gap-bundles) |
 | `{atrepo: "<did>", collections?, blobs?}` | The latest verified commit of an atproto account ([D21](dasl.md#atproto-accounts-as-archive-datasets)); third-party history is private by default |
+| `{local: true, ingest?: {hosts, limits}}` | A collection's union head, fed by producers pushing items to writer members ([D22](collections.md#ingest)) |
 
 A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <cid>`.
 
 | Policy | Meaning |
 |---|---|
-| `replicas` | Copies per blob: team default `k=2` or explicit `all`; one-node archive preset visibly requests `k=1` |
+| `replicas` | Copies per blob: team default `k=2` or explicit `all`; one-node archive preset visibly requests `k=1`; collections may set `0` (no guaranteed copies) |
 | `where` | Tag filter selecting eligible storage members, e.g. `zone in [eu-1, eu-2]` |
 | `spread` | Required distinct tag values. Team default `zone` is fixed at creation only if all eligible members are tagged and enough distinct zones exist; otherwise choose/warn. One-node preset explicitly has no spread requirement |
 | `path` | Replicate only a subtree, as in D19 scopes |
@@ -118,6 +122,7 @@ A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <ci
 | `history` | Explicit [version retention](#version-history): enabled by archive preset, off for mirror preset |
 | `announce` | Public mode only: provide the swarm key and roots publicly (default off) |
 | `publish` | Public mode only: mirror the head to an atproto name once it is replicated |
+| `collection` | Items with metadata facets, member-selected holdings additive to placement, `merge: union` heads, `expire` ([D22](collections.md)) |
 
 Writers change a local dataset by writing a new head:
 
@@ -128,6 +133,8 @@ nu cluster dataset update <ds> <cid>
 ```
 
 Members learn about the new head through state replication and delta-sync toward it.
+A collection with several writers merges their heads instead of choosing one by LWW
+([union heads](collections.md#union-heads)).
 
 - **Protected-version rule:** planned updates keep the last policy-ready head pinned until
   fresh authenticated evidence confirms the new target at the required copies/domains in
@@ -264,10 +271,11 @@ claiming proofs remain verifiable after key/account changes.
 
 ### Placement
 
-- **Structure** (directory and MST nodes, file nodes, tree header) of every placed head goes to
-  every eligible storage member. At roughly 0.1–1% of bytes ([D19](follow.md#design-target)),
-  this lets any eligible member enumerate blobs, compute placement, and serve tree requests
-  and diffs.
+- **Structure** (directory and MST nodes, entry metadata, file nodes, tree header) of every
+  placed head goes to every eligible storage member. At roughly 0.1–1% of bytes
+  ([D19](follow.md#design-target)), plus metadata for collections, this lets any eligible
+  member enumerate blobs, compute placement, evaluate collection selections, and serve tree
+  requests and diffs.
 - **Blobs** use weighted rendezvous hashing. For blob digest `b` and member `p`, compute
   `u = (uint64(blake3("nu.place\0" ‖ peerId_p ‖ b)[0:8]) + 1) / (2^64 + 1)` and
   `score = −capacity_p / ln(u)`. The owners are the `k` highest-scoring eligible members in
@@ -327,7 +335,8 @@ claiming proofs remain verifiable after key/account changes.
 - **Heartbeats**, signed by the member's node key every 30 s:
   `{peer, seq, time, free, used, epoch, datasets: [{name, head, state, owned, missing, bytes}]}`.
   Dataset lists are sent as deltas against the previous heartbeat, and full status is fetched
-  on demand.
+  on demand. For collections, heartbeats carry only each item holdings log's latest `seq`;
+  item holdings are streamed separately ([D22](collections.md#holdings-reports-and-index)).
 - A dataset is **replicated** at head H in epoch E only when policy is feasible (`k` eligible
   owners and required domains for each blob) and fresh authenticated reports confirm
   completion bound to H, policy and E. Archive-wide status covers the retention live set
@@ -377,6 +386,7 @@ The mode is fixed at genesis.
 | Relays and NAT traversal | [D10–D11c](networking.md#d10-home-relays) | none; members connect directly | none; members connect directly |
 | Peer addresses | [D13](networking.md#d13-peer-address-discovery) plus member records | invite bootstrap, member records and heartbeats, optional cluster mDNS | same as private; IPs or internal DNS only |
 | Name-plane HTTPS (PDS, Jetstream) | yes | only for `name` sources | no; bundles only |
+| Collection item URL fetches | yes | receiving writer members, `ingest.hosts` only ([D22](collections.md#ingest)) | no |
 | Default infrastructure / telemetry | configured public endpoints allowed; field telemetry opt-in | no | no |
 
 Private mode may span sites over routed links or a VPN; isolated mode also has no egress.
@@ -410,7 +420,8 @@ Neither mode sends any traffic, even encrypted, through third parties.
 - **Egress safety:** at startup, isolated mode refuses configuration that names a non-member
   endpoint, including bootstrap, relay, lookup, PDS or telemetry endpoints, and compiled-in
   defaults are inactive. Private mode applies the same check to everything except the
-  name-plane hosts of its `name` sources. CI runs an isolated cluster in network namespaces
+  name-plane hosts of its `name` sources and, on members receiving collection pushes, the
+  dataset's `ingest.hosts`. CI runs an isolated cluster in network namespaces
   with no default route. A packet capture must show no packets to non-member addresses and no
   DNS queries for public names.
 - **Clocks:** HLC ordering tolerates skew. Heartbeats measure it, and status warns above

@@ -75,6 +75,41 @@
       "post": {"summary": "Share link for held content, with this node as the provider hint.",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRequest"}}}},
         "responses": {"200": {"description": "share link", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareLink"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster": {
+      "get": {"summary": "The node's local and networked cluster: members with liveness, keys, held state repositories", "responses": {"200": {"description": "cluster status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterStatus"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/init": {
+      "post": {"summary": "Found a networked cluster (mode public, private or isolated); this node holds the root and an admin key and is the first storage member", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterInitRequest"}}}},
+        "responses": {"200": {"description": "cluster", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterInfo"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/invites": {
+      "post": {"summary": "Create an invite token: pre-authorized with peer (member record written now), else a one-time secret", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterInviteRequest"}}}},
+        "responses": {"200": {"description": "invite", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterInvite"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/join": {
+      "post": {"summary": "Join a cluster with an invite token; returns after the first state sync", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterJoinRequest"}}}},
+        "responses": {"200": {"description": "cluster", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClusterInfo"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/members/{peer}": {
+      "delete": {"summary": "Remove (revoke) a member: writes state removed; members then refuse it", "parameters": [{"name": "peer", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "metadata acknowledgment", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MetadataState"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/datasets": {
+      "get": {"summary": "List the networked cluster's datasets", "responses": {"200": {"description": "datasets", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Dataset"}}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}},
+      "post": {"summary": "Create a dataset in the networked cluster; metadata acknowledgment is reported apart from content status", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DatasetCreateRequest"}}}},
+        "responses": {"200": {"description": "dataset", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Dataset"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cluster/datasets/{name}": {
+      "get": {"summary": "A networked-cluster dataset with per-signer heads", "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "dataset", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Dataset"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/datasets": {
+      "get": {"summary": "List the local cluster's datasets", "responses": {"200": {"description": "datasets", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Dataset"}}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}},
+      "post": {"summary": "Create a dataset in the implicit local cluster", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DatasetCreateRequest"}}}},
+        "responses": {"200": {"description": "dataset", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Dataset"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/datasets/{name}": {
+      "get": {"summary": "A local-cluster dataset", "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "dataset", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Dataset"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
     }
   },
   "components": {
@@ -144,7 +179,17 @@
       "GetRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path] or nu:// link"}, "output": {"type": "string", "description": "absolute destination path"}, "dir": {"type": "string", "description": "absolute directory to write into under the content's own name, when output is empty"}}},
       "GetResult": {"type": "object", "required": ["cid", "output", "kind", "files", "dirs", "bytes"], "properties": {"cid": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}, "kind": {"type": "string", "enum": ["file", "dir", "blob"]}, "files": {"type": "integer"}, "dirs": {"type": "integer"}, "bytes": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}}, "fetched": {"type": "boolean"}}},
       "ShareRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path]"}}},
-      "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}}
+      "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}},
+      "ClusterInitRequest": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "mode": {"type": "string", "enum": ["public", "private", "isolated"]}}},
+      "ClusterInviteRequest": {"type": "object", "properties": {"role": {"type": "string", "enum": ["storage", "client"]}, "tags": {"type": "object", "additionalProperties": {"type": "string"}}, "capacity": {"type": "integer"}, "peer": {"type": "string"}, "expires": {"type": "string", "description": "duration, default 24h"}}},
+      "ClusterInvite": {"type": "object", "required": ["token", "expires", "metadata"], "properties": {"token": {"type": "string"}, "peer": {"type": "string"}, "invite_id": {"type": "string"}, "expires": {"type": "string", "format": "date-time"}, "metadata": {"$ref": "#/components/schemas/MetadataState"}}},
+      "ClusterJoinRequest": {"type": "object", "required": ["token"], "properties": {"token": {"type": "string"}}},
+      "MetadataState": {"type": "object", "description": "Acknowledgment of signed cluster state only; says nothing about content", "required": ["acked_by", "required", "acknowledged"], "properties": {"signer": {"type": "string"}, "commit": {"type": "string"}, "rev": {"type": "string"}, "acked_by": {"type": "array", "items": {"type": "string"}}, "required": {"type": "integer"}, "acknowledged": {"type": "boolean"}}},
+      "ContentState": {"type": "object", "required": ["state"], "properties": {"state": {"type": "string", "enum": ["none", "not_tracked"]}, "detail": {"type": "string"}}},
+      "ClusterStatus": {"type": "object", "properties": {"local": {"$ref": "#/components/schemas/ClusterInfo"}, "network": {"$ref": "#/components/schemas/ClusterInfo"}}},
+      "ClusterInfo": {"type": "object", "required": ["id", "name", "mode", "self", "member", "keys", "members", "repos"], "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "mode": {"type": "string"}, "self": {"type": "string"}, "member": {"type": "boolean"}, "keys": {"type": "array", "items": {"type": "object"}}, "members": {"type": "array", "items": {"type": "object"}}, "repos": {"type": "array", "items": {"type": "object"}}, "datasets": {"type": "integer"}, "live_invites": {"type": "integer"}, "ignored_records": {"type": "integer"}, "held_back_records": {"type": "integer"}, "boot": {"type": "array", "items": {"type": "string"}}, "warnings": {"type": "array", "items": {"type": "string"}}}},
+      "DatasetCreateRequest": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "pattern": "^[a-z0-9-]{1,64}$"}, "replicas": {"type": "integer"}, "writers": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}}},
+      "Dataset": {"type": "object", "required": ["name", "cluster", "source", "replicas", "signer", "metadata", "content"], "properties": {"name": {"type": "string"}, "cluster": {"type": "string"}, "source": {"type": "string"}, "replicas": {"type": "integer"}, "writers": {"type": "array", "items": {"type": "string"}}, "note": {"type": "string"}, "signer": {"type": "string"}, "head": {"type": "object"}, "heads": {"type": "array", "items": {"type": "object"}}, "metadata": {"$ref": "#/components/schemas/MetadataState"}, "content": {"$ref": "#/components/schemas/ContentState"}}}
     }
   }
 }

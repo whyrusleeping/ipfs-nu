@@ -1,0 +1,677 @@
+package node
+
+import (
+	"context"
+	"errors"
+	"os"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/whyrusleeping/nu"
+	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/wire"
+)
+
+// Dataset scopes: `nu dataset …` acts on the implicit local cluster, `nu cluster dataset
+// …` on the networked one (docs/cluster.md "Local cluster").
+const (
+	ScopeLocal   = "local"
+	ScopeCluster = "cluster"
+)
+
+// ClusterNode is the cluster part of a node; Local and the HTTP client implement it.
+type ClusterNode interface {
+	ClusterInit(ctx context.Context, req apiv0.ClusterInitRequest) (*apiv0.ClusterInfo, error)
+	ClusterInvite(ctx context.Context, req apiv0.ClusterInviteRequest) (*apiv0.ClusterInvite, error)
+	ClusterJoin(ctx context.Context, req apiv0.ClusterJoinRequest) (*apiv0.ClusterInfo, error)
+	ClusterStatus(ctx context.Context) (*apiv0.ClusterStatus, error)
+	ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MetadataState, error)
+	DatasetCreate(ctx context.Context, scope string, req apiv0.DatasetCreateRequest) (*apiv0.Dataset, error)
+	Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, error)
+	Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset, error)
+}
+
+var _ ClusterNode = (*Local)(nil)
+
+// ClusterNet is what the cluster service needs from the running swarm.
+type ClusterNet interface {
+	Host() *host.Host
+	Connect(ctx context.Context, id wire.PeerID, addrs []wire.Multiaddr) error
+	Addrs() []wire.Multiaddr
+}
+
+// ClusterInterval is the heartbeat/anti-entropy interval of cluster services this node
+// starts (tests shorten it).
+var ClusterInterval = cluster.DefaultInterval
+
+// clusterState is the node's local and networked cluster (zero value: none opened).
+type clusterState struct {
+	mu    sync.Mutex
+	local *cluster.Cluster
+	net   *cluster.Cluster
+	svc   *cluster.Service
+	sw    ClusterNet
+	// gated mirrors net for the connection gate, which must not take mu (the host
+	// rechecks connections while cluster operations hold it).
+	gated atomic.Pointer[cluster.Cluster]
+}
+
+func (cs *clusterState) setNet(c *cluster.Cluster) {
+	cs.net = c
+	cs.gated.Store(c)
+}
+
+func (n *Local) clusterDir(kind string) string { return n.Repo.Path("cluster/" + kind) }
+
+func (n *Local) clusterOpts(kind string) cluster.Options {
+	return cluster.Options{Dir: n.clusterDir(kind), Store: n.Store}
+}
+
+// netCluster returns the networked cluster, opening it on first use; nil if none.
+func (n *Local) netCluster() (*cluster.Cluster, error) {
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	return n.netClusterLocked()
+}
+
+func (n *Local) netClusterLocked() (*cluster.Cluster, error) {
+	cs := &n.clusters
+	if cs.net == nil && cluster.Exists(n.clusterDir("net")) {
+		c, err := cluster.Open(n.clusterOpts("net"))
+		if err != nil {
+			return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the cluster state in %s: %v", n.clusterDir("net"), err)
+		}
+		cs.setNet(c)
+	}
+	return cs.net, nil
+}
+
+// localCluster returns the implicit local cluster, creating it on first use.
+func (n *Local) localCluster() (*cluster.Cluster, error) {
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.local != nil {
+		return cs.local, nil
+	}
+	var c *cluster.Cluster
+	var err error
+	if cluster.Exists(n.clusterDir("local")) {
+		c, err = cluster.Open(n.clusterOpts("local"))
+	} else {
+		c, err = cluster.Create(n.clusterOpts("local"), "local", cluster.ModeLocal, n.PeerID(), nil)
+	}
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the local cluster in %s: %v", n.clusterDir("local"), err)
+	}
+	cs.local = c
+	return c, nil
+}
+
+// GateSwarm composes the networked cluster's connection policy with allow (which may be
+// nil). Install the result as the swarm's AllowPeer so private and isolated clusters gate
+// from the moment the host listens; it follows cluster changes (init, join, removals).
+func (n *Local) GateSwarm(allow host.ConnectionGater) host.ConnectionGater {
+	_, _ = n.netCluster()
+	self := n.PeerID()
+	return func(id wire.PeerID) bool {
+		if allow != nil && !allow(id) {
+			return false
+		}
+		c := n.clusters.gated.Load()
+		if c == nil {
+			return true
+		}
+		g := cluster.Gate(c, self)
+		return g == nil || g(id)
+	}
+}
+
+// PrivateNetwork reports whether the node belongs to a private or isolated cluster, whose
+// swarm must not run LAN discovery or other public mechanisms.
+func (n *Local) PrivateNetwork() bool {
+	c, _ := n.netCluster()
+	return c != nil && (c.Mode() == cluster.ModePrivate || c.Mode() == cluster.ModeIsolated)
+}
+
+// AttachNetwork plugs a running swarm in: it becomes the Fetcher/Net users of the node
+// see, and the networked cluster's service (if any) starts on it.
+func (n *Local) AttachNetwork(sw ClusterNet) error {
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.sw = sw
+	c, err := n.netClusterLocked()
+	if err != nil || c == nil {
+		return err
+	}
+	return n.startServiceLocked(c)
+}
+
+func (n *Local) startServiceLocked(c *cluster.Cluster) error {
+	cs := &n.clusters
+	if cs.svc != nil || cs.sw == nil {
+		return nil
+	}
+	svc, err := cluster.StartService(cluster.ServiceConfig{Cluster: c, Host: cs.sw.Host(), Key: n.Key, Connect: cs.sw.Connect, Addrs: cs.sw.Addrs,
+		Usage: n.usage, Interval: ClusterInterval})
+	if err != nil {
+		return err
+	}
+	cs.svc = svc
+	return nil
+}
+
+// usage reports free disk space (unknown: 0) and bytes the store holds.
+func (n *Local) usage() (free, used int64) {
+	used, _ = n.Store.Usage()
+	return 0, used
+}
+
+// DetachNetwork stops the cluster service; call it before closing the swarm.
+func (n *Local) DetachNetwork() { n.closeClusters() }
+
+func (n *Local) closeClusters() {
+	cs := &n.clusters
+	cs.mu.Lock()
+	svc := cs.svc
+	cs.svc, cs.sw = nil, nil
+	cs.mu.Unlock()
+	if svc != nil {
+		_ = svc.Close()
+	}
+}
+
+// ClusterService returns the running cluster service, if any (tests, diagnostics).
+func (n *Local) ClusterService() *cluster.Service {
+	n.clusters.mu.Lock()
+	defer n.clusters.mu.Unlock()
+	return n.clusters.svc
+}
+
+// NetCluster returns the networked cluster, if any (tests, diagnostics).
+func (n *Local) NetCluster() *cluster.Cluster {
+	c, _ := n.netCluster()
+	return c
+}
+
+func noCluster() error {
+	return apiv0.Errorf(apiv0.CodeNotFound, "this node is not in a networked cluster").
+		WithAction("create one with `" + nu.Name + " cluster init <name>` or join one with `" + nu.Name + " cluster join <token>`")
+}
+
+func writeErr(err error) error {
+	if errors.Is(err, cluster.ErrNoKey) {
+		return apiv0.Errorf(apiv0.CodeForbidden, "%v", err).
+			WithAction("run this on a node holding an admin key of the cluster (see `" + nu.Name + " cluster status`)")
+	}
+	return err
+}
+
+func (n *Local) ClusterInit(ctx context.Context, req apiv0.ClusterInitRequest) (*apiv0.ClusterInfo, error) {
+	if req.Mode == "" {
+		req.Mode = cluster.ModePrivate
+	}
+	switch req.Mode {
+	case cluster.ModePublic, cluster.ModePrivate, cluster.ModeIsolated:
+	default:
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown mode %q", req.Mode).WithAction("use public, private or isolated")
+	}
+	if req.Name == "" || len(req.Name) > 64 {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "a cluster name of 1 to 64 bytes is required")
+	}
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if c, err := n.netClusterLocked(); err != nil {
+		return nil, err
+	} else if c != nil {
+		return nil, apiv0.Errorf(apiv0.CodeConflict, "this node already belongs to cluster %q (%s)", c.Genesis().Name, c.ID).
+			WithAction("a daemon belongs to at most one networked cluster; use another " + nu.EnvPrefix + "PATH for a second one")
+	}
+	var addrs []string
+	for _, a := range n.Addrs() {
+		if len(addrs) < 16 {
+			addrs = append(addrs, a.String())
+		}
+	}
+	c, err := cluster.Create(n.clusterOpts("net"), req.Name, req.Mode, n.PeerID(), addrs)
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot create the cluster: %v", err)
+	}
+	cs.setNet(c)
+	if err := n.startServiceLocked(c); err != nil {
+		return nil, err
+	}
+	if cs.sw != nil {
+		cs.sw.Host().RecheckConnections()
+	}
+	info := n.infoLocked(c, cs.svc)
+	info.Warnings = append(info.Warnings, "the root key is in "+n.clusterDir("net")+"/keys; copy it offline (this node also holds an admin key for daily use)")
+	return info, nil
+}
+
+func (n *Local) ClusterInvite(ctx context.Context, req apiv0.ClusterInviteRequest) (*apiv0.ClusterInvite, error) {
+	c, err := n.netCluster()
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, noCluster()
+	}
+	role := req.Role
+	if role == "" {
+		role = cluster.RoleStorage
+	}
+	if role != cluster.RoleStorage && role != cluster.RoleClient {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown role %q", role).WithAction("use storage or client")
+	}
+	ttl := 24 * time.Hour
+	if req.Expires != "" {
+		if ttl, err = time.ParseDuration(req.Expires); err != nil || ttl <= 0 {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "expires must be a positive duration such as 24h")
+		}
+	}
+	now := time.Now()
+	v := c.View()
+	tok := &cluster.Token{Genesis: c.Genesis(), Expires: now.Add(ttl).Truncate(time.Second)}
+	for did, k := range v.Keys {
+		if k.Role == cluster.RoleAdmin && k.Revoked == nil && len(tok.Keys) < 8 {
+			tok.Keys = append(tok.Keys, did)
+		}
+	}
+	slices.Sort(tok.Keys)
+	tok.Boot = n.bootPeers(c)
+	if len(tok.Boot) == 0 {
+		return nil, apiv0.Errorf(apiv0.CodeUnavailable, "no member address is known to put in the invite").
+			WithAction("start the daemon (`" + nu.Name + " daemon`) so the invite can name this node's addresses")
+	}
+	out := &apiv0.ClusterInvite{Expires: tok.Expires}
+	var w *cluster.Written
+	if req.Peer != "" {
+		id, err := wire.ParsePeerID(req.Peer)
+		if err != nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "bad PeerId %q: %v", req.Peer, err)
+		}
+		tok.Peer = id
+		w, err = c.Write(cluster.Op{Collection: cluster.NSMember, RKey: id.String(), Value: &cluster.Member{Roles: []string{role}, Capacity: req.Capacity, Tags: req.Tags, State: cluster.StateActive}})
+		if err != nil {
+			return nil, writeErr(err)
+		}
+		out.Peer = id.Base36()
+	} else {
+		tok.InviteID, tok.Secret = cluster.NewSecret()
+		w, err = c.Write(cluster.Op{Collection: cluster.NSInvite, RKey: tok.InviteID, Value: &cluster.Invite{ProofKey: cluster.ProofKey(tok.Secret), Roles: []string{role},
+			Capacity: req.Capacity, Tags: req.Tags, Expires: cluster.FormatTime(tok.Expires)}})
+		if err != nil {
+			return nil, writeErr(err)
+		}
+		out.InviteID = tok.InviteID
+	}
+	if out.Token, err = tok.Encode(); err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot encode the invite: %v", err)
+	}
+	out.Metadata = n.ack(ctx, c, w)
+	return out, nil
+}
+
+// bootPeers lists this node and other connected members with their addresses (at most
+// cluster.MaxBoot).
+func (n *Local) bootPeers(c *cluster.Cluster) []cluster.Boot {
+	n.clusters.mu.Lock()
+	svc := n.clusters.svc
+	n.clusters.mu.Unlock()
+	v := c.View()
+	addrsOf := func(id wire.PeerID) []string {
+		var out []string
+		if m, ok := v.Members[id]; ok && m.Value != nil {
+			out = append(out, m.Value.Addrs...)
+		}
+		if svc != nil {
+			if p, ok := svc.Peers()[id]; ok && p.Heartbeat != nil {
+				out = append(out, p.Heartbeat.Addrs...)
+			}
+		}
+		slices.Sort(out)
+		out = slices.Compact(out)
+		if len(out) > cluster.MaxBootAddrs {
+			out = out[:cluster.MaxBootAddrs]
+		}
+		return out
+	}
+	var boot []cluster.Boot
+	self := cluster.Boot{Peer: n.PeerID()}
+	for _, a := range n.Addrs() {
+		if len(self.Addrs) < cluster.MaxBootAddrs {
+			self.Addrs = append(self.Addrs, a.String())
+		}
+	}
+	if len(self.Addrs) > 0 {
+		boot = append(boot, self)
+	}
+	for _, id := range v.MemberIDs() {
+		if id == n.PeerID() || len(boot) >= cluster.MaxBoot || svc == nil || !svc.Connected(id) {
+			continue
+		}
+		if a := addrsOf(id); len(a) > 0 {
+			boot = append(boot, cluster.Boot{Peer: id, Addrs: a})
+		}
+	}
+	return boot
+}
+
+func (n *Local) ClusterJoin(ctx context.Context, req apiv0.ClusterJoinRequest) (*apiv0.ClusterInfo, error) {
+	tok, err := cluster.ParseToken(req.Token)
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err).WithAction("paste the whole nuc1… token from `" + nu.Name + " cluster invite`")
+	}
+	if time.Now().After(tok.Expires) {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "the invite expired at %s", tok.Expires.Format(time.RFC3339)).
+			WithAction("ask an admin for a fresh invite")
+	}
+	if tok.Peer != "" && tok.Peer != n.PeerID() {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "the invite is for peer %s, not this node (%s)", tok.Peer.Base36(), n.PeerID().Base36()).
+			WithAction("ask for an invite with `--peer " + n.PeerID().Base36() + "`, or a secret invite")
+	}
+	cs := &n.clusters
+	cs.mu.Lock()
+	if c, err := n.netClusterLocked(); err != nil {
+		cs.mu.Unlock()
+		return nil, err
+	} else if c != nil {
+		cs.mu.Unlock()
+		return nil, apiv0.Errorf(apiv0.CodeConflict, "this node already belongs to cluster %q (%s)", c.Genesis().Name, c.ID).
+			WithAction("a daemon belongs to at most one networked cluster")
+	}
+	if cs.sw == nil {
+		cs.mu.Unlock()
+		return nil, apiv0.Errorf(apiv0.CodeUnavailable, "joining needs networking").WithAction("start `" + nu.Name + " daemon` and run the join again")
+	}
+	c, err := cluster.JoinToken(n.clusterOpts("net"), tok)
+	if err == nil {
+		cs.setNet(c)
+		err = n.startServiceLocked(c)
+	}
+	svc := cs.svc
+	cs.mu.Unlock()
+	fail := func(err error) (*apiv0.ClusterInfo, error) {
+		n.closeClusters()
+		cs.mu.Lock()
+		cs.setNet(nil)
+		cs.mu.Unlock()
+		_ = os.RemoveAll(n.clusterDir("net"))
+		return nil, err
+	}
+	if err != nil {
+		return fail(err)
+	}
+	jctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := svc.Join(jctx, tok); err != nil {
+		return fail(apiv0.Errorf(apiv0.CodeUnavailable, "no bootstrap member admitted this node: %v", err).
+			WithAction("check that a member named in the invite is online and reachable over UDP, and that the invite is unused and unexpired"))
+	}
+	if err := svc.WaitSynced(jctx); err != nil {
+		return fail(apiv0.Errorf(apiv0.CodeUnavailable, "joined, but the cluster state did not arrive: %v", err).
+			WithAction("for an invite made with --peer, a bootstrap member must already know the member record; try again once it has synced"))
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.sw != nil {
+		cs.sw.Host().RecheckConnections()
+	}
+	return n.infoLocked(c, svc), nil
+}
+
+func (n *Local) ClusterStatus(ctx context.Context) (*apiv0.ClusterStatus, error) {
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	out := &apiv0.ClusterStatus{}
+	if cs.local == nil && cluster.Exists(n.clusterDir("local")) {
+		if c, err := cluster.Open(n.clusterOpts("local")); err == nil {
+			cs.local = c
+		}
+	}
+	if cs.local != nil {
+		out.Local = n.infoLocked(cs.local, nil)
+	}
+	c, err := n.netClusterLocked()
+	if err != nil {
+		return nil, err
+	}
+	if c != nil {
+		out.Network = n.infoLocked(c, cs.svc)
+	}
+	return out, nil
+}
+
+func (n *Local) ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MetadataState, error) {
+	c, err := n.netCluster()
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		return nil, noCluster()
+	}
+	id, err := wire.ParsePeerID(req.Peer)
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "bad PeerId %q: %v", req.Peer, err)
+	}
+	m, ok := c.View().Members[id]
+	if !ok || m.Deleted {
+		return nil, apiv0.Errorf(apiv0.CodeNotFound, "%s is not a member", id.Base36())
+	}
+	rec := *m.Value
+	rec.State = cluster.StateRemoved
+	w, err := c.Write(cluster.Op{Collection: cluster.NSMember, RKey: id.String(), Value: &rec})
+	if err != nil {
+		return nil, writeErr(err)
+	}
+	md := n.ack(ctx, c, w)
+	return &md, nil
+}
+
+// ack reports which storage members hold a write's commit, waiting briefly for one.
+func (n *Local) ack(ctx context.Context, c *cluster.Cluster, w *cluster.Written) apiv0.MetadataState {
+	md := apiv0.MetadataState{Signer: w.DID, Commit: w.Commit.String(), Rev: w.Rev, Required: 1, AckedBy: []string{}}
+	var acked []wire.PeerID
+	if c.Mode() == cluster.ModeLocal {
+		acked = []wire.PeerID{n.PeerID()}
+	} else if svc := n.ClusterService(); svc != nil {
+		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		acked = svc.WaitAcked(wctx, w.DID, w.Rev, 1)
+		cancel()
+	} else if m, ok := c.View().Members[n.PeerID()]; ok && !m.Deleted && m.Value.State != cluster.StateRemoved && slices.Contains(m.Value.Roles, cluster.RoleStorage) {
+		acked = []wire.PeerID{n.PeerID()} // offline: this storage member holds the commit
+	}
+	for _, id := range acked {
+		md.AckedBy = append(md.AckedBy, id.Base36())
+	}
+	md.Acknowledged = len(acked) >= md.Required
+	return md
+}
+
+func (n *Local) infoLocked(c *cluster.Cluster, svc *cluster.Service) *apiv0.ClusterInfo {
+	v := c.View()
+	self := n.PeerID()
+	info := &apiv0.ClusterInfo{ID: c.ID.String(), Name: v.Genesis.Name, Mode: v.Genesis.Mode, Self: self.Base36(),
+		Member: c.Mode() == cluster.ModeLocal || v.IsMember(self), Datasets: 0, Ignored: v.Ignored, HeldBack: v.HeldBack,
+		Keys: []apiv0.ClusterKey{}, Members: []apiv0.MemberInfo{}, Repos: []apiv0.RepoInfo{}}
+	held := c.HeldKeys()
+	for did, k := range v.Keys {
+		info.Keys = append(info.Keys, apiv0.ClusterKey{DID: did, Role: k.Role, Revoked: k.Revoked != nil, Held: slices.Contains(held, did)})
+	}
+	slices.SortFunc(info.Keys, func(a, b apiv0.ClusterKey) int { return cmpStr(a.Role+a.DID, b.Role+b.DID) })
+	var peers map[wire.PeerID]cluster.PeerStatus
+	if svc != nil {
+		peers = svc.Peers()
+	}
+	for id, m := range v.Members {
+		if m.Deleted {
+			continue
+		}
+		mi := apiv0.MemberInfo{Peer: id.Base36(), Roles: m.Value.Roles, State: m.Value.State, Tags: m.Value.Tags, Addrs: m.Value.Addrs, Self: id == self}
+		if svc != nil {
+			mi.Connected = id == self || svc.Connected(id)
+		}
+		if p, ok := peers[id]; ok && p.Heartbeat != nil {
+			t := p.Received
+			mi.LastHeartbeat, mi.Free, mi.Used, mi.SkewMS = &t, p.Heartbeat.Free, p.Heartbeat.Used, p.Skew.Milliseconds()
+			if p.Skew > 30*time.Second || p.Skew < -30*time.Second {
+				info.Warnings = append(info.Warnings, "clock skew of "+p.Skew.String()+" with "+id.Base36())
+			}
+		}
+		info.Members = append(info.Members, mi)
+	}
+	slices.SortFunc(info.Members, func(a, b apiv0.MemberInfo) int { return cmpStr(a.Peer, b.Peer) })
+	for did, r := range v.Repos {
+		ri := apiv0.RepoInfo{DID: did, Role: r.Role, Rev: r.Rev, Status: r.Status}
+		if r.Held.Defined() {
+			ri.Commit = r.Held.String()
+		}
+		info.Repos = append(info.Repos, ri)
+	}
+	slices.SortFunc(info.Repos, func(a, b apiv0.RepoInfo) int { return cmpStr(a.DID, b.DID) })
+	for _, d := range v.Datasets {
+		if !d.Deleted {
+			info.Datasets++
+		}
+	}
+	for id := range v.Invites {
+		if _, ok := v.LiveInvite(id, c.Now()); ok {
+			info.Invites++
+		}
+	}
+	for _, b := range c.Boot() {
+		info.Boot = append(info.Boot, b.Peer.Base36())
+	}
+	if !info.Member && c.Mode() != cluster.ModeLocal {
+		info.Warnings = append(info.Warnings, "this node has no member record (yet): it is joining, or it was removed")
+	}
+	return info
+}
+
+func cmpStr(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+func (n *Local) scopeCluster(scope string) (*cluster.Cluster, error) {
+	switch scope {
+	case ScopeLocal:
+		return n.localCluster()
+	case ScopeCluster:
+		c, err := n.netCluster()
+		if err == nil && c == nil {
+			err = noCluster()
+		}
+		return c, err
+	}
+	return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown dataset scope %q", scope)
+}
+
+func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.DatasetCreateRequest) (*apiv0.Dataset, error) {
+	if !cluster.ValidName(req.Name) {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "dataset name %q must match [a-z0-9-]{1,64}", req.Name)
+	}
+	if req.Replicas < 0 {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "replicas must not be negative")
+	}
+	c, err := n.scopeCluster(scope)
+	if err != nil {
+		return nil, err
+	}
+	// Names are unique per daemon across its local and networked cluster.
+	for _, other := range []string{ScopeLocal, ScopeCluster} {
+		oc, err := n.scopeCluster(other)
+		if err != nil {
+			continue
+		}
+		if _, ok := oc.View().Dataset(req.Name); ok {
+			return nil, apiv0.Errorf(apiv0.CodeConflict, "dataset %q already exists in the %s cluster", req.Name, other).
+				WithAction("dataset names are unique per daemon; pick another name")
+		}
+	}
+	replicas := req.Replicas
+	if replicas == 0 {
+		replicas = 2
+		if scope == ScopeLocal {
+			replicas = 1
+		}
+	}
+	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: cluster.Source{Local: true},
+		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Note: req.Note}})
+	if err != nil {
+		if errors.Is(err, cluster.ErrNoKey) {
+			return nil, writeErr(err)
+		}
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "cannot write the dataset record: %v", err)
+	}
+	d := datasetInfo(c, req.Name)
+	d.Metadata = n.ack(ctx, c, w)
+	return d, nil
+}
+
+func (n *Local) Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, error) {
+	c, err := n.scopeCluster(scope)
+	if err != nil {
+		return nil, err
+	}
+	v := c.View()
+	out := []apiv0.Dataset{}
+	for name, d := range v.Datasets {
+		if !d.Deleted {
+			out = append(out, *datasetInfo(c, name))
+		}
+	}
+	slices.SortFunc(out, func(a, b apiv0.Dataset) int { return cmpStr(a.Name, b.Name) })
+	return out, nil
+}
+
+func (n *Local) Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset, error) {
+	c, err := n.scopeCluster(scope)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := c.View().Dataset(name); !ok {
+		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q in the %s cluster", name, scope).
+			WithAction("list datasets with `" + nu.Name + " dataset ls` or `" + nu.Name + " cluster dataset ls`")
+	}
+	return datasetInfo(c, name), nil
+}
+
+func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
+	v := c.View()
+	d := v.Datasets[name]
+	out := &apiv0.Dataset{Name: name, Cluster: ScopeLocal, Source: "local", Signer: d.Signer,
+		Metadata: apiv0.MetadataState{AckedBy: []string{}}, Content: apiv0.ContentState{State: "none", Detail: "no head written yet"}}
+	if c.Mode() != cluster.ModeLocal {
+		out.Cluster = c.ID.String()
+	}
+	if d.Value != nil {
+		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
+	}
+	for did, h := range v.Heads[name] {
+		if h.Deleted {
+			continue
+		}
+		out.Heads = append(out.Heads, apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: did, HLC: h.HLC.String()})
+	}
+	slices.SortFunc(out.Heads, func(a, b apiv0.DatasetHead) int { return cmpStr(a.Signer, b.Signer) })
+	if h, ok := v.Head(name); ok {
+		out.Head = &apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: h.Signer, HLC: h.HLC.String()}
+		out.Content = apiv0.ContentState{State: "not_tracked", Detail: "content placement and readiness are not implemented yet; this reports signed metadata only"}
+	}
+	return out
+}

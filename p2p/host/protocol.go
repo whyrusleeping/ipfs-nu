@@ -123,7 +123,7 @@ func (h *Host) routeStream(s *Stream) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		handler := h.handlers[p]
-		if handler == nil {
+		if handler == nil || (h.streamGate != nil && !h.streamGate(s.Conn().PeerID(), p)) {
 			return false
 		}
 		select {

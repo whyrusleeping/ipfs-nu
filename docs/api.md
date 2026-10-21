@@ -94,6 +94,15 @@ GET    /api/v0/dag?target=                 atproto-style JSON
 POST   /api/v0/dag        JSON body        → {cid}
 POST   /api/v0/get        {target, output?, dir?} → 202 operation (result: GetResult)
 POST   /api/v0/share      {target}         → ShareLink
+GET    /api/v0/cluster                     ClusterStatus {local?, network?}
+POST   /api/v0/cluster/init     {name, mode?}                    → ClusterInfo
+POST   /api/v0/cluster/invites  {role?, tags?, capacity?, peer?, expires?} → ClusterInvite
+POST   /api/v0/cluster/join     {token}                          → ClusterInfo
+DELETE /api/v0/cluster/members/{peer}      → MetadataState
+GET    /api/v0/cluster/datasets            [Dataset]
+POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?} → Dataset
+GET    /api/v0/cluster/datasets/{name}     Dataset
+GET|POST /api/v0/datasets, GET /api/v0/datasets/{name}   the same, on the local cluster
 ```
 
 `add` and `get` pass absolute local paths: API and daemon run as the same user on
@@ -165,6 +174,21 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
   in-process node, and prints bytes with a unit.
 - No GC runs in this build; when it does, the node passes `node.GCGrace` so unpinned
   objects of in-progress adds survive.
+
+## Clusters (0062)
+
+`node.ClusterNode` (implemented by `node.Local` and `client.Client`) carries the cluster
+commands; state lives under `$NU_PATH/cluster/{local,net}` ([D20](cluster.md#state-encoding-and-evaluation)).
+`nu dataset create|ls|status` act on the implicit local cluster, created on first use;
+`nu cluster init|invite|join|status|member rm|dataset …` on the at most one networked
+cluster. `init`, `invite`, `member rm` and dataset writes work daemonless (in-process,
+offline); `join` needs networking and returns after the first state sync. Every write
+reports `metadata` (`MetadataState`: signer, commit, rev, `acked_by` storage members,
+`required`, `acknowledged`) apart from `content` (`ContentState`: `none` without a head,
+else `not_tracked` until placement/readiness exist); metadata acknowledgment never
+implies stored content. Writing without a suitable key is `forbidden`; a second cluster
+or a dataset name already used in either cluster is `conflict`. In private and isolated
+mode the daemon disables mDNS and gates its host to members from start-up.
 
 ## Loopback protections
 

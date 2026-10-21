@@ -81,6 +81,8 @@ type Host struct {
 	gaters        map[uint64]ConnectionGater
 	nextGater     uint64
 	gateVersion   uint64
+	streamGate    StreamGate
+	dialGate      ConnectionGater
 	mu            sync.Mutex
 	closed        bool
 	peers         map[wire.PeerID][]*Conn
@@ -397,6 +399,9 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 		return nil, err
 	}
 	if err := h.checkPeer(id); err != nil {
+		return nil, err
+	}
+	if err := h.checkDial(id); err != nil {
 		return nil, err
 	}
 	if c, ok := h.Connection(id); ok {

@@ -41,8 +41,9 @@ type Local struct {
 	// Net is the running host's view of reachability; nil without a host.
 	Net Net
 
-	content *content.Content
-	started time.Time
+	content  *content.Content
+	clusters clusterState
+	started  time.Time
 	// API and Gateway are the bound listen addresses, set by the daemon.
 	API, Gateway string
 	// work tracks operation goroutines so Close can wait for them.
@@ -92,6 +93,7 @@ var _ Node = (*Local)(nil)
 func (n *Local) Close() error {
 	n.Ops.CancelAll()
 	n.work.Wait()
+	n.DetachNetwork()
 	return n.Store.Close()
 }
 

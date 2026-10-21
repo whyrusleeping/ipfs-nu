@@ -96,6 +96,7 @@ type Manager struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
+	rmu      sync.Mutex // serializes Reconcile
 	mu       sync.Mutex
 	state    map[string]*Protection
 	status   map[string]*Status
@@ -197,8 +198,10 @@ func pinFor(name string, c cid.CID) store.Pin {
 	return store.Pin{CID: c, Mode: store.Recursive, Profile: "nu-tree", Source: store.SourceCluster, Name: "dataset/" + name}
 }
 
-// Reconcile runs one pass over every dataset.
+// Reconcile runs one pass over every dataset (passes are serialized).
 func (m *Manager) Reconcile() {
+	m.rmu.Lock()
+	defer m.rmu.Unlock()
 	v := m.cfg.Cluster.View()
 	changed := false
 	names := map[string]bool{}

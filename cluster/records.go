@@ -246,6 +246,19 @@ type Policy struct {
 // MaxWhere bounds a policy's tag filter (tags and values per tag).
 const MaxWhere = 16
 
+// Validate checks the policy's ranges (a record failing them is ignored).
+func (p Policy) Validate() error {
+	if p.Replicas < 0 || len(p.Where) > MaxWhere || len(p.Spread) > 64 {
+		return errors.New("policy replicas, where or spread out of range")
+	}
+	for k, vals := range p.Where {
+		if k == "" || len(k) > 64 || len(vals) == 0 || len(vals) > MaxWhere {
+			return fmt.Errorf("bad where tag %q", k)
+		}
+	}
+	return nil
+}
+
 // Head is a dataset's current target as written by one signer.
 type Head struct {
 	Target string `drisl:"target"`
@@ -520,13 +533,8 @@ func decodeValue(r *Record, v any) error {
 		if d.Policy.Replicas < 0 || len(d.Writers) > 256 || len(d.Note) > 1024 {
 			return errors.New("policy, writers or note out of range")
 		}
-		if len(d.Policy.Where) > MaxWhere || len(d.Policy.Spread) > 64 {
-			return errors.New("policy where or spread out of range")
-		}
-		for k, vals := range d.Policy.Where {
-			if k == "" || len(k) > 64 || len(vals) == 0 || len(vals) > MaxWhere {
-				return fmt.Errorf("bad where tag %q", k)
-			}
+		if err := d.Policy.Validate(); err != nil {
+			return err
 		}
 		pm, _ := v.(map[string]any)
 		pb, err := drisl.Marshal(pm["policy"])

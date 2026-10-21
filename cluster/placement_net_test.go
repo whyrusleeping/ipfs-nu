@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,6 +201,22 @@ func TestPlacementReadiness(t *testing.T) {
 	r, err := a.Local.DatasetWait(ctx(t), node.ScopeCluster, "wide", apiv0.DatasetWaitRequest{Target: t3.String()})
 	if waitCode(err) != apiv0.CodeFailed || r.State != cluster.ReadyUnsatisfied || len(r.Unmet) == 0 || time.Since(start) > 2*time.Second {
 		t.Fatalf("infeasible wait: %+v, %v", r, err)
+	}
+	// R6 with spread: no member is zone-tagged, so a zone spread is unsatisfiable.
+	zd, err := a.Local.DatasetCreate(ctx(t), node.ScopeCluster, apiv0.DatasetCreateRequest{Name: "zoned", Replicas: 2, Spread: "zone"})
+	if err != nil || zd.Spread != "zone" {
+		t.Fatalf("zoned dataset %+v, %v", zd, err)
+	}
+	if _, err := a.Local.DatasetUpdate(ctx(t), node.ScopeCluster, "zoned", apiv0.DatasetUpdateRequest{Target: t3.String()}); err != nil {
+		t.Fatal(err)
+	}
+	r, err = a.Local.DatasetWait(ctx(t), node.ScopeCluster, "zoned", apiv0.DatasetWaitRequest{Target: t3.String()})
+	if waitCode(err) != apiv0.CodeFailed || r.State != cluster.ReadyUnsatisfied || !strings.Contains(strings.Join(r.Unmet, ";"), `"zone"`) {
+		t.Fatalf("spread wait: %+v, %v", r, err)
+	}
+	// The team default warns instead of silently sharing failure domains.
+	if wd, err := a.Local.DatasetCreate(ctx(t), node.ScopeCluster, apiv0.DatasetCreateRequest{Name: "plain"}); err != nil || wd.Spread != "" || len(wd.Warnings) == 0 || wd.Replicas != 2 {
+		t.Fatalf("default dataset %+v, %v", wd, err)
 	}
 
 }

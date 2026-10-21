@@ -121,7 +121,17 @@ func printClusterInfo(w io.Writer, label string, c *apiv0.ClusterInfo) {
 }
 
 func printDataset(w io.Writer, d *apiv0.Dataset) {
-	fmt.Fprintf(w, "%s (%s cluster) replicas %d, record by %s\n", d.Name, d.Cluster, d.Replicas, d.Signer)
+	reps := strconv.FormatInt(d.Replicas, 10)
+	if d.All {
+		reps = "all"
+	}
+	fmt.Fprintf(w, "%s (%s cluster) replicas %s, record by %s\n", d.Name, d.Cluster, reps, d.Signer)
+	if d.Spread != "" || len(d.Where) > 0 {
+		fmt.Fprintf(w, "  placement: spread %q, where %v\n", d.Spread, d.Where)
+	}
+	for _, warn := range d.Warnings {
+		fmt.Fprintf(w, "  warning: %s\n", warn)
+	}
 	if c := d.Collection; c != nil {
 		fmt.Fprintf(w, "  collection: merge %s, %d facet(s)", c.Merge, len(c.Facets))
 		if c.Expire != "" {
@@ -207,7 +217,20 @@ func datasetCommands(scope string) []*command {
 			summary: "create a dataset record (metadata only; content arrives with `add`/heads)",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
-				replicas := fs.Int64("replicas", 0, "copies per blob (default 2; 1 in the local cluster)")
+				replicasFlag := fs.String("replicas", "", "copies per blob, or all (default 2; 1 in the local cluster)")
+				spread := fs.String("spread", "", "tag whose values each blob's owners must differ in, e.g. zone (team default: zone when every member is zone-tagged)")
+				var where map[string][]string
+				fs.Func("where", "placement tag filter tag=v1|v2 (repeatable; every tag must match)", func(s string) error {
+					k, v, ok := strings.Cut(s, "=")
+					if !ok || k == "" || v == "" {
+						return fmt.Errorf("want tag=value[|value…]")
+					}
+					if where == nil {
+						where = map[string][]string{}
+					}
+					where[k] = append(where[k], strings.Split(v, "|")...)
+					return nil
+				})
 				note := fs.String("note", "", "free-form note")
 				var writers []string
 				fs.Func("writer", "did:key allowed to write heads (repeatable)", func(s string) error { writers = append(writers, s); return nil })
@@ -244,8 +267,19 @@ func datasetCommands(scope string) []*command {
 				if err != nil {
 					return err
 				}
-				req := apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note,
-					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge}
+				req := apiv0.DatasetCreateRequest{Name: fs.Arg(0), Writers: writers, Note: *note,
+					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge, Where: where, Spread: *spread}
+				switch *replicasFlag {
+				case "":
+				case "all":
+					req.All = true
+				default:
+					k, err := strconv.ParseInt(*replicasFlag, 10, 64)
+					if err != nil || k < 0 {
+						return usagef("--replicas must be a number or all")
+					}
+					req.Replicas = k
+				}
 				if *ingestMax != "" {
 					var sz repo.Size
 					if err := sz.UnmarshalTOML(*ingestMax); err != nil {

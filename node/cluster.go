@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -665,8 +666,35 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 			src.Ingest.Limits = &cluster.IngestLimits{MaxBytes: in.MaxBytes, Attempts: in.Attempts, Timeout: in.Timeout}
 		}
 	}
+	pol := cluster.Policy{Replicas: replicas, All: req.All, Where: req.Where, Spread: req.Spread}
+	if pol.All {
+		pol.Replicas = 0
+	}
+	if err := pol.Validate(); err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
+	}
+	var warnings []string
+	if c.Mode() != cluster.ModeLocal && !pol.All && pol.Spread == "" && pol.Replicas > 1 && coll == nil {
+		// Team default (docs/cluster.md "Datasets and updates"): spread over zones only
+		// when every eligible member is zone-tagged and there are enough zones.
+		pl := cluster.NewPlacement(c.View(), cluster.Policy{Replicas: pol.Replicas, Where: pol.Where}, n.PeerID())
+		zones, tagged := map[string]bool{}, true
+		for _, m := range pl.Members {
+			if z := m.Tags["zone"]; z != "" {
+				zones[z] = true
+			} else {
+				tagged = false
+			}
+		}
+		switch {
+		case tagged && len(zones) >= int(pol.Replicas):
+			pol.Spread = "zone"
+		default:
+			warnings = append(warnings, fmt.Sprintf("no zone spread: %d distinct zone(s) among %d eligible storage member(s), and every member must be tagged zone=…; copies may share a failure domain (set --spread to require one)", len(zones), len(pl.Members)))
+		}
+	}
 	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: src,
-		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Collection: coll, Note: req.Note}})
+		Policy: pol, Writers: req.Writers, Collection: coll, Note: req.Note}})
 	if err != nil {
 		if errors.Is(err, cluster.ErrNoKey) {
 			return nil, writeErr(err)
@@ -675,6 +703,7 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 	}
 	d := n.datasetInfo(c, req.Name)
 	d.Metadata = n.ack(ctx, c, w)
+	d.Warnings = warnings
 	return d, nil
 }
 
@@ -716,6 +745,7 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	}
 	if d.Value != nil {
 		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
+		out.All, out.Where, out.Spread = d.Value.Policy.All, d.Value.Policy.Where, d.Value.Policy.Spread
 		if cp := d.Value.Collection; cp != nil {
 			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
 			for k, f := range cp.Facets {

@@ -249,10 +249,16 @@ type RepoInfo struct {
 
 // DatasetCreateRequest creates a dataset record.
 type DatasetCreateRequest struct {
-	Name     string   `json:"name"`
-	Replicas int64    `json:"replicas,omitempty"` // collections default to 0 (no guaranteed copies)
-	Writers  []string `json:"writers,omitempty"`
-	Note     string   `json:"note,omitempty"`
+	Name     string `json:"name"`
+	Replicas int64  `json:"replicas,omitempty"` // collections default to 0 (no guaranteed copies)
+	// All places every blob on every eligible storage member (replicas: all).
+	All bool `json:"all,omitempty"`
+	// Where restricts placement to storage members whose tags match (tag → allowed
+	// values); Spread requires distinct values of a tag among each blob's owners.
+	Where   map[string][]string `json:"where,omitempty"`
+	Spread  string              `json:"spread,omitempty"`
+	Writers []string            `json:"writers,omitempty"`
+	Note    string              `json:"note,omitempty"`
 	// Collection makes the dataset a collection (D22) with Facets declared over item
 	// metadata, Merge "union" (default) or "lww", and Expire "<time facet>=<duration>".
 	Collection bool                 `json:"collection,omitempty"`
@@ -284,12 +290,17 @@ type FacetDecl struct {
 // Dataset is a dataset's merged record and heads, with metadata and content status
 // reported separately.
 type Dataset struct {
-	Name     string   `json:"name"`
-	Cluster  string   `json:"cluster"` // "local" or the networked cluster's ID
-	Source   string   `json:"source"`
-	Replicas int64    `json:"replicas"`
-	Writers  []string `json:"writers,omitempty"`
-	Note     string   `json:"note,omitempty"`
+	Name     string `json:"name"`
+	Cluster  string `json:"cluster"` // "local" or the networked cluster's ID
+	Source   string `json:"source"`
+	Replicas int64  `json:"replicas"`
+	All      bool   `json:"all,omitempty"`
+	// Where and Spread are the placement policy's tag filter and spread tag.
+	Where    map[string][]string `json:"where,omitempty"`
+	Spread   string              `json:"spread,omitempty"`
+	Writers  []string            `json:"writers,omitempty"`
+	Note     string              `json:"note,omitempty"`
+	Warnings []string            `json:"warnings,omitempty"`
 	// Collection carries a collection's facets and merge mode.
 	Collection *DatasetCollection `json:"collection,omitempty"`
 	Signer     string             `json:"signer"`

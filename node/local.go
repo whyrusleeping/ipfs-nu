@@ -13,6 +13,7 @@ import (
 
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/atproto"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
@@ -40,6 +41,10 @@ type Local struct {
 	Fetcher Fetcher
 	// Net is the running host's view of reachability; nil without a host.
 	Net Net
+	// Atproto resolves identities and fetches verified records and repositories over
+	// HTTPS (no swarm needed); nil disables at:// targets. NewLocal sets the default
+	// client; tests substitute one with fixture hooks.
+	Atproto *atproto.Client
 
 	content  *content.Content
 	clusters clusterState
@@ -75,7 +80,7 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 	}
 	c := content.New(st)
 	return &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
-		content: c, started: time.Now()}, nil
+		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}, nil
 }
 
 // LoadKey loads the node key from $NU_PATH/node.key, creating it (0600) on first use.
@@ -241,6 +246,10 @@ func parseTarget(t string) (target.Target, cid.CID, error) {
 	if err := pt.Supported(); err != nil {
 		return pt, cid.CID{}, err
 	}
+	if pt.Kind == target.KindAtproto {
+		return pt, cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is an atproto target, not content by CID", pt.Raw).
+			WithAction("records: `" + nu.Name + " get at://<did>/<collection>/<rkey>` (API: GET /at/record); repositories: `" + nu.Name + " get at://<did>` (POST /at/snapshot); browse held snapshots with ls and cat")
+	}
 	root, err := cid.Parse(pt.CID)
 	if err != nil {
 		return pt, cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", pt.CID)
@@ -249,6 +258,9 @@ func parseTarget(t string) (target.Target, cid.CID, error) {
 }
 
 func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
+	if isAt(t) {
+		return n.atCat(ctx, t)
+	}
 	nd, _, _, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
 		return nil, err
@@ -260,6 +272,9 @@ func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
 }
 
 func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
+	if isAt(t) {
+		return n.atLs(ctx, t)
+	}
 	nd, root, p, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
 		return nil, err
@@ -388,6 +403,10 @@ func (n *Local) DagGet(ctx context.Context, t string) (json.RawMessage, error) {
 		return nil, err
 	}
 	if err := pt.Supported(); err != nil {
+		return nil, err
+	}
+	if pt.Kind == target.KindAtproto {
+		_, _, err := parseTarget(t) // the at:// explanation
 		return nil, err
 	}
 	c, err := parseCID(pt.CID)

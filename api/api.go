@@ -109,6 +109,7 @@ func (s *Server) register() {
 		{"POST", "/share"}:                  s.share,
 	}
 	maps.Copy(handlers, s.clusterHandlers())
+	maps.Copy(handlers, s.atprotoHandlers())
 	paths := map[string]bool{}
 	for _, rt := range Routes {
 		h, ok := handlers[rt]

@@ -33,6 +33,10 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 	if err := pt.Supported(); err != nil {
 		return nil, err
 	}
+	if pt.Kind == target.KindAtproto {
+		_, _, err := parseTarget(req.Target) // the at:// explanation
+		return nil, err
+	}
 	root, err := parseCID(pt.CID)
 	if err != nil {
 		return nil, err

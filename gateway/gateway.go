@@ -40,6 +40,8 @@ func New(content Content) *Handler {
 	h.mux.HandleFunc("GET /tree/{cid}", h.tree)
 	h.mux.HandleFunc("GET /tree/{cid}/{path...}", h.tree)
 	h.mux.HandleFunc("GET /blob/{cid}", h.blob)
+	h.mux.HandleFunc("GET /at/{did}", h.at)
+	h.mux.HandleFunc("GET /at/{did}/{path...}", h.at)
 	h.mux.HandleFunc("/", h.notFound)
 	return h
 }
@@ -62,6 +64,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "method %s is not allowed", r.Method))
+		return
+	}
+	// An empty segment is refused before the mux could clean and redirect it (G6).
+	if strings.Contains(r.URL.Path, "//") {
+		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid path %q", r.URL.Path))
 		return
 	}
 	r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, rq))
@@ -135,7 +142,7 @@ func writeError(w http.ResponseWriter, err error) {
 
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
 	writeError(w, apiv0.Errorf(apiv0.CodeNotFound, "no such gateway route").
-		WithAction("use /tree/<cid>/<path>, /blob/<cid> or http://<cid>.localhost:<port>/"))
+		WithAction("use /tree/<cid>/<path>, /blob/<cid>, /at/<did>/… or http://<cid>.localhost:<port>/"))
 }
 
 var rootPage = template.Must(template.New("root").Parse(`<!doctype html>
@@ -148,6 +155,7 @@ node to your browser.</p>
 <ul>
 <li><code>/tree/&lt;cid&gt;/…</code> — listings and downloads of a tree</li>
 <li><code>/blob/&lt;cid&gt;</code> — one blob, as a download</li>
+<li><code>/at/&lt;did&gt;[@&lt;rev&gt;]/…</code> — a held atproto repository snapshot: collections, records as JSON</li>
 <li><code>http://&lt;cid&gt;.localhost:{{.Port}}/…</code> — a tree as a site, on its own origin</li>
 </ul>
 <p>Use <code>{{.Name}} status</code> on the command line to see what the node is doing.</p>

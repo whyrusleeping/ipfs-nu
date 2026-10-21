@@ -1,6 +1,7 @@
 package kad
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -24,9 +25,9 @@ const (
 var ErrMessage = errors.New("kad: malformed message")
 
 const MaxMessage = 64 << 10
-const MaxKey = 128
+const MaxKey = 80 // upstream go-libp2p Amino rejects provider keys longer than 80 bytes
 const MaxPeers = 20
-const MaxAddrs = 8
+const MaxAddrs = 32
 
 type Peer struct {
 	ID    wire.PeerID
@@ -86,7 +87,7 @@ func encodePeer(p Peer) ([]byte, error) {
 }
 func uintField(b []byte, n int, v uint64) []byte {
 	b = varint.Append(b, uint64(n<<3))
-	return varint.Append(b, v)
+	return binary.AppendUvarint(b, v)
 }
 func bytesField(b []byte, n int, v []byte) []byte {
 	b = varint.Append(b, uint64(n<<3|2))
@@ -110,6 +111,17 @@ func (p *parser) vi() (uint64, error) {
 	p.off += n
 	return v, nil
 }
+func (p *parser) value() (uint64, error) {
+	if p.off >= len(p.b) {
+		return 0, ErrMessage
+	}
+	v, n := binary.Uvarint(p.b[p.off:])
+	if n <= 0 || n != len(binary.AppendUvarint(nil, v)) {
+		return 0, ErrMessage
+	}
+	p.off += n
+	return v, nil
+}
 func (p *parser) data(max int) ([]byte, error) {
 	n, e := p.vi()
 	if e != nil {
@@ -125,7 +137,7 @@ func (p *parser) data(max int) ([]byte, error) {
 func (p *parser) skip(w int) error {
 	switch w {
 	case 0:
-		_, e := p.vi()
+		_, e := p.value()
 		return e
 	case 1:
 		if len(p.b)-p.off < 8 {
@@ -204,9 +216,12 @@ func Decode(b []byte) (Message, error) {
 			if w != 0 {
 				return m, ErrMessage
 			}
-			v, e := p.vi()
+			v, e := p.value()
 			if e != nil {
 				return m, e
+			}
+			if v > uint64(Ping) {
+				return m, ErrMessage
 			}
 			m.Type = MessageType(v)
 		case 2:
@@ -241,14 +256,11 @@ func Decode(b []byte) (Message, error) {
 			if w != 0 {
 				return m, ErrMessage
 			}
-			v, e := p.vi()
+			v, e := p.value()
 			if e != nil {
 				return m, e
 			}
-			if v > uint64(^uint32(0)>>1) {
-				return m, wire.ErrLimit
-			}
-			m.ClusterLevel = int32(v)
+			m.ClusterLevel = int32(uint32(v))
 		default:
 			if e := p.skip(w); e != nil {
 				return m, e

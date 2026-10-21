@@ -307,3 +307,60 @@ func TestAddCatMultiGB(t *testing.T) {
 	slow.Skip(t)
 	addCatBounded(t, 3<<30+12345)
 }
+
+// A store budget from config refuses an add that does not fit with insufficient_storage,
+// the shortfall in details and an action, keeps what is pinned, and shows pressure and
+// headroom in status (D17 A5–A8).
+func TestStoreBudget(t *testing.T) {
+	ctx := context.Background()
+	r, _, err := repo.Open(filepath.Join(t.TempDir(), "nu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfigSet("store.limit", "1M"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfigSet("store.free_reserve", "0"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := NewLocal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Close() })
+	if l := n.Store.Limits(); l.Physical != 1<<20 || l.FreeReserve != 0 || l.Grace != GCGrace {
+		t.Fatalf("limits from config: %+v", l)
+	}
+
+	dir := t.TempDir()
+	small, big := filepath.Join(dir, "small"), filepath.Join(dir, "big")
+	os.WriteFile(small, make([]byte, 200<<10), 0o644)
+	os.WriteFile(big, make([]byte, 2<<20), 0o644)
+	res, err := add(t, n, apiv0.AddRequest{Path: small, Pin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = add(t, n, apiv0.AddRequest{Path: big, Pin: true})
+	var ae *apiv0.Error
+	if !errors.As(err, &ae) || ae.Code != apiv0.CodeInsufficientStorage || ae.Action == "" {
+		t.Fatalf("add beyond the limit: %v", err)
+	}
+	if ae.Details["reason"] != "store_limit" || ae.Details["need"].(int64) < 2<<20 || ae.Details["limit"].(int64) != 1<<20 {
+		t.Fatalf("shortfall details: %v", ae.Details)
+	}
+	if rc, err := n.Cat(ctx, res.CID); err != nil {
+		t.Fatalf("pinned content lost under pressure: %v", err)
+	} else {
+		rc.Close()
+	}
+	st, err := n.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Store.Limit != 1<<20 || st.Store.Headroom < 0 || st.Store.Headroom > 1<<20-200<<10 || st.Store.Blobs != 200<<10 {
+		t.Fatalf("status: %+v", st.Store)
+	}
+	if apiv0.ExitCode(apiv0.CodeInsufficientStorage) != apiv0.ExitInsufficientStorage || apiv0.HTTPStatus(apiv0.CodeInsufficientStorage) != 507 {
+		t.Fatal("insufficient_storage mapping")
+	}
+}

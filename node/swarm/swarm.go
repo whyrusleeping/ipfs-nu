@@ -23,6 +23,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/fetch"
+	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/p2p/host"
@@ -281,6 +282,10 @@ func classify(root cid.CID, err error) error {
 	var ae *apiv0.Error
 	if errors.As(err, &ae) {
 		return ae
+	}
+	var be *store.BudgetError
+	if errors.As(err, &be) {
+		return content.InsufficientStorage(be)
 	}
 	switch {
 	case errors.Is(err, proto.ErrCorrupt):

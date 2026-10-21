@@ -206,6 +206,31 @@ var cmdDaemon = &command{
 	},
 }
 
+// budgetLine renders the store budgets (D17 A8): limit, free space and headroom, with
+// the pressure state and its action.
+func budgetLine(st *apiv0.StoreStatus) string {
+	var parts []string
+	if st.Limit > 0 {
+		parts = append(parts, fmt.Sprintf("limit %s", humanBytes(st.Limit)))
+	} else {
+		parts = append(parts, "no limit")
+	}
+	if st.Free >= 0 {
+		parts = append(parts, fmt.Sprintf("free %s (reserve %s)", humanBytes(st.Free), humanBytes(st.Reserve)))
+	}
+	if st.Headroom >= 0 {
+		parts = append(parts, fmt.Sprintf("headroom %s", humanBytes(st.Headroom)))
+	}
+	if st.Reserved > 0 {
+		parts = append(parts, fmt.Sprintf("%s in flight", humanBytes(st.Reserved)))
+	}
+	line := strings.Join(parts, ", ")
+	if st.Pressure {
+		line += "\n            PRESSURE: new content is refused until space is released (`" + nu.Name + " pin rm`), freed on disk, or store.limit is raised"
+	}
+	return line
+}
+
 // Shared by status and doctor: local facts that need no daemon.
 type localStatus struct {
 	Version string               `json:"version"`
@@ -251,6 +276,7 @@ var cmdStatus = &command{
 			fmt.Fprintf(w, "%s %s\nrepo:       %s\n", nu.Name, ls.Version, ls.Paths.Root)
 			if ls.Store != nil {
 				fmt.Fprintf(w, "store:      %d objects, %s, %d pins\n", ls.Store.Objects, humanBytes(ls.Store.Bytes), ls.Store.Pins)
+				fmt.Fprintf(w, "budget:     %s\n", budgetLine(ls.Store))
 			}
 			if ls.Network != nil {
 				fmt.Fprintf(w, "peer id:    %s\n", ls.Network.PeerID)

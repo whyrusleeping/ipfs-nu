@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -27,8 +28,77 @@ type Config struct {
 	API     APIConfig     `toml:"api"`
 	Gateway GatewayConfig `toml:"gateway"`
 	Swarm   SwarmConfig   `toml:"swarm"`
+	// Store holds the store budgets (D17 A5).
+	Store StoreConfig `toml:"store"`
 	// Relay configures `nu relay`; nil when the section is absent (never written by init).
 	Relay *RelayConfig `toml:"relay,omitempty"`
+}
+
+// StoreConfig is the `[store]` section: the physical budgets of D17 A5.
+type StoreConfig struct {
+	// Limit is the physical byte budget; 0 (default) is unlimited.
+	Limit Size `toml:"limit"`
+	// FreeReserve is the free space kept on the store's filesystem (default 1G).
+	FreeReserve Size `toml:"free_reserve"`
+	// GCWatermark is the fraction of Limit above which GC runs (default 0.9).
+	GCWatermark float64 `toml:"gc_watermark"`
+}
+
+// DefaultFreeReserve is the free-space reserve written at init.
+const DefaultFreeReserve Size = 1 << 30
+
+// Size is a byte count in config.toml, written as a string with a K, M, G, T or P suffix
+// (powers of 1024) and read from such a string or a bare integer, so both
+// `nu config set store.limit 50G` and `... 0` work.
+type Size int64
+
+// UnmarshalTOML accepts an integer or a size string.
+func (z *Size) UnmarshalTOML(v any) error {
+	switch x := v.(type) {
+	case int64:
+		if x < 0 {
+			return fmt.Errorf("bad size %d", x)
+		}
+		*z = Size(x)
+		return nil
+	case string:
+		n, err := ParseSize(x)
+		*z = Size(n)
+		return err
+	}
+	return fmt.Errorf("bad size %v (want bytes with an optional K/M/G/T/P suffix)", v)
+}
+
+// MarshalText writes the shortest exact suffix form ("1G", "1536M", "123").
+func (z Size) MarshalText() ([]byte, error) { return []byte(z.String()), nil }
+
+func (z Size) String() string {
+	n := int64(z)
+	for i := 4; i >= 0; i-- {
+		if m := int64(1) << (10 * (i + 1)); n != 0 && n%m == 0 {
+			return fmt.Sprintf("%d%c", n/m, "KMGTP"[i])
+		}
+	}
+	return strconv.FormatInt(n, 10)
+}
+
+// ParseSize parses a byte count with an optional K, M, G, T or P suffix (powers of 1024);
+// "" is 0.
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	mult := int64(1)
+	if i := strings.IndexByte("KMGTP", strings.ToUpper(s[len(s)-1:])[0]); i >= 0 {
+		mult = int64(1) << (10 * (i + 1))
+		s = strings.TrimSpace(s[:len(s)-1])
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("bad size %q (want bytes with an optional K/M/G/T/P suffix)", s)
+	}
+	return v * mult, nil
 }
 
 // RelayConfig configures the standalone `nu relay` role (networking D10). Flags of the
@@ -79,6 +149,7 @@ func DefaultConfig() *Config {
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", DefaultSwarmPort),
 			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", DefaultSwarmPort),
 		}, MDNS: true},
+		Store: StoreConfig{FreeReserve: DefaultFreeReserve, GCWatermark: 0.9},
 	}
 }
 

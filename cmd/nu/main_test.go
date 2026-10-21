@@ -304,7 +304,7 @@ func TestAddSiteAndBrowse(t *testing.T) {
 		t.Fatalf("status: exit %d: %s", code, out.String())
 	}
 	out.Reset()
-	if code := run([]string{"--nu-path", root, "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), " B, 1 pins") ||
+	if code := run([]string{"--nu-path", root, "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), ", 1 pins\nbudget:     no limit, ") ||
 		!strings.Contains(out.String(), "network:    serving, 0 peers connected") {
 		t.Fatalf("status text: exit %d: %s", code, out.String())
 	}

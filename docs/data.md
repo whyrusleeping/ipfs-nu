@@ -68,6 +68,36 @@ directory point directly to raw blobs; their entries carry the metadata. A direc
 span multiple MST nodes. Tree transfer streams path proofs in one request and skips shared
 subtrees during updates.
 
+**Encoding (nu-dir profile, v1).** A key's layer is the number of leading zero bits of
+SHA-256(name) divided by 4. The tree for a set of names is one node holding, in name order
+(bytewise), the names of the highest layer present, with the trees of the remaining names
+in each gap before, between and after them; empty gaps have no subtree. No empty nodes exist
+except the root of an empty directory, so the root CID depends only on the entries. Nodes
+are SHA-256 DRISL:
+
+```text
+node:  { e: [ { k: <name>, v: <entry>, t?: <right subtree cid> } … ], l?: <left subtree cid> }
+```
+
+Decoders accept only the canonical encoding (no unknown keys) and check on every load that
+names are sorted, share one layer below the parent's, and lie inside the parent gap. A node
+over 1 MiB is not produced: the add fails and names the directory. Vectors are in
+`testdata/vectors/nu-tree/`.
+
+**Entries.** Names are non-empty UTF-8 of at most 255 bytes without `/` or NUL, not `.` or
+`..`, kept byte-exact (no Unicode normalization); others are refused on import with a
+"rename or exclude" message. Devices, sockets and FIFOs are skipped and reported.
+- `file`: `cid` is the raw blob, `size` its length. `mode` is `0o755` when the owner-execute
+  bit is set and absent otherwise; other permission bits and times are not recorded, so
+  trees are reproducible across umasks.
+- `dir`: `cid` is the directory's MST root; `size` is the sum of its entries' sizes.
+- `symlink`: `cid` is a raw blob of the target bytes, `size` their length. Symlinks are
+  recorded, never followed.
+- The importer sets no `mime` (type guessing is machine-dependent). In the header, `files`
+  counts file entries in the whole tree and `bytes` is the root directory's `size`.
+- nu-tree walk and CAR pre-order: header → root; directory node → left subtree, then per
+  entry its target, its `meta` and its right subtree; file node → `src`.
+
 `meta` links a file or directory entry to an application metadata record: generic SHA-256
 DRISL of at most 64 KiB, such as a STAC item subset or a catalogue record. Metadata is
 structure. It is walked, pinned, transferred and diffed with the tree, and a metadata change
@@ -247,9 +277,8 @@ not depend on Amino; a routing fallback is not a second content model.
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes canonical MST/node encoding and overflow behavior, filename and
-symlink rules, exact `size` semantics, Bao multi-range framing, and tree proof/cursor
-validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
+precision work includes extraction rules (filenames, case, symlinks on export), Bao
+multi-range framing, and tree proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Logical size,
 unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches,
 export compatibility and no-copy invalidation remain to specify. Benchmarks must validate

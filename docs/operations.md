@@ -179,6 +179,45 @@ Extraction must reject path traversal and unsafe symlinks; cross-platform filena
 handling must report transformations rather than silently produce a different archive.
 OAuth/discovery SSRF and malicious endpoint validation are prerequisites for names.
 
+### Shared HTTPS source policy
+
+`httpsrc` is the common streaming GET client for URL ingest and future RASL/FISL/atproto
+consumers. HTTPS is mandatory unless explicitly configured otherwise. It uses no ambient
+proxy, cookies, credentials, decompression or connection reuse. Each connection resolves
+once, rejects any forbidden address in the answer, then dials a checked IP literal (TLS
+still authenticates the URL hostname). Loopback, private, link-local, unspecified,
+multicast, CGNAT, IPv4-mapped and special-use/transition addresses are denied; well-known
+NAT64 addresses are checked against their embedded IPv4, and local-use NAT64 is denied.
+Trusted configuration can exempt explicit IP prefixes. Per-call host allowlists are exact,
+case-insensitive hostnames/IP literals (a trailing DNS dot is ignored), not suffix matches;
+no list permits all hosts, an empty list permits none. Allowlisting does not exempt IP
+checks. Every redirect is checked before DNS/dial, with five hops by default. URLs are
+limited to 8 KiB and response headers to 64 KiB (Content-Range to 128 bytes).
+
+Calls require positive maximum bytes, overall timeout and network idle timeout. The byte
+budget includes any retained prefix; size overflow never writes beyond that budget. Sinks
+must cooperate with cancellation rather than block indefinitely. Body bytes stream to a
+caller-owned writer, with no whole-body buffer. A store import can feed `AddBlob(r, -1)`
+through `io.Pipe`, propagating fetch/store errors with `CloseWithError`; no store hook is
+required. Callers must not publish partial or failed transfers. Import policy chooses the
+BLAKE3 byte budget (there is no protocol cap); known-CID whole-object fetches and SHA-256
+imports retain the 8 MiB limit.
+
+Resume is caller-driven, using the previous final URL and retained prefix length. A strong
+ETag enables `Range`/`If-Range`; Last-Modified is usable only without any ETag and when the
+stored response Date is at least 60 seconds later (RFC 9110). Otherwise restart at zero.
+Redirects clear range validators; a `200` also resets the sink, never appends. A `206` must
+cover exactly the requested suffix through a declared total, within the size budget, with
+no contradictory validator. `416` and malformed ranges fail rather than imply completion.
+The result records final URL, ETag, Last-Modified, Date, content type and streamed size,
+including partial progress after body errors. Validators are not integrity proofs.
+
+Callers report verification failures against the **final origin**. The in-memory scoreboard
+marks it demoted for five minutes, retaining at most 256 origins (earliest expiry evicted).
+Schedulers may prefer other sources; fetching is not automatically forbidden. In-process
+tests assert that denied hosts never reach DNS/dial; private-mode packet-capture evidence
+remains part of the private-mode exit, not this package's acceptance evidence.
+
 ## Acceptance scenarios
 
 | Scenario | Required outcome |

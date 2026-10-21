@@ -2,10 +2,11 @@
 
 [Spec overview](../spec.md) · [Product brief](product.md) · [Operations](operations.md) · [Networking](networking.md)
 
-**No field NAT-traversal or scale results are recorded yet.** Specification figures are
-hypotheses and sizing targets, not measured capabilities. Record reproducible results here
-(or link reports indexed here), including negative results. Synthetic regression tests do
-not establish field success.
+**No field NAT-traversal or distributed scale results are recorded yet.** Local 10 GB
+and 1M-entry hardening measurements are recorded below; they do not establish field
+success. Specification figures remain hypotheses and sizing targets unless explicitly
+measured. Record reproducible results here (or link reports indexed here), including
+negative results.
 
 ## Libp2p container interop (2026-10-21)
 
@@ -833,3 +834,164 @@ scenarios](operations.md#acceptance-scenarios), interoperability, fault/security
 macOS/Linux portability, migration and recovery. User testing must include fresh users who
 have not read the protocol docs. Record confusing errors and manual workarounds as failures
 of the intended easy path, even when an expert can eventually complete the transfer.
+
+### Post-v0 hardening (0068, 2026-10-21)
+
+**Bounded local campaigns passed with the limitations below; this is not a public-preview
+exit declaration.** [Harnesses and exact reproduction commands](../experiments/hardening/README.md).
+Base `cf98ad8` plus this hardening change; Go 1.26.2, Linux 5.15.0-176-generic,
+amd64 AMD EPYC 9684X (192 logical CPUs visible, shared host, no pinned cores).
+Measurements use `GOMAXPROCS=4`; fuzzing uses two workers per target, four concurrent
+targets. Disk free was 87 GiB before builds, 85 GiB after campaigns/TempDir cleanup.
+Native arm64/macOS execution is **CI-only and unobserved**; no qemu-aarch64 binary was
+available. No production parser/store/transport bug was found or fixed in this campaign.
+
+| Item | Result / boundary |
+|---|---|
+| Fuzzing | **Pass:** all 37 discovered main-module targets, 60 s each, 75,645,569 executions; no crashers. Nightly runner defaults to 10 min/target, continues after failures and uploads logs plus Go's minimized `testdata/fuzz` seeds for review/commit. Default tests only replay seeds. |
+| Cross-implementation | **Pass with recorded oracle limitation:** 92 applicable DASL fixtures, independent CAR/SHA-256/BLAKE3 checks, indigo data model/repo checks and Rust bao-tree 16 KiB vectors. Prime negative-integer divergence and absence of upstream CAR fixtures are detailed below. |
+| Hash/Bao benchmarks | **Measured amd64; arm64 CI-only.** Opt-in benchmarks and three local repetitions below. |
+| MST fanout / 1M lookups | **Pass at measured scale; fanout 16 retained as a compromise**, not proven optimal. Three repetitions of real Go-source names, node_modules-like names and a flat 1M-entry tree. |
+| 10 GB scale | **Pass for local streaming and corrupt-provider recovery. Near-sum throughput NOT met:** 47.27 MB/s with two honest + one corrupt provider versus 73.72 MB/s single-provider; no independent-link field measurement. |
+| Store crash injection | **Pass within scope:** 48 child-process SIGKILL trials across add/pin/GC/ordered pin-switch workloads; integrity, durable pins, complete blob/outboard hashes, accounting and post-GC orphan removal checked on reopen. Not power-loss or atomic named-head switch evidence. |
+| Platforms | Nightly/on-demand native matrix: `macos-14` arm64, `macos-15-intel` amd64, `ubuntu-24.04-arm` arm64; asserts GOARCH. No native non-amd64 result is claimed until those jobs run. |
+
+All new expensive tests/benchmarks call `slow.Skip` (`NU_SLOW=1`). The dedicated
+`hardening` workflow is nightly/on-demand only, not a PR job. Local raw logs remain
+in ignored `.hardening/{fuzz,formats.log,indigo.log,hash-bench.log,mst-final.log,
+crash.log,scale.log}`; workflow publication/execution is unobserved because this branch
+has not been pushed. A scale runner with less than 35 GB free explicitly skips the
+10 GB scenario and must not be counted as a scale pass.
+
+#### DASL and independent format compliance
+
+Upstream `hyphacoop/dasl-testing` revision **fe880a1ef6891c22af02695d1d76430b9d8bfc91**
+was still HEAD when checked. All eleven fixture files are present, unmodified. The
+matrix includes every case; basic/dag-cbor/dasl-cid tags apply to Nu, other-profile-only
+CBOR-Core/dCBOR/CDE/RFC cases do not. `invalid_out` fixtures are unrepresentable in
+DRISL and are rejected by its strict decoder; encoder rejection is also covered by
+`core/drisl.TestEncodeRejects`. This is not a claim of those other CBOR profiles.
+
+| Fixture | Applicable cases, all pass | Other-profile only | Independent valid roundtrips |
+|---|---:|---:|---:|
+| cid | 12 | 0 | 2 (SHA-256 and BDASL BLAKE3) |
+| concat | 1 | 0 | 0 |
+| floats | 18 | 5 | 3 |
+| indefinite | 4 | 0 | 0 |
+| integer_range | 9 | 2 | 5 pass, 1 external divergence |
+| map_keys | 6 | 0 | 2 |
+| numeric_reduction | 0 | 4 | 0 |
+| short_form | 30 | 1 | 6 |
+| simple | 5 | 0 | 1 |
+| tags | 3 | 0 | 0 |
+| utf8 | 4 | 1 | 3 |
+| **Total** | **92** | **13** | **22 pass, 1 external divergence** |
+
+- **Independent DAG-CBOR:** go-ipld-prime **v0.24.0** decodes/re-encodes all valid
+  applicable fixtures. The sole divergence is `3bffffffffffffffff` (CBOR −2^64): its
+  generic decoder wraps to zero (`00`), while Nu preserves the full DRISL integer.
+  The harness explicitly recognizes this exact pinned-oracle defect, logs it, and
+  still requires Nu's byte-exact result. No broad error/fixture exemption is used.
+- **CAR:** upstream DASL has **no CAR fixture files** at this revision. Supplemental
+  `TestCARBothDirections` checks byte-identical CAR v1 output and independent reading
+  with go-car **v0.6.1-0.20230509095817-92d28eb23ba4**, for both raw SHA-256 and BLAKE3
+  payloads, including corrupted-payload rejection by Nu. Existing `core/car` tests
+  cover duplicate/unreferenced blocks, truncation and deliberate CARv2 rejection.
+  This supplements, rather than invents, an upstream CAR compliance suite.
+- **Indigo:** **ff87442ff936** (`experiments/go.mod`) and Nu agree on all three
+  JSON/CBOR/CID fixtures, five valid and twelve invalid data-model cases. The existing
+  500-record signed-repo load/verify and 30 randomized MST insert/delete/inversion
+  cross-checks also passed (0.047 s total). Format tests took 0.020 s.
+- **Bao:** cargo **1.96.0**, Rust bao-tree **0.16.1**, BLAKE3 **1.8.7**; committed
+  generator/lockfile and `testdata/vectors/bao/bao-tree-16k.json`. All ten boundary
+  sizes (empty through 278,535 bytes), ten roots/outboards and thirty full/first/last
+  slices matched at 16 KiB groups; generated slice bytes also verify in Nu. Headers
+  are normalized explicitly: bao-tree omits Nu's LE64 size prefix. This is independent
+  byte-parity evidence, not a runtime iroh dependency.
+
+#### Throughput and directory shape
+
+Eight-MiB in-memory input, one-second benchmarks, three repetitions, no disk/network
+I/O. BLAKE3 **9,003–9,103 MB/s** (median **9,055**); Bao pre-order outboard generation
+at 16 KiB groups **2,958–3,121 MB/s** (median **3,104**). Allocations respectively
+about 110 kB/1,082 allocs and 49 kB/1,025 allocs per operation. These are the existing
+Go implementation's costs, not a zero-allocation claim. Arm64 benchmarks are wired
+into native CI but have not been observed.
+
+MST measurements use the production directory codec with only `LevelBits` changed.
+Real input: `/usr/local/go/src`, **12,788 entries / 1,324 directories** (no local Linux
+kernel checkout found). Synthetic node_modules-like: **100,000 entries / 1,000 dirs**;
+flat synthetic: **1,000,000 entries / one dir**. Values are identical five-byte file
+entries, not actual file contents. Each run checks 1,000 deterministic lookups with a
+fresh tree handle (cold decoded-node cache, **memory** block store, not cold disk).
+Reported build/p50/p95 are medians of three repetitions; sizes/read counts are stable.
+
+| Shape | Fanout | Build (ms) | Encoded MB / blocks | Lookup p50 / p95 (µs) | Reads / bytes per lookup |
+|---|---:|---:|---:|---:|---:|
+| Go source | 16 | 27.3 | 1.086 / 2,088 | 14.4 / 87.8 | 1.18 / 411 |
+| Go source | 32 | 21.8 | 1.064 / 1,614 | 7.6 / 57.5 | 1.11 / 471 |
+| Go source | 4 | 24.5 | 1.177 / 4,285 | 10.9 / 48.3 | 1.46 / 319 |
+| node_modules-like | 16 | 159.9 | 9.645 / 8,235 | 73.7 / 239.3 | 2.23 / 3,082 |
+| node_modules-like | 32 | 161.2 | 9.494 / 5,005 | 102.9 / 296.4 | 2.01 / 4,396 |
+| node_modules-like | 4 | 193.3 | 10.544 / 27,380 | 45.0 / 96.7 | 3.48 / 1,807 |
+| flat 1M | 16 | 1,669.9 | 87.942 / 62,300 | 309.5 / 687.5 | 6.55 / 14,136 |
+| flat 1M | 32 | 1,377.8 | 86.485 / 31,268 | 472.1 / 1,097.8 | 5.61 / 22,310 |
+| flat 1M | 4 | 2,153.3 | 96.722 / 249,391 | 154.7 / 241.8 | 10.51 / 6,800 |
+
+Fanout 16 holds as a reasonable block-count/read-amplification compromise: 32 saves
+only 1.7% encoded space on 1M but decodes more bytes and has worse lookup latency;
+4 is faster in this memory-backed lookup test but has four times as many blocks and
+60% more block reads than 16. **16 is not a universal speed winner.** Update/diff
+costs, cold disk/remote block latency, an actual kernel checkout and real node_modules
+payload distributions remain unmeasured; no format default was changed. Maximum
+1M-node sizes were 15,876 / 30,606 / 5,077 bytes for fanouts 16 / 32 / 4, below the
+1 MiB cap. The million-entry tree itself is built in memory; constant-memory claims
+below concern file streaming, not tree construction.
+
+#### 10 GB and process-death scope
+
+One **10,000,000,000-byte** deterministic non-sparse file; all cat/get/fetch outputs
+checked for exact length and BLAKE3 digest. Four real nutest nodes, loopback QUIC,
+no artificial bandwidth/RTT/loss configuration. Provider A used a copied store; two
+other providers used the same local file via nocopy. A fresh client first fetched
+from A, then GC removed that copy before fetching from all three with one corrupting
+provider. Thus multiple sources do not have independent physical storage/bandwidth.
+The machine warned that only 416 KiB UDP receive buffer was available versus 7 MiB
+requested. First phases overlapped the end of the bounded fuzz campaign.
+
+| Phase | Seconds | MB/s | Sampled peak Go heap (MB) |
+|---|---:|---:|---:|
+| Node add + pin (copied, raw blob) | 89.92 | 111.21 | 4.27 |
+| Node cat + digest | 21.95 | 455.62 | 4.96 |
+| Node get to local file | 62.35 | 160.39 | 2.20 |
+| One peer fetch + final digest | 135.65 | 73.72 | 13.93 |
+| Three peers, one corrupt, fetch + final digest | 211.54 | 47.27 | 16.35 |
+
+The local add/cat/get heap deltas were **2.27 / 2.88 / 0.12 MB**, below the 48 MiB
+asserted bound. Sampling every 5 ms, soft Go memory limit 128 MiB; **not RSS/page-cache
+measurements**, and sub-sample transient allocations are not captured. Full scenario
+including source generation and verification: **591.85 s**. All temporary data was
+removed. The corrupt peer served four responses and was dropped on a Bao verification
+failure; correct bytes were recovered. Multi-source rate was **0.641× single-source**,
+not near the sum of two honest peers. This negative performance result is retained;
+independent-link aggregate-throughput acceptance remains unmet, not waived by the
+correctness test's pass. Longer soaks and field deployments remain unmeasured.
+
+Crash campaign: PCG seed 68/1, twelve trials per add/pin/GC/ordered-pin-switch workload,
+random 0–20 ms delay after child readiness, actual process kill and reopen. Initial
+state has 32 distinct 128 KiB blobs, two durably pinned; add loops stream 16 MiB blobs.
+All 48 trials passed in **9.54 s**. SQLite `integrity_check`, complete pinned walks,
+full blob/outboard verification, usage-counter recount, empty abandoned staging and
+post-GC orphan sweeping are asserted. Orphan files before GC are permitted by the
+store contract. **Limitations:** kills are scheduler-timed workload samples, not
+exhaustive transaction/fsync cut points; GC can finish before the kill. The switch
+workload is caller-side pin-new-before-unpin-old with baseline pins preserved, not
+cluster/collection head-switch atomicity. No power-cut, filesystem fault or disk-full
+campaign was run. These broader guarantees remain unproven.
+
+Verification before commit: `CGO_ENABLED=0 go vet ./...`, `staticcheck ./...`,
+`go test ./...` and `./scripts/depguard.sh` all passed. The separate format-oracle
+package passed vet/staticcheck/tests; Rust regeneration matched the golden file;
+Python/YAML parsed; a final one-second-per-target runner smoke and a second 48-kill
+campaign passed. No main-module dependencies or concurrent owners' production files
+were changed. The nightly/native workflows themselves remain unobserved.

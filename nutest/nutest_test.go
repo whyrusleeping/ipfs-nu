@@ -21,8 +21,12 @@ var smallRequests = fetch.Config{ChunkGroups: 4, PeerRequests: 1}
 func TestRestartMidTransfer(t *testing.T) {
 	started := time.Now()
 	n := nutest.New(t, 3, nutest.Options{Fetch: smallRequests})
-	if d := time.Since(started); d > time.Second {
+	// Startup is normally tens of milliseconds; the bound only catches gross regressions
+	// and stays loose because the full suite runs packages in parallel on shared CPUs.
+	if d := time.Since(started); d > 10*time.Second {
 		t.Fatalf("starting 3 nodes took %s", d)
+	} else {
+		t.Logf("started 3 nodes in %s", d)
 	}
 	n0, n1, n2 := n.Nodes[0], n.Nodes[1], n.Nodes[2]
 	data := n.RandBytes(1 << 20)

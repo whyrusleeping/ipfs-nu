@@ -380,7 +380,7 @@ port 1. Never advertise them, put them into shared caches/peer records, or send 
 removed reserved addresses to the OS. They are never reused within a socket's lifetime.
 `AddPeer`/`RemovePeer`, `SetDirectPaths`, `UseDirect`/`UseRelay` and `Paths` provide the
 control-plane seam: path candidates are not authorization. Defaults bound the socket to
-128 peers, 256 queued receive datagrams, 32 direct endpoints and 64 routed CIDs per peer.
+128 peers, 256 queued relay receive datagrams, 32 direct endpoints and 64 routed CIDs per peer.
 Each peer has at most one relay with a 64-datagram transmit queue and two I/O workers.
 `Relay.Done` signals failure; `Relay.Close` cancels/joins the leg without closing the
 logical PacketConn. The Host socket-policy hooks select the conservative inner config
@@ -437,8 +437,12 @@ The initial optimized adapter preserves physical/outer OOB, GSO and ECN. Inner d
 writes retain GSO segmentation but remove stale physical source/interface and ECN metadata;
 inner receives (relay or direct) expose no physical OOB. Inner ECN validation therefore
 falls back rather than pretending reliable-stream packets have meaningful IP marks.
-This is not a per-path ECN implementation. The extra bounded userspace receive/copy queue
-and synchronous CID observer have costs; near-raw throughput must be measured, not assumed.
+This is not a per-path ECN implementation. Physical `ReadBatch` receives directly into
+quic-go's buffers; do not swap their indexed ownership. Copy only queued relay frames
+and holes left by filtered/disco packets. A relay arrival wakes an idle physical read
+with a private deadline, without changing the logical caller deadline. There is no
+second UDP reader or direct-path userspace receive queue. The synchronous CID observer
+still incurs stock quic-go event-construction costs; near-raw throughput is not assumed.
 See [implementation and ownership](../p2p/magicsock/README.md),
 [core measurements](validation.md#nu-path-packet-core-0015-2026-10-21) and
 [stock-stack feasibility](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).

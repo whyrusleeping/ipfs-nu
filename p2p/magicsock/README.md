@@ -1,8 +1,8 @@
 # Magicsock / Nu-path packet core
 
 One `Conn` owns one UDP socket and implements `net.PacketConn`, quic-go's
-`OOBCapablePacketConn`, **and its explicit `ReadBatch` hook**. There is one physical
-receive loop. Real-address QUIC (including outer circuit connections and standard
+`OOBCapablePacketConn`, **and its explicit `ReadBatch` hook**. The quic-go read loop
+is the sole physical reader, receiving directly into its own batch buffers. Real-address QUIC (including outer circuit connections and standard
 libp2p peers), inner QUIC and disco envelopes share that socket and dispatcher.
 
 The wire contract is [D11](../../docs/networking.md#d11-nu-path). This is the packet
@@ -11,7 +11,7 @@ core, **not automatic traversal or public relay/session orchestration**.
 ## API / ownership
 
 - `New(Config{UDP: udp})`: takes ownership on success only. Defaults: 128 peers,
-  256 received packets, 64 queued transmit packets per relay. One relay per peer;
+  256 queued relay receive packets, 64 queued transmit packets per relay. One relay per peer;
   direct path sets have at most 32 endpoints; CID routing has at most 64 entries per
   peer. Limits are checked before allocation. `Close` interrupts I/O and joins workers.
 - `AddPeer(PeerID)` / `PeerAddr`: stable local-only `netip.AddrPort` per peer.
@@ -35,8 +35,9 @@ core, **not automatic traversal or public relay/session orchestration**.
 - `RemovePeer`: close its relay and discard routes/CIDs; applications must also
   revoke/close the authenticated host connection if removing membership.
 - `WriteDisco` / `ReadDisco(ctx, buffer)`: bounded socket envelope only. Physical
-  source addresses survive demux. There are no automatic responses, MAC checks,
-  destination authorization or path changes; those belong to 0017.
+  source addresses survive demux. UDP demux is driven by the active QUIC read loop;
+  ReadDisco is not a second socket reader. There are no automatic responses, MAC
+  checks, destination authorization or path changes; those belong to 0017.
 - `Stats`: counters and peer/CID counts, not a reachability or authentication claim.
 
 Relay writers are independent and bounded. Overflow drops QUIC datagrams rather
@@ -74,8 +75,21 @@ super-packets into complete frames. Inner direct writes preserve GSO but discard
 and stale source/interface metadata; inner receives have no physical OOB metadata.
 This deliberately leaves inner ECN unavailable (QUIC validation falls back), instead
 of pretending reliable-stream packets have meaningful IP ECN marks. Kernel batched
-receive and the explicit virtualized `ReadBatch` remain active. There is an extra
-bounded userspace receive/copy queue: **near-raw throughput is not yet established**.
+receive and the explicit virtualized `ReadBatch` remain active. Normal UDP batches
+have no intermediate copy, pooled receive buffer or per-packet channel hand-off.
+Filtering holes are compacted by copying, never swapping quic-go's buffer pointers.
+A queued relay arrival interrupts an idle fd read using a private deadline, without
+expiring the caller's logical deadline; relay frames alone use the receive/copy queue.
+CID keys are inline values, virtual source addresses are allocated per peer/batch,
+and GSO control messages are borrowed views rather than rebuilt allocations.
+
+**The original ~5% versus uninstrumented raw QUIC target remains unmet.** Profiling
+and a raw-socket/no-op-observer control attribute the remaining ~16–22% measured gap
+to stock quic-go's full qlog event construction required by CID tracking, rather than
+lost batching/GSO or the removed queue. The optimized adapter is approximately on par
+with that instrumented raw control. See the [profiling report and proposed acceptance
+split](../../docs/validation.md#nu-path-throughput-profiling-0015-2026-10-21);
+that proposal does not silently redefine or close the original criterion.
 
 ## Next owners
 

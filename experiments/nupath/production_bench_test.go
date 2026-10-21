@@ -11,6 +11,8 @@ import (
 	"time"
 
 	quic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/whyrusleeping/nu/nutest/slow"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -32,15 +34,14 @@ func benchTLS(b *testing.B) (*tls.Config, wire.PeerID) {
 	}}, key.Public().PeerID()
 }
 
-// Opt-in because this is a throughput measurement, not a correctness gate. Both
-// sides use the same 1200-byte QUIC budget; compile/setup is outside the timer.
+// Opt-in because this is a throughput measurement, not a correctness gate.
+// Raw / RawObserver / VirtualDirect use identical fixed 1200-byte budgets and
+// flow windows. RawPMTU separately measures the stock packet-policy advantage.
+// Compile/setup is outside the timer; report observer cost, not just wrapping.
 func BenchmarkProductionPaths(b *testing.B) {
 	slow.Skip(b)
-	for _, virtual := range []bool{false, true} {
-		name := "Raw"
-		if virtual {
-			name = "VirtualDirect"
-		}
+	for _, name := range []string{"Raw", "RawObserver", "VirtualDirect", "RawPMTU"} {
+		virtual := name == "VirtualDirect"
 		b.Run(name, func(b *testing.B) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -60,7 +61,15 @@ func BenchmarkProductionPaths(b *testing.B) {
 			var ma, mb *magicsock.Conn
 			remote := ub.LocalAddr()
 			acfg := &quic.Config{InitialPacketSize: 1200, DisablePathMTUDiscovery: true, MaxStreamReceiveWindow: 1 << 20, MaxConnectionReceiveWindow: 4 << 20}
+			if name == "RawPMTU" {
+				acfg.InitialPacketSize = 0
+				acfg.DisablePathMTUDiscovery = false
+			}
 			bcfg := acfg.Clone()
+			if name == "RawObserver" {
+				acfg.Tracer = func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace { return discardQUICTrace{} }
+				bcfg.Tracer = acfg.Tracer
+			}
 			if virtual {
 				ma, err = magicsock.New(magicsock.Config{UDP: ua})
 				if err != nil {
@@ -117,8 +126,12 @@ func BenchmarkProductionPaths(b *testing.B) {
 				if err = mb.SetDirectPaths(aid, []netip.AddrPort{ua.LocalAddr().(*net.UDPAddr).AddrPort()}); err != nil {
 					b.Fatal(err)
 				}
-				_ = ma.UseDirect(bid, ub.LocalAddr().(*net.UDPAddr).AddrPort())
-				_ = mb.UseDirect(aid, ua.LocalAddr().(*net.UDPAddr).AddrPort())
+				if err = ma.UseDirect(bid, ub.LocalAddr().(*net.UDPAddr).AddrPort()); err != nil {
+					b.Fatal(err)
+				}
+				if err = mb.UseDirect(aid, ua.LocalAddr().(*net.UDPAddr).AddrPort()); err != nil {
+					b.Fatal(err)
+				}
 			}
 			const size = 4 << 20
 			payload := make([]byte, size)
@@ -129,8 +142,11 @@ func BenchmarkProductionPaths(b *testing.B) {
 					if err != nil {
 						return
 					}
-					_, err = io.Copy(io.Discard, s)
-					done <- err
+					n, copyErr := io.Copy(io.Discard, s)
+					if copyErr == nil && n != size {
+						copyErr = io.ErrUnexpectedEOF
+					}
+					done <- copyErr
 				}
 			}()
 			b.SetBytes(size)
@@ -151,6 +167,25 @@ func BenchmarkProductionPaths(b *testing.B) {
 				}
 			}
 			b.StopTimer()
+			if client.ConnectionState().GSO && server.ConnectionState().GSO {
+				b.ReportMetric(1, "GSO")
+			}
+			stats := client.ConnectionStats()
+			b.ReportMetric(float64(stats.BytesSent)/float64(stats.PacketsSent), "tx-bytes/pkt")
+			b.ReportMetric(float64(stats.PacketsLost+server.ConnectionStats().PacketsLost)/float64(b.N), "lost/op")
+			if virtual {
+				b.ReportMetric(float64(ma.Stats().Dropped+mb.Stats().Dropped)/float64(b.N), "adapter-drops/op")
+			}
 		})
 	}
 }
+
+// Control: force stock quic-go's same public qlog event construction, but do no
+// CID routing, socket wrapping, channel hand-off, or serialization. There is no
+// public CID-only event filter in v0.64.1; the construction cost is in quic-go.
+type discardQUICTrace struct{}
+
+func (discardQUICTrace) SupportsSchemas(s string) bool      { return s == qlog.EventSchema }
+func (d discardQUICTrace) AddProducer() qlogwriter.Recorder { return d }
+func (discardQUICTrace) RecordEvent(qlogwriter.Event)       {}
+func (discardQUICTrace) Close() error                       { return nil }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 	"net/netip"
-	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -25,7 +24,9 @@ var ErrPeer = errors.New("magicsock: unknown or mismatched peer")
 var ErrRelayExists = errors.New("magicsock: detach existing relay before attaching another")
 
 // Config owns one UDP socket. New takes ownership on success only. Zero limits
-// select defaults. A path set is authorization, not an untrusted address hint.
+// select defaults. ReceiveQueue bounds relay injection; direct UDP is received
+// into the QUIC caller's buffers, without a second userspace queue. A path set
+// is authorization, not an untrusted address hint.
 type Config struct {
 	UDP                                *net.UDPConn
 	MaxPeers, ReceiveQueue, RelayQueue int
@@ -41,21 +42,7 @@ type cidRoute struct {
 	peer  *Peer
 	owner *cidTrace
 }
-type recvBuffer struct {
-	b   [2048]byte
-	oob [128]byte
-}
-
-var receivePool = sync.Pool{New: func() any { return new(recvBuffer) }}
-
-func releasePacket(d datagram) {
-	if d.buffer != nil {
-		receivePool.Put(d.buffer)
-	}
-}
-
 type datagram struct {
-	buffer *recvBuffer
 	b, oob []byte
 	addr   net.Addr
 	flags  int
@@ -66,11 +53,14 @@ type datagram struct {
 // reader of UDP; give Conn, not the underlying socket, to quic-go.
 type Conn struct {
 	udp                         *net.UDPConn
+	packetUDP                   *ipv4.PacketConn
+	readMu                      sync.Mutex // serializes physical reads and caller-owned batch buffers
+	readingUDP                  bool       // protected by mu; relay enqueue wakes an outstanding fd read
 	maxPeers, relayQueue        int
 	mu                          sync.Mutex
 	peers                       map[wire.PeerID]*Peer
 	virtual                     map[netip.AddrPort]*Peer
-	cids                        map[string]cidRoute
+	cids                        map[cidKey]cidRoute
 	next                        uint32
 	closed                      bool
 	incoming                    chan datagram
@@ -79,7 +69,6 @@ type Conn struct {
 	readDone                    chan struct{}
 	readErr                     error
 	readDeadline, writeDeadline time.Time
-	deadlineChanged             chan struct{}
 	wg                          sync.WaitGroup
 	closeOnce                   sync.Once
 	dropped                     atomic.Uint64
@@ -104,9 +93,7 @@ func New(cfg Config) (*Conn, error) {
 	if cfg.MaxPeers > 65536 || cfg.ReceiveQueue > 65536 || cfg.RelayQueue > 4096 {
 		return nil, ErrLimit
 	}
-	c := &Conn{udp: cfg.UDP, maxPeers: cfg.MaxPeers, relayQueue: cfg.RelayQueue, peers: make(map[wire.PeerID]*Peer), virtual: make(map[netip.AddrPort]*Peer), cids: make(map[string]cidRoute), incoming: make(chan datagram, cfg.ReceiveQueue), disco: make(chan datagram, 32), done: make(chan struct{}), readDone: make(chan struct{}), deadlineChanged: make(chan struct{})}
-	c.wg.Add(1)
-	go c.receiveUDP()
+	c := &Conn{udp: cfg.UDP, packetUDP: ipv4.NewPacketConn(cfg.UDP), maxPeers: cfg.MaxPeers, relayQueue: cfg.RelayQueue, peers: make(map[wire.PeerID]*Peer), virtual: make(map[netip.AddrPort]*Peer), cids: make(map[cidKey]cidRoute), incoming: make(chan datagram, cfg.ReceiveQueue), disco: make(chan datagram, 32), done: make(chan struct{}), readDone: make(chan struct{})}
 	return c, nil
 }
 
@@ -309,9 +296,10 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 		return net.ErrClosed
 	}
 	c.readDeadline = t
-	close(c.deadlineChanged)
-	c.deadlineChanged = make(chan struct{})
-	return nil
+	if c.readingUDP && len(c.incoming) > 0 {
+		t = time.Now()
+	}
+	return c.udp.SetReadDeadline(t)
 }
 func (c *Conn) SetWriteDeadline(t time.Time) error {
 	c.mu.Lock()
@@ -345,8 +333,10 @@ func (c *Conn) Close() error {
 			r.Close()
 		}
 		c.wg.Wait()
+		c.readMu.Lock()
 		drainPackets(c.incoming)
 		drainPackets(c.disco)
+		c.readMu.Unlock()
 		c.mu.Lock()
 		clear(c.peers)
 		clear(c.virtual)
@@ -358,8 +348,7 @@ func (c *Conn) Close() error {
 func drainPackets(ch chan datagram) {
 	for {
 		select {
-		case d := <-ch:
-			releasePacket(d)
+		case <-ch:
 		default:
 			return
 		}
@@ -379,107 +368,18 @@ func (c *Conn) Stats() Stats {
 func (c *Conn) deliver(d datagram) {
 	select {
 	case <-c.done:
-		releasePacket(d)
 		return
 	default:
 	}
 	select {
 	case c.incoming <- d:
 		c.received.Add(1)
+		c.mu.Lock()
+		if c.readingUDP {
+			_ = c.udp.SetReadDeadline(time.Now())
+		}
+		c.mu.Unlock()
 	default:
-		releasePacket(d)
 		c.dropped.Add(1)
 	}
-}
-func (c *Conn) nextPacket() (datagram, error) {
-	for {
-		c.mu.Lock()
-		deadline, changed, closed, readErr := c.readDeadline, c.deadlineChanged, c.closed, c.readErr
-		c.mu.Unlock()
-		if readErr != nil {
-			return datagram{}, readErr
-		}
-		if closed {
-			return datagram{}, net.ErrClosed
-		}
-		var timer *time.Timer
-		var timeout <-chan time.Time
-		if !deadline.IsZero() {
-			if time.Until(deadline) <= 0 {
-				return datagram{}, os.ErrDeadlineExceeded
-			}
-			timer = time.NewTimer(time.Until(deadline))
-			timeout = timer.C
-		}
-		var d datagram
-		var err error
-		retry := false
-		select {
-		case <-c.done:
-			err = net.ErrClosed
-		case <-changed:
-			retry = true
-		case <-c.readDone:
-			retry = true
-		case <-timeout:
-			err = os.ErrDeadlineExceeded
-		case d = <-c.incoming:
-		}
-		if timer != nil {
-			timer.Stop()
-		}
-		if !retry {
-			return d, err
-		}
-	}
-}
-func (c *Conn) ReadFrom(b []byte) (int, net.Addr, error) {
-	n, _, _, a, err := c.ReadMsgUDP(b, nil)
-	return n, a, err
-}
-func (c *Conn) ReadMsgUDP(b, oob []byte) (int, int, int, *net.UDPAddr, error) {
-	d, err := c.nextPacket()
-	if err != nil {
-		return 0, 0, 0, nil, err
-	}
-	n, nn := copy(b, d.b), copy(oob, d.oob)
-	releasePacket(d)
-	return n, nn, d.flags, d.addr.(*net.UDPAddr), nil
-}
-
-// Explicit ReadBatch is essential: x/net must never unwrap our fd and bypass
-// CID routing or relay injection. Drain immediately available messages in bulk.
-func (c *Conn) ReadBatch(ms []ipv4.Message, _ int) (int, error) {
-	if len(ms) == 0 {
-		return 0, nil
-	}
-	d, err := c.nextPacket()
-	if err != nil {
-		return 0, err
-	}
-	for i := range ms {
-		if i > 0 {
-			select {
-			case d = <-c.incoming:
-			default:
-				return i, nil
-			}
-		}
-		m := &ms[i]
-		m.N = 0
-		remaining := d.b
-		for _, b := range m.Buffers {
-			n := copy(b, remaining)
-			m.N += n
-			remaining = remaining[n:]
-			if len(remaining) == 0 {
-				break
-			}
-		}
-		m.NN = copy(m.OOB, d.oob)
-		m.Addr = d.addr
-		m.Flags = d.flags
-		releasePacket(d)
-	}
-	return len(ms), nil
 }

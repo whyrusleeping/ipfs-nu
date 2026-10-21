@@ -1,97 +1,35 @@
 package magicsock
 
 import (
-	"bytes"
 	"net"
 	"os"
 	"syscall"
 	"time"
 
-	"golang.org/x/net/ipv4"
+	quic "github.com/quic-go/quic-go"
 )
 
-func destinationCID(b []byte) (string, bool) {
+// A comparable inline CID avoids converting every UDP header into a heap string.
+type cidKey = quic.ConnectionID
+
+func destinationCID(b []byte) (cidKey, bool) {
 	if len(b) < 1 || b[0]&0x40 == 0 {
-		return "", false
+		return cidKey{}, false
 	}
 	if b[0]&0x80 != 0 {
 		if len(b) < 6 {
-			return "", false
+			return cidKey{}, false
 		}
 		n := int(b[5])
 		if n == 0 || n > 20 || len(b) < 6+n {
-			return "", false
+			return cidKey{}, false
 		}
-		return string(b[6 : 6+n]), true
+		return quic.ConnectionIDFromBytes(b[6 : 6+n]), true
 	}
 	if len(b) < 1+ConnectionIDLength {
-		return "", false
+		return cidKey{}, false
 	}
-	return string(b[1 : 1+ConnectionIDLength]), true
-}
-func (c *Conn) receiveUDP() {
-	defer c.wg.Done()
-	pc := ipv4.NewPacketConn(c.udp)
-	ms := make([]ipv4.Message, 16)
-	for i := range ms {
-		ms[i].Buffers = [][]byte{make([]byte, 2048)}
-		ms[i].OOB = make([]byte, 128)
-	}
-	for {
-		n, err := pc.ReadBatch(ms, 0)
-		if err != nil {
-			c.mu.Lock()
-			c.readErr = err
-			c.mu.Unlock()
-			close(c.readDone)
-			return
-		}
-		for i := 0; i < n; i++ {
-			m := &ms[i]
-			b := m.Buffers[0][:m.N]
-			if len(b) >= 4 && bytes.Equal(b[:4], discoMagic[:4]) {
-				payload, err := DecodeDisco(b)
-				if err != nil {
-					c.dropped.Add(1)
-					continue
-				}
-				select {
-				case c.disco <- datagram{b: append([]byte(nil), payload...), addr: m.Addr}:
-				default:
-					c.dropped.Add(1)
-				}
-				continue
-			}
-			a, ok := addrPort(m.Addr)
-			if !ok {
-				continue
-			}
-			var peer *Peer
-			if cid, ok := destinationCID(b); ok {
-				c.mu.Lock()
-				route, exists := c.cids[cid]
-				if exists {
-					if !route.peer.direct[a] {
-						c.mu.Unlock()
-						c.dropped.Add(1)
-						continue
-					}
-					peer = route.peer
-				}
-				c.mu.Unlock()
-			}
-			addr := m.Addr
-			oob := m.OOB[:m.NN]
-			if peer != nil {
-				addr = net.UDPAddrFromAddrPort(peer.addr)
-				oob = nil
-			}
-			buffer := receivePool.Get().(*recvBuffer)
-			copy(buffer.b[:], b)
-			copy(buffer.oob[:], oob)
-			c.deliver(datagram{buffer: buffer, b: buffer.b[:len(b)], oob: buffer.oob[:len(oob)], addr: addr, flags: m.Flags})
-		}
-	}
+	return quic.ConnectionIDFromBytes(b[1 : 1+ConnectionIDLength]), true
 }
 func (c *Conn) WriteTo(b []byte, a net.Addr) (int, error) {
 	u, ok := a.(*net.UDPAddr)

@@ -55,7 +55,8 @@ func TestBoundsDemuxDeadlines(t *testing.T) {
 	// QUIC-visible migration; unrelated physical traffic still passes unchanged.
 	c.mu.Lock()
 	p := c.peers[id]
-	c.cids["abcdefgh"] = cidRoute{peer: p}
+	key, _ := destinationCID([]byte("\x40abcdefgh"))
+	c.cids[key] = cidRoute{peer: p}
 	c.mu.Unlock()
 	sender := socket(t)
 	_, err = sender.WriteToUDP([]byte("\x40abcdefghgarbage"), c.LocalAddr().(*net.UDPAddr))

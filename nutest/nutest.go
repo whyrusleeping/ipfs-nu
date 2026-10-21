@@ -78,6 +78,10 @@ func New(t testing.TB, n int, opts ...Options) *Network {
 		o.Seed = 1
 	}
 	nw := &Network{T: t, Opts: o, rng: rand.New(rand.NewSource(o.Seed))}
+	// The first TempDir call registers the directory's removal. Cleanups run last in,
+	// first out, so it must come before the cleanup that stops the nodes: otherwise the
+	// directories are removed while the nodes still write to them ("directory not empty").
+	_ = t.TempDir()
 	t.Cleanup(func() {
 		if t.Failed() {
 			nw.Dump()

@@ -182,6 +182,9 @@ func (m *Sessions) AddHints(ctx context.Context, hints []lookup.Hint) error {
 			if err != nil {
 				return err
 			}
+			if remote, _, _, err := dialAddress(a); err == nil && m.host.IsLocalOnlyAddress(remote) {
+				return wire.ErrFormat
+			}
 			normalized = append(normalized, a)
 		}
 		// Recheck membership and commit under one lock: an untrusted hint must

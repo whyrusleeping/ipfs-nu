@@ -27,6 +27,17 @@ func (c *Conn) Context() context.Context  { return c.quic.Context() }
 func (c *Conn) LocalAddr() net.Addr       { return c.quic.LocalAddr() }
 func (c *Conn) RemoteAddr() net.Addr      { return c.quic.RemoteAddr() }
 func (c *Conn) Close() error              { return c.quic.CloseWithError(0, "closed") }
+
+// ExportKeyingMaterial derives protocol-specific key material from the already
+// authenticated inner TLS session. Callers choose a domain-separated label;
+// this is not permission to probe destinations (0017 owns that policy).
+func (c *Conn) ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error) {
+	if length < 1 || length > 1024 {
+		return nil, wire.ErrLimit
+	}
+	state := c.quic.ConnectionState().TLS
+	return state.ExportKeyingMaterial(label, context, length)
+}
 func (c *Conn) reserveStream() (*Stream, error) {
 	h := c.host
 	for {

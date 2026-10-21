@@ -68,3 +68,21 @@ bounded packet channels and separate reliable readers/writers. Finite PacketConn
 deadlines are explicitly unsupported in this disposable adapter. The tests close it
 before closing its QUIC Transport. Production code needs full deadline/lifecycle
 semantics and per-peer routing/budgets, not a copy of this adapter.
+
+## Production-core follow-up (0015)
+
+`interop_test.go` independently checks the real production adapter's physical QUIC
+pass-through and `/nu/qpath/1` rejection by go-libp2p v0.50.0. Run only that fast
+check with `go test -run '^TestQpathDeclined$' -count=1 -v ./nupath`.
+`production_bench_test.go` compares raw QUIC with production virtual-direct QUIC,
+using the same 1200-byte packet budget and eight-byte local CID length. It is
+opt-in via `slow.Skip`; for the bounded recorded measurement run:
+
+```sh
+NU_SLOW=1 GOMAXPROCS=4 go test -run '^$' -bench '^BenchmarkProductionPaths$' -benchtime=100ms -count=3 ./nupath
+```
+
+The ~5% overhead target is **not met**; see the
+[production-core report](../../docs/validation.md#nu-path-packet-core-0015-2026-10-21).
+Neither file changes the disposable 0038 adapter or its framing into a production
+transport. Production correctness tests live in `p2p/magicsock` and `p2p/proto/qpath`.

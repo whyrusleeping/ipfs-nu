@@ -180,7 +180,15 @@ func New(cfg Config) (h *Host, err error) {
 			context.AfterFunc(ctx, h.releaseConnection)
 			return ctx, nil
 		}}
-		e.listener, err = e.transport.Listen(h.tls, h.quic)
+		listenConfig := h.quic
+		if policy, ok := e.socket.(PacketConnPolicy); ok {
+			e.transport.ConnectionIDLength = 8 // Shared-socket virtual CID routing contract.
+			listenConfig = h.quic.Clone()
+			listenConfig.GetConfigForClient = func(info *quic.ClientInfo) (*quic.Config, error) {
+				return policy.QUICConfigForPeer(info.RemoteAddr, h.quic), nil
+			}
+		}
+		e.listener, err = e.transport.Listen(h.tls, listenConfig)
 		if err != nil {
 			return h, err
 		}
@@ -314,6 +322,16 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, ep := range h.endpoints {
+		if policy, ok := ep.socket.(PacketConnPolicy); ok {
+			remote := qc.RemoteAddr().(*net.UDPAddr)
+			if (remote.IP.To4() != nil) == (ep.family == 4) {
+				if err := policy.VerifyPeerAddress(remote, key.PeerID()); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	c := &Conn{host: h, quic: qc, peer: key.PeerID(), key: key, outbound: outbound, streams: make(map[*Stream]struct{})}
 	for {
 		version, err := h.checkPeerVersion(c.peer)
@@ -417,6 +435,11 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 	if ep == nil {
 		return nil, errors.New("host: no socket for remote address family")
 	}
+	if policy, ok := ep.socket.(PacketConnPolicy); ok {
+		if err := policy.VerifyPeerAddress(remote, id); err != nil {
+			return nil, err
+		}
+	}
 	if err := h.reserveConnection(); err != nil {
 		return nil, err
 	}
@@ -439,7 +462,11 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 	defer cancel()
 	stop := context.AfterFunc(h.ctx, cancel)
 	defer stop()
-	qc, err := ep.transport.Dial(dialCtx, remote, tlsConfig, h.quic)
+	dialConfig := h.quic
+	if policy, ok := ep.socket.(PacketConnPolicy); ok {
+		dialConfig = policy.QUICConfigForPeer(remote, h.quic)
+	}
+	qc, err := ep.transport.Dial(dialCtx, remote, tlsConfig, dialConfig)
 	if err != nil {
 		h.releaseConnection()
 		select {

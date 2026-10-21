@@ -219,6 +219,70 @@ address-change publisher lifecycle, public TLS/authoritative-DNS deployment and 
 admission/rate policy. DNSSEC and persistent lookup-directory anti-replay are not claimed.
 Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
 
+## Nu-path packet core (0015, 2026-10-21)
+
+**Functional packet core implemented; near-raw throughput acceptance remains unmet.**
+Production code is in `p2p/magicsock` and `p2p/proto/qpath`; no fork or new dependency.
+[API, ownership, limits and next-owner seams](../p2p/magicsock/README.md) ·
+[final framing and socket contract](networking.md#d11-nu-path).
+Environment/dependencies are those of 0038 above, based on `f0c0bed` plus this work.
+Unlike the spike, each private host has **one** UDP socket and QUIC dispatcher for both
+outer circuit QUIC and inner virtual-peer QUIC. Ordinary direct peers remain physical.
+
+Fast acceptance evidence:
+
+- `go test ./p2p/magicsock ./p2p/proto/qpath`: one application stream echoes verified
+  bytes across relay → direct → relay → a newly negotiated relay leg. Both endpoint
+  connections retain their virtual addresses and authenticated PeerIds. The outer
+  relay connection remains physical. Issued CIDs (not just handshake CIDs) are routed;
+  retirement/close releases them. The inner TLS exporters match. Explicit virtual
+  Session hints work but are not persisted in the verified-address cache or accepted
+  as discovery hints; identify omits virtual observed addresses.
+- Unit/fuzz **seeds** bound qpath/disco decoding, reject malformed/partial frames and
+  unauthorized direct-source CID traffic, prevent live relay replacement by asserted
+  metadata, enforce relay backpressure, and exercise logical read deadlines and
+  virtual-address removal/non-reuse. A Linux GSO test splits a 3000-byte super-packet
+  into 1200/1200/600-byte relay frames. Physical OOB is retained; inner ECN remains
+  deliberately unavailable rather than being copied across reliable framing.
+- `go test -tags natlab -run '^TestQpathNAT$' -count=1 -v ./p2p/proto/qpath` passed
+  rootless in **0.68 s** (0.65 s isolated scenario). Two private EIM/APDF NAT fixtures
+  and a public circuit relay: one authenticated inner stream survived relayed setup,
+  direct upgrade, an actual nft direct-pair block, explicit relay fallback and a
+  20 ms WAN interface down/up. Scripted simultaneous socket probes had public NAT
+  sources checked; the direct phase took **2.5 ms** after explicit selection. Both
+  endpoints sent direct and relay packets; zero adapter-queue drops in this run.
+  Detection, endpoint authentication and selection were scripted, not 0017 disco.
+- `cd experiments && go test -run '^TestQpathDeclined$' -count=1 -v ./nupath` passed
+  in **0.02 s** against go-libp2p **v0.50.0**. Real-address QUIC passed through the
+  wrapper, and an upstream peer reached through a real Nu circuit reservation
+  answered security-protocol `/nu/qpath/1` with `na`. No virtual slot was allocated
+  and no standard Noise/yamux fallback was attempted.
+- Race-enabled tests passed for magicsock, qpath, host and core proto. Darwin arm64
+  cross-build passed; this is not macOS runtime/offload evidence. Vet/staticcheck
+  include the new tagged lab. The normal pre-commit suite and depguard passed after
+  one unrelated `cluster.TestPrivateCluster` TempDir cleanup failure on the first
+  full run (`directory not empty`); no cluster/node/store files were changed.
+
+**Performance gap, not a successful ~5% result:** the opt-in
+`BenchmarkProductionPaths` in `experiments/nupath` uses `slow.Skip`. Reproduce the
+bounded check with `NU_SLOW=1 GOMAXPROCS=4 go test -run '^$' -bench
+'^BenchmarkProductionPaths$' -benchtime=100ms -count=3 ./nupath`. Four-MiB streams,
+identical fixed 1200-byte packet budgets and eight-byte local CIDs; setup is outside
+measurement. On the final bounded check, raw QUIC measured **822–873 MB/s** (median
+862), virtual direct **455–500 MB/s** (median 483), roughly **44% lower median
+throughput**. This short shared-machine microbenchmark is not field capacity, but it
+plainly does not satisfy the original near-raw target. The extra receive/copy queue
+and CID-observer path need profiling/optimization; do not hide the result by comparing
+to a differently configured raw transport. No long lossy/performance pass was run.
+
+Deferred: authenticated/replay-resistant/destination-authorized disco and automatic
+path selection/heartbeats (0017); public setup admission, home/backup relay lifecycle,
+racing, reattachment/crossed-attempt policy (0020); physical socket replacement,
+multihomed OOB/ECN behavior, performance tuning and long reliable-relay loss/capacity
+measurements. Qpath setup by itself never authorizes serving content. The default
+stack does not enable public Nu-path orchestration or silently claim this remaining
+throughput criterion is complete.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

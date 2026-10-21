@@ -81,7 +81,7 @@ type Status struct {
 	StructureMissing int
 	Reason, Detail   string
 	Need             int64 // bytes needed when paused for storage (S7)
-	Protection           Protection
+	Protection       Protection
 	// Reported is the report this status yields.
 	Reported cluster.Report
 }

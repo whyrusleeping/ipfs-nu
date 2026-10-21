@@ -55,15 +55,139 @@ type MetadataState struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
-// ContentState is the content side of a status. Placement and readiness evidence are
-// not implemented yet, so State is "not_tracked" (or "none" with no head). 0046 gives
-// State the docs/operations.md E-rule vocabulary (syncing, held, ready, degraded, unknown,
-// policy_unsatisfiable, paused, error) and adds the W3 wait fields (target, mode, epoch,
-// policy, confirmed, required, missing, extra, evidence_age, unmet); any state other than
-// "ready" is not ready.
+// ContentState is the content side of a dataset status (docs/operations.md "Readiness
+// and status"): State is ready, syncing, unknown, degraded, policy_unsatisfiable, paused
+// or error ("none" without a head); any state other than "ready" is not ready. The W3
+// fields say why: the exact Target, the report Mode, placement Epoch and Policy hash it
+// is evaluated for, the owners Confirmed by fresh complete reports out of Required, the
+// owners still Missing with their reason (stale, incomplete, epoch, absent), Extra fresh
+// complete reports from non-owners (never counted), the age of the oldest counted report
+// and the Unmet requirements. A head write's Metadata and its Content are separate
+// results (E10).
 type ContentState struct {
-	State  string `json:"state"`
-	Detail string `json:"detail,omitempty"`
+	State       string         `json:"state"`
+	Detail      string         `json:"detail,omitempty"`
+	Target      string         `json:"target,omitempty"`
+	Mode        string         `json:"mode,omitempty"`
+	Epoch       string         `json:"epoch,omitempty"`
+	Policy      string         `json:"policy,omitempty"`
+	Confirmed   []Confirmation `json:"confirmed"`
+	Required    int            `json:"required"`
+	Missing     []MissingOwner `json:"missing"`
+	Extra       []Confirmation `json:"extra"`
+	EvidenceAge int64          `json:"evidence_age_ms"`
+	Unmet       []string       `json:"unmet"`
+	// LastReady is the last time this node saw Target ready (E8: kept beside a later
+	// unknown or degraded result).
+	LastReady *LastReady `json:"last_ready,omitempty"`
+	// Local is this node's own sync of the dataset; Release its protected versions.
+	Local   *LocalSync    `json:"local,omitempty"`
+	Release *ReleaseState `json:"release,omitempty"`
+}
+
+// Confirmation is one counted (or extra) fresh complete report.
+type Confirmation struct {
+	Peer  string `json:"peer"`
+	Seq   int64  `json:"seq"`
+	AgeMS int64  `json:"age_ms"`
+}
+
+// MissingOwner is an owner without a counted report: stale, incomplete, epoch (bound to
+// another epoch, policy or mode) or absent (no report for this target).
+type MissingOwner struct {
+	Peer   string `json:"peer"`
+	Reason string `json:"reason"`
+}
+
+// LastReady is the last ready evaluation of a target on this node.
+type LastReady struct {
+	Target        string    `json:"target"`
+	Epoch         string    `json:"epoch"`
+	EvidenceAgeMS int64     `json:"evidence_age_ms"`
+	At            time.Time `json:"at"`
+}
+
+// LocalSync is this member's own sync of a dataset: the target it works toward (under
+// first-held protection a staged head; Observed is then the head it only observes),
+// whether it owns blobs there (mode owned) or only holds them (full), its completeness,
+// and when paused the reason and bytes needed (S7).
+type LocalSync struct {
+	Target   string `json:"target"`
+	Observed string `json:"observed,omitempty"`
+	Mode     string `json:"mode"`
+	State    string `json:"state"`
+	Complete bool   `json:"complete"`
+	Owned    Counts `json:"owned"`
+	Missing  Counts `json:"missing"`
+	Reason   string `json:"reason,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	Need     int64  `json:"need,omitempty"`
+}
+
+// Counts is a number of blobs and their bytes.
+type Counts struct {
+	Blobs int64 `json:"blobs"`
+	Bytes int64 `json:"bytes"`
+}
+
+// ReleaseState lists the versions this node keeps pinned for a dataset. Release is
+// automatic only once release.auto is enabled (off by default: candidates are listed,
+// nothing is released).
+type ReleaseState struct {
+	Auto       bool     `json:"auto"`
+	Ready      string   `json:"ready,omitempty"` // last policy-ready head
+	Held       string   `json:"held,omitempty"`  // last fully held target
+	Staged     []string `json:"staged,omitempty"`
+	Candidates []string `json:"candidates,omitempty"` // retained, no longer protected
+}
+
+// DatasetUpdateRequest writes a dataset's head (a new target). Kind is tree, file or
+// blob; empty detects it from held content.
+type DatasetUpdateRequest struct {
+	Target string `json:"target"`
+	Kind   string `json:"kind,omitempty"`
+	Note   string `json:"note,omitempty"`
+}
+
+// Wait conditions (docs/operations.md W2).
+const (
+	WaitMetadata = "metadata"
+	WaitHeld     = "held"
+	WaitReady    = "ready"
+	WaitArchive  = "archive-ready"
+)
+
+// DatasetWaitRequest waits for one condition on an exact target (W1): Holders for held,
+// Acks storage members for metadata (default 1), Mode for held (empty: any), Timeout a
+// duration (default 30s for metadata, 10m otherwise; "0" waits indefinitely).
+type DatasetWaitRequest struct {
+	Target    string   `json:"target"`
+	Condition string   `json:"condition"`
+	Holders   []string `json:"holders,omitempty"`
+	Acks      int      `json:"acks,omitempty"`
+	Mode      string   `json:"mode,omitempty"`
+	Timeout   string   `json:"timeout,omitempty"`
+}
+
+// WaitResult is a wait's outcome (W3): the evaluation at that instant, the condition,
+// whether it is satisfied and, when the head moved during the wait, the new head. An
+// unsatisfied wait is also an error (timeout, or failed when the condition cannot be met
+// without a state change) whose details carry this result under "result".
+type WaitResult struct {
+	ContentState
+	Condition    string        `json:"condition"`
+	Satisfied    bool          `json:"satisfied"`
+	SupersededBy string        `json:"superseded_by,omitempty"`
+	Metadata     *MetadataWait `json:"metadata,omitempty"`
+}
+
+// MetadataWait is the evidence of a metadata wait: the storage members holding the state
+// commit that carries the head record.
+type MetadataWait struct {
+	Signer  string   `json:"signer"`
+	Rev     string   `json:"rev"`
+	AckedBy []string `json:"acked_by"`
+	Acks    int      `json:"acks"`
 }
 
 // ClusterStatus describes the node's clusters.

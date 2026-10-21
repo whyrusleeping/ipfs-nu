@@ -42,7 +42,7 @@ with the code's category. Flag and argument mistakes exit 2 like Go's `flag` pac
 | `failed` | 500 | 1 | unclassified failure, failed operation |
 | `invalid_argument` | 400 | 2 | malformed target, flag, cursor or body |
 | `not_found` | 404 | 3 | unknown target, operation, route or config key |
-| `not_supported` | 422 | 4 | valid input this version cannot act on yet (names, datasets, `nu://`, `at://`, `rasl://`) |
+| `not_supported` | 422 | 4 | valid input this version cannot act on yet (names, datasets) |
 | `conflict` | 409 | 5 | daemon already running, operation already finished |
 | `timeout` | 408 | 6 | a wait expired; `details.operation` holds the current snapshot |
 | `unavailable` | 503 | 7 | no daemon reachable, or shutting down |
@@ -452,6 +452,11 @@ These are the mechanics of rules G1–G9 of the
   not linked. The MASL header allowlist (D21, G10) is not applied yet.
 - **`/at/` routes** serve held atproto snapshots as inert JSON and listings; see
   [atproto records, snapshots and CARs](#atproto-records-snapshots-and-cars-0053).
+- **RASL (0052).** `GET`/`HEAD /.well-known/rasl/<cid>` serves one held object's bytes as
+  stored (raw blob or DRISL node) through `gateway.ObjectContent` (`node/content`):
+  `application/octet-stream`, `Content-Disposition: attachment`, `ETag`, immutable
+  caching, `Range`; query string ignored; `404` for anything not held (nothing is
+  fetched), `400` for a non-CID, no CORS header on loopback. See [D21](dasl.md#rasl).
 
 ## Safe extraction (`nu get -o`)
 
@@ -491,9 +496,12 @@ A `nu://` link is parsed by `node/link` and yields a CID target with the link's 
 (`Target.Link`); a malformed link is `invalid_argument` with the parser's message. An
 `at://` target is parsed by `atproto.ParseURI` (`at://<handle-or-did>[@<rev>][/<collection>[/<rkey>]]`,
 with `@<rev>` as Nu's held-snapshot selector) and handled by the at:// commands above. A
-CID-length string that does not parse (for example a dag-pb CID) is `invalid_argument`
-naming the accepted forms; so is anything else. Forms this build cannot act on
-(`rasl://`, names, datasets) are `not_supported` with an action.
+A `rasl://<cid>/?hint=host…` target (parsed by `rasl.Parse`; the legacy
+`web+rasl://<cid>;host,host/` form is accepted) yields a CID target whose hint hosts
+become an HTTPS source for `get`, `cat` and `ls` ([D21](dasl.md#rasl)); the path is
+ignored. A CID-length string that does not parse (for example a dag-pb CID) is
+`invalid_argument` naming the accepted forms; so is anything else. Forms this build
+cannot act on (names, datasets) are `not_supported` with an action.
 
 ## CLI
 

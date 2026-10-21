@@ -322,9 +322,11 @@ Cluster members fetching cluster datasets instead use [D20 placement](cluster.md
 owners by rank, surplus holders, then other members. Private and isolated clusters never use
 steps 5–6.
 
-HTTPS sources complement libp2p providers. RASL hints from links, and configured FISL
-indexers ([D21](dasl.md#fisl)), yield URLs that are fetched statelessly and verified by
-CID. Private and isolated clusters do not query public indexers.
+HTTPS sources complement libp2p providers. RASL hints from links (`fetch.Source`,
+implemented by `rasl.Source`, asked for each object alongside the peers; [D21](dasl.md#rasl)),
+and configured FISL indexers ([D21](dasl.md#fisl)), yield URLs that are fetched
+statelessly and verified by CID. Private and isolated clusters do not query public
+indexers; isolated members make no RASL fetches.
 
 Announce pinned blob, file-node and tree-root CIDs through Amino and, if configured, delegated
 routing; never announce interior directory shards. Amino provider keys use each CID's native

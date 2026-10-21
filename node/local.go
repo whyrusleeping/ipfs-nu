@@ -18,7 +18,6 @@ import (
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node/content"
-	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/target"
@@ -230,11 +229,7 @@ func (n *Local) resolveOrFetch(ctx context.Context, t string) (*content.Node, ci
 	if err != nil {
 		return nil, cid.CID{}, "", err
 	}
-	var hints []link.Provider
-	if pt.Link != nil {
-		hints = pt.Link.Providers
-	}
-	nd, err := n.ensure(ctx, root, pt.Path, hints, nil, nil)
+	nd, err := n.ensure(ctx, root, pt.Path, targetHints(pt), nil, nil)
 	return nd, root, pt.Path, err
 }
 

@@ -25,7 +25,7 @@ func (r *run) blob(ctx context.Context, c cid.CID, size uint64) error {
 		return nil
 	}
 	if c.Hash() != cid.BLAKE3 || (size > 0 && !blob.HasOutboard(size)) {
-		if err := r.whole(ctx, c); err != nil {
+		if err := r.wholeSized(ctx, c, size); err != nil {
 			return err
 		}
 		if info, ok, err := r.st.Has(c); err == nil && ok {
@@ -47,7 +47,7 @@ func (r *run) blob(ctx context.Context, c cid.CID, size uint64) error {
 			in = &inflight{done: make(chan struct{})}
 			f.blobs[c.Multihash()] = in
 			f.mu.Unlock()
-			in.err = r.largeBlob(ctx, c, size)
+			in.err = r.largeBlobAny(ctx, c, size)
 			f.mu.Lock()
 			delete(f.blobs, c.Multihash())
 			f.mu.Unlock()
@@ -64,6 +64,34 @@ func (r *run) blob(ctx context.Context, c cid.CID, size uint64) error {
 			return err
 		}
 	}
+}
+
+// largeBlobAny fetches a large BLAKE3 blob by ranges from peers, or whole from the HTTPS
+// source when there are no usable peers or they all failed (a RASL host serves any size;
+// verification is the whole-blob Bao check in the store).
+func (r *run) largeBlobAny(ctx context.Context, c cid.CID, size uint64) error {
+	var err error
+	if len(r.sw.live()) > 0 {
+		err = r.largeBlob(ctx, c, size)
+		if err == nil || r.opts.Source == nil || ctx.Err() != nil {
+			return err
+		}
+	}
+	if r.opts.Source == nil {
+		return fmt.Errorf("%w: %s", ErrNoProvider, c)
+	}
+	if serr := r.opts.Source.FetchObject(ctx, c, size); serr != nil {
+		return errors.Join(err, serr)
+	}
+	if info, ok, err := r.st.Has(c); err == nil && ok {
+		r.update(func(p *Progress) {
+			p.Bytes += int64(info.Size)
+			if size == 0 {
+				p.BytesTotal += int64(info.Size)
+			}
+		})
+	}
+	return nil
 }
 
 // holding is what a peer's /nu/have/1 answer says it holds of a blob.

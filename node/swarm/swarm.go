@@ -23,6 +23,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/fetch"
+	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
@@ -239,6 +240,12 @@ func (s *Swarm) Ping(ctx context.Context, id wire.PeerID) (time.Duration, error)
 // Fetch implements node.Fetcher: hinted providers are tried together with connected
 // peers; everything is verified before it is stored.
 func (s *Swarm) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, progress func(done, total int64)) error {
+	return s.FetchWithSource(ctx, root, hints, nil, progress)
+}
+
+// FetchWithSource implements node.SourceFetcher: src (RASL hosts), when non-nil, is
+// asked for every object alongside the peers, and suffices on its own.
+func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.Provider, src fetch.Source, progress func(done, total int64)) error {
 	if s.fetcher == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "this node has no store to fetch into")
 	}
@@ -254,11 +261,14 @@ func (s *Swarm) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, 
 	if hintErr != nil {
 		s.log.Debug("some link hints are unusable", "err", hintErr)
 	}
-	if len(peers) == 0 && len(s.host.Connections()) == 0 {
+	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no one to fetch %s from: the link names no reachable provider and no peer is connected", root).
 			WithAction("use a share link with its provider (`peer=`/`addr=`), or be on the same network as a node that holds the content")
 	}
 	opts := fetch.Options{Peers: peers}
+	if src != nil {
+		opts.Source = src
+	}
 	if progress != nil {
 		opts.Progress = func(p fetch.Progress) {
 			if p.Stage == fetch.StageBlobs || p.Stage == fetch.StageDone {
@@ -272,6 +282,14 @@ func (s *Swarm) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, 
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if src != nil {
+		if rerr := node.ClassifyRASL(root, err); rerr != err {
+			var ae *apiv0.Error
+			if errors.As(rerr, &ae) && ae.Code != apiv0.CodeUnavailable {
+				return rerr
+			}
+		}
 	}
 	return classify(root, err)
 }

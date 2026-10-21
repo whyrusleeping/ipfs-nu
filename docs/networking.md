@@ -418,6 +418,97 @@ is **not authenticated disco**. `host.Conn.ExportKeyingMaterial` exposes the aut
 inner TLS exporter for that owner. Unknown non-QUIC traffic remains available to quic-go's
 non-QUIC demux. There must not be a competing raw UDP reader.
 
+### Path v1 control and probe security contract (0017)
+
+`/nu/path/1` is one long-lived bidirectional application stream on an already
+TLS-authenticated **inner virtual-address** connection. Only the qpath initiator opens
+it; reject duplicate streams for a peer, ordinary physical connections and non-admitted
+virtual peers. Losing this stream revokes its probe keys, pending challenges and direct
+paths; fall back to the relay. It is not a public UDP discovery service.
+
+All integers below are unsigned big-endian. Each control frame is `uint16 N` followed
+by exactly N bytes (maximum 363): `version=1:u8, type=1:u8, generation:u64,
+count:u8`, then count (0–16) entries, each `kind:u8, lifetime_seconds:u16,
+endpoint:19 bytes`. Kinds are LAN=1, global IPv6=2, mapped=3, reflexive=4. Lifetime
+is 1–600 seconds, measured from receipt. Generations start at 1 and strictly increase;
+each frame **replaces** the previous list. Duplicate endpoints, unknown versions/types/
+kinds, invalid addresses, trailing bytes and malformed lengths terminate the stream.
+Endpoint encoding is `family:u8 (4 or 6), address:16 bytes, port:u16`; IPv4 uses
+12 zero bytes followed by its four address bytes. IPv4-mapped IPv6, zones, unspecified,
+multicast, broadcast, link-local and magicsock virtual addresses are forbidden.
+Loopback is allowed only by explicit local destination policy (for tests/local peers).
+There is no NAT-profile payload yet; profiles and new candidate kinds require explicit
+version/extension negotiation, never reinterpretation of v1 entries.
+
+The socket envelope remains `01 6e 75 64 01 | uint16(96) | payload`. The fixed
+96-byte probe payload has offsets:
+
+```
+0       version=1:u8
+1       type:u8                 // ping=1, pong=2
+2..17   session_id:16
+18..25  sequence:u64            // starts at 1, one counter per sending direction
+26..41  challenge:16            // random ping nonce, echoed by pong
+42..60  observed_endpoint:19    // all zero for ping; source of ping for pong
+61..63  reserved:3              // must be zero
+64..95  HMAC-SHA256(bytes[0:64]):32
+```
+
+Derive 80 bytes from inner TLS ExportKeyingMaterial using label
+`EXPORTER-nu-path-1` and context `uint16(len(lowPeerID)) | lowPeerID bytes |
+uint16(len(highPeerID)) | highPeerID bytes`, with raw PeerID bytes sorted
+lexicographically. Bytes 0–15 are the session ID; 16–47 authenticate low→high,
+48–79 high→low. Never reuse keys across connections, persist them, derive them from
+outer relay TLS or use a single reflection-prone key in both directions. Verify the
+session, exact length, reserved bytes, MAC (constant-time), source authorization and
+64-packet sliding replay window before acting. Sequence 0, duplicates and packets older
+than the window are rejected. Counter exhaustion terminates the session. A pong must
+also echo an unexpired outstanding random challenge for **that exact destination**;
+consume it once. Round-trip proof, not a ping or a peer's assertion, admits inner QUIC
+from an endpoint. Observed addresses are diagnostics only, never implicit candidates.
+
+**Destination authorization is separate from authentication.** The peer must assert the
+exact IP:port in its current unexpired control list, and the socket owner's mandatory
+`Authorize(peer, candidate)` policy must permit it. This policy is an independent
+anti-scanning boundary: admit only destinations appropriate for the trusted relationship/
+network scope; do not install a blanket-true policy for arbitrary Internet peers. An
+authenticated malicious peer can lie about addresses. In particular do not let public
+peers target private, loopback, link-local, infrastructure or other sensitive endpoints.
+The library has no permissive default. Neither an incoming source, a pong observation,
+a mapped-address hint nor a wildcard IP/port range grants permission. Reply only to an
+exact authorized source, with the same fixed size as the request, no unsolicited
+responses, errors, redirects or amplification. No DNS resolution or arbitrary socket
+allocation occurs. Mapping candidates must be unexpired and honor PCP PEER restrictions.
+
+Hard bounds: 128 sessions/socket, 16 candidates/session, 32 outstanding challenges,
+3 s default challenge expiry, outbound probes **including pongs** 20 packets/s/peer
+(burst 32) and 100 packets/s/socket (burst 128). Control receives are limited to
+1 frame/s (burst 4); local updates coalesce and are paced to that rate. Authorization
+and replay failures are silent and never elicit traffic. Candidate expiry/removal
+revokes path admission and pending challenges, not merely its scheduling priority.
+Control/key/session teardown clears replay and challenge state. These are safe baseline
+bounds, not permission to scan at their maximum rates.
+
+Order candidate attempts LAN → global IPv6 → mapped → reflexive. Attempt at roughly
+0/20/50/100/200/500 ms/1/2 s, subject to hard rate caps. While relayed, restart after
+30 s, then 2 min, then every 10 min, and immediately on local/remote candidate or network
+changes. Direct paths heartbeat every 25 s by default (owner may shorten using measured
+mapping lifetime); a missed challenge falls back at its 3 s timeout and restarts probing.
+Prefer the first proven path; switch a healthy path only after a five-second dwell and
+an RTT improvement of both 20% and 5 ms. Keep validated alternates fresh while direct.
+A D12 RestartProbing hook first revokes stale path proofs and selects relay, then
+re-exchanges candidates and starts the early schedule. This does not replace sockets,
+renew circuits or reconnect inner QUIC; those remain owner responsibilities.
+
+**0021 extension boundary:** v1 authorizes only exact endpoints, has no prediction,
+port ranges, spray sockets, low-TTL priming or NAT profiles. Reject such encodings.
+A future negotiated extension needs mutually acknowledged, expiring attempt IDs, exact
+IP and bounded port-set authorization, independent local policy, per-attempt packet/
+socket quotas within shared global limits, cancellation and replay binding. Neither
+this MAC nor peer consent alone authorizes arbitrary scanning. Independent security
+review of this contract and its owner policy is required before public enablement;
+negative tests and loopback/NAT-lab evidence are not that review.
+
 ### Stock-stack constraints
 
 Use stock quic-go with the following constraints for the first implementation of 0015:

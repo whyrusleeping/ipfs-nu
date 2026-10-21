@@ -1,10 +1,10 @@
 ---
 id: "0016"
 title: '0b: Address lookup: dnsaddr + routing/v1 peers server and client'
-status: todo
+status: done
 priority: 2
 created: "2026-09-24"
-updated: "2026-10-20"
+updated: "2026-10-21"
 depends_on:
     - "0010"
     - "0002"

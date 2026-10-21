@@ -1,10 +1,10 @@
 ---
 id: "0011"
 title: '0a exit: libp2p interop CI (unified-testing quic-v1, Kubo, Ethereum consensus client)'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0010"
 spec_refs:

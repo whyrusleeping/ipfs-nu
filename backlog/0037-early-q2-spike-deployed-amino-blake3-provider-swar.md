@@ -22,3 +22,4 @@ Acceptance: reproducible experiment harness, positive/negative results and serve
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/spike (30d9fd7, 618ff16, 28fb28a; merged). experiments/amino opt-in live probe (NU_AMINO=1). Result: deployed Amino accepted and returned random BLAKE3 (0x1e) provider records to fresh independent clients (2/3 attempts; SHA-256 control 1/2; lookups ~18–23 s from weakly bootstrapped clients); deterministic follow-swarm key unverified (Provide timeouts, not rejections). Decision recorded in spec.md Q2 + docs/data.md D15: native multihash provider keys, no SHA-256 routing alias, no separate DHT protocol; swarm-key DHT discovery best-effort until verified. Open: swarm-key convergence, replica fraction, provider TTL/republish across server versions, delegated routing filters.

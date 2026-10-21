@@ -31,3 +31,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: From 0037: use native multihash keys on Amino (BLAKE3 provider records work against deployed servers). Still to verify here with Nu's own client: deterministic follow-swarm keys, provider TTL/republish, record replica fraction; better bootstrapping than the spike's single-peer start.

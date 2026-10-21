@@ -30,3 +30,4 @@ spec_refs:
 
 ## Work log
 - 2026-10-21: Started on track/data against a Peer/Opener interface so 0040 sessions plug in when merged (0040 still in progress).
+- 2026-10-21: Implemented on track/data (0192600, merged). fetch/: Peer/Providers interfaces, multi-peer chunked BLAKE3 download with endgame, corrupt-peer drop, size authentication + DiscardPartial, layer-1 tree walk, Get pins then fetches. Evidence: TestMultiPeerWithCorruptPeer (100 MiB + small tree, corrupt peer dropped), TestResumeAfterRestart (no verified range re-requested), TestWrongSizePartialDiscarded. Remaining before done: plug 0040 sessions in as fetch.Peer (session-aware request movement).

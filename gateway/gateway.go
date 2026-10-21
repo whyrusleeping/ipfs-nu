@@ -203,6 +203,13 @@ func (h *Handler) resolve(ctx context.Context, root, p string) (*Info, error) {
 
 // serve resolves root/path and serves a listing, index.html (site mode) or a file.
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, root, p string, site bool) {
+	// Validate the request path before trimming: "//evil.example/" would otherwise pass
+	// as "evil.example" and a directory of that name would redirect to a scheme-relative
+	// URL on another host.
+	if strings.Contains(r.URL.Path, "//") {
+		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid path %q", r.URL.Path))
+		return
+	}
 	p = strings.Trim(p, "/")
 	if err := validatePath(p); err != nil {
 		writeError(w, err)
@@ -216,8 +223,9 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, root, p string, 
 	switch info.Kind {
 	case KindDir:
 		if !strings.HasSuffix(r.URL.Path, "/") {
-			// Relative links in listings and sites need the trailing slash.
-			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+			// Relative links in listings and sites need the trailing slash. The target is
+			// always this origin's own path (never a Location from content).
+			http.Redirect(w, r, r.URL.EscapedPath()+"/", http.StatusMovedPermanently)
 			return
 		}
 		if site {
@@ -284,7 +292,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, 
 	}
 	if !site {
 		rq := reqInfo(r)
-		if u := siteURL(rq.port, r.URL.Path); u != "" {
+		if u := siteURL(rq.port, r.URL.EscapedPath()); u != "" {
 			hdr.Set("Link", "<"+u+">; rel=\"alternate\"")
 		}
 	}
@@ -292,7 +300,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, 
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
-// siteURL maps a bare-origin /tree/<cid>/<path> URL to its site-origin URL.
+// siteURL maps a bare-origin /tree/<cid>/<path> URL (escaped form) to its site-origin URL.
 func siteURL(port, urlPath string) string {
 	rest, ok := strings.CutPrefix(urlPath, "/tree/")
 	if !ok {
@@ -359,7 +367,7 @@ const listingCSP = "default-src 'none'; style-src 'unsafe-inline'"
 
 type listingRow struct {
 	Name string
-	Href string
+	Href string // empty when the entry is not linkable (symlink, unsafe name)
 	Kind Kind
 	Size int64
 	CID  string
@@ -385,28 +393,29 @@ var listingPage = template.Must(template.New("listing").Parse(`<!doctype html>
 <p>directory <code>{{.CID}}</code>, {{.Size}} bytes below{{if not .Site}} · <a href="{{.SiteURL}}">open as site</a>{{end}}</p>
 <table><tr><th>name</th><th>kind</th><th class="n">size</th><th>cid</th></tr>
 {{if .Parent}}<tr><td><a href="../">../</a></td><td>dir</td><td></td><td></td></tr>{{end}}
-{{range .Rows}}<tr><td>{{if eq .Kind "symlink"}}{{.Name}}{{else}}<a href="{{.Href}}">{{.Name}}</a>{{end}}</td><td>{{.Kind}}</td><td class="n">{{.Size}}</td><td><code>{{.CID}}</code></td></tr>
+{{range .Rows}}<tr><td>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td><td>{{.Kind}}</td><td class="n">{{.Size}}</td><td><code>{{.CID}}</code></td></tr>
 {{end}}</table>
 `))
 
 func (h *Handler) serveListing(w http.ResponseWriter, r *http.Request, root, p string, info *Info, site bool) {
 	data := listingData{Name: nu.Name, Root: root, Path: p, CID: info.CID, Size: info.Size, Site: site, Parent: p != ""}
 	if !site {
-		data.SiteURL = siteURL(reqInfo(r).port, r.URL.Path)
+		data.SiteURL = siteURL(reqInfo(r).port, r.URL.EscapedPath())
 	}
 	for e, err := range h.content.List(r.Context(), info) {
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		if validatePath(e.Name) != nil || strings.Contains(e.Name, "/") {
-			continue // unsafe names are not linkable
+		row := listingRow{Name: e.Name, Kind: e.Kind, Size: e.Size, CID: e.CID}
+		// Symlinks and unsafe names are shown but not linked.
+		if e.Kind != KindSymlink && validatePath(e.Name) == nil && !strings.Contains(e.Name, "/") {
+			row.Href = url.PathEscape(e.Name)
+			if e.Kind == KindDir {
+				row.Href += "/"
+			}
 		}
-		href := url.PathEscape(e.Name)
-		if e.Kind == KindDir {
-			href += "/"
-		}
-		data.Rows = append(data.Rows, listingRow{Name: e.Name, Href: href, Kind: e.Kind, Size: e.Size, CID: e.CID})
+		data.Rows = append(data.Rows, row)
 	}
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/html; charset=utf-8")

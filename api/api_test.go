@@ -40,6 +40,10 @@ func do(t *testing.T, srv *httptest.Server, method, path string, hdr map[string]
 			req.Host = v
 			continue
 		}
+		if v == "" {
+			req.Header.Del(k)
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	res, err := srv.Client().Do(req)
@@ -95,10 +99,23 @@ func TestLoopbackProtections(t *testing.T) {
 	if res.StatusCode != http.StatusOK || env.Error != nil {
 		t.Errorf("GET with foreign origin: status %d env %+v", res.StatusCode, env.Error)
 	}
+	if h := res.Header; h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Cache-Control") != "no-store" || h.Get("Set-Cookie") != "" {
+		t.Errorf("response headers: %s", h)
+	}
 	// Preflights are refused rather than answered.
 	res, _ = do(t, srv, http.MethodOptions, apiv0.Prefix+"/status", nil)
 	if res.StatusCode != http.StatusForbidden || res.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Errorf("OPTIONS: status %d, CORS %q", res.StatusCode, res.Header.Get("Access-Control-Allow-Origin"))
+	}
+	// A form submission (a browser that sends neither Origin nor Sec-Fetch-Site) cannot
+	// deliver a body: only application/json is read, which forms cannot send.
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", ""} {
+		for _, p := range []string{"/pins", "/dag"} {
+			_, env := do(t, srv, http.MethodPost, apiv0.Prefix+p, map[string]string{"Content-Type": ct})
+			if env.Error == nil || env.Error.Code != apiv0.CodeInvalidArgument {
+				t.Errorf("POST %s with Content-Type %q: %+v, want invalid_argument", p, ct, env.Error)
+			}
+		}
 	}
 }
 

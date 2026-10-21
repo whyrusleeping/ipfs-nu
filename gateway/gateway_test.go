@@ -42,8 +42,9 @@ func newFake() *fakeContent {
 			"notes.txt":     {cid: fakeCID(3), mime: "text/plain; charset=utf-8", data: []byte("0123456789"), kind: KindFile},
 			"sub/photo.png": {cid: fakeCID(4), mime: "image/png", data: []byte("PNG"), kind: KindFile},
 			"link":          {cid: fakeCID(5), kind: KindSymlink},
+			"bad\x00name":   {cid: fakeCID(6), mime: "text/plain", data: []byte("x"), kind: KindFile},
 		},
-		dirs: map[string]bool{"": true, "sub": true},
+		dirs: map[string]bool{"": true, "sub": true, "evil.example": true},
 	}
 }
 
@@ -174,6 +175,38 @@ func TestGatewayOrigins(t *testing.T) {
 	if res, _ := get(t, srv, site, "/sub/../index.html", nil); res.StatusCode != 400 {
 		t.Fatalf("traversal: %d", res.StatusCode)
 	}
+	// A directory named like a host must not turn "//evil.example" into a redirect off
+	// this origin; empty segments are refused outright.
+	if res, _ := get(t, srv, site, "//evil.example", nil); res.StatusCode != 400 || res.Header.Get("Location") != "" {
+		t.Fatalf("scheme-relative path: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	if res, _ := get(t, srv, site, "/sub", nil); res.StatusCode != 301 || res.Header.Get("Location") != "/sub/" {
+		t.Fatalf("dir redirect: %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	// Unsafe names are listed but not linked; the site origin sends no CSP for content.
+	if res, body := get(t, srv, site, "/", map[string]string{"Accept": "text/html"}); res.Header.Get("Content-Security-Policy") != "" ||
+		strings.Contains(body, "Content-Security-Policy") {
+		t.Fatalf("site content must not carry the listing CSP: %s", res.Header)
+	}
+	if _, body := get(t, srv, "", "/tree/"+f.root+"/", nil); !strings.Contains(body, "bad") || strings.Contains(body, `href="bad`) {
+		t.Fatalf("unsafe name must be shown unlinked:\n%s", body)
+	}
+	// Only GET and HEAD; no preflight, no CORS, no cookies.
+	for _, m := range []string{http.MethodPost, http.MethodOptions, http.MethodPut} {
+		req, _ := http.NewRequest(m, srv.URL+"/tree/"+f.root+"/", nil)
+		req.Header.Set("Origin", "http://evil.example")
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 400 || res.Header.Get("Access-Control-Allow-Origin") != "" {
+			t.Errorf("%s: %d %s", m, res.StatusCode, res.Header)
+		}
+	}
+	if res, _ := get(t, srv, "", "/tree/"+f.root+"/notes.txt", map[string]string{"If-None-Match": `"` + fakeCID(3) + `"`}); res.StatusCode != 304 {
+		t.Errorf("If-None-Match: %d", res.StatusCode)
+	}
 
 	// Host validation.
 	for _, host := range []string{"nu.example.com:" + port, f.root + ".localhost:1", "evil.localhost:" + port, "127.0.0.1:1"} {
@@ -189,5 +222,31 @@ func TestGatewayOrigins(t *testing.T) {
 	}
 	if res, _ := get(t, srv, "", "/tree/"+fakeCID(7)+"/", nil); res.StatusCode != 404 {
 		t.Fatalf("unheld: %d", res.StatusCode)
+	}
+}
+
+// Hostile or sloppy content types are sanitized, and only inert types render inline on
+// the bare origin (operations.md G4, G7).
+func TestMimeRules(t *testing.T) {
+	for _, tc := range []struct{ mime, name, want string }{
+		{"text/html; charset=x-evil", "a", "text/html"},
+		{"text/plain; charset=UTF-8", "a", "text/plain; charset=utf-8"},
+		{"foo", "a.png", "image/png"},
+		{"", "a.unknownext", "application/octet-stream"},
+		{"a/b/c", "a", "application/octet-stream"},
+		{"text/html\r\nX-Injected: 1", "a", "application/octet-stream"},
+	} {
+		if got := sanitizeMime(tc.mime, tc.name); got != tc.want {
+			t.Errorf("sanitizeMime(%q, %q) = %q, want %q", tc.mime, tc.name, got, tc.want)
+		}
+	}
+	for mt, inline := range map[string]bool{
+		"text/html": false, "image/svg+xml": false, "application/xml": false, "text/xml": false,
+		"application/javascript": false, "application/pdf": false, "text/javascript": false,
+		"text/plain; charset=utf-8": true, "image/png": true, "video/mp4": true, "application/json": true,
+	} {
+		if inlineSafe(mt) != inline {
+			t.Errorf("inlineSafe(%q) = %v", mt, !inline)
+		}
 	}
 }

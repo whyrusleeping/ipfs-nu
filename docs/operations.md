@@ -151,33 +151,213 @@ an alert, not a silent operating mode.
 
 ## API, gateway and public exposure
 
-API and gateway default to loopback. Non-loopback API requires authenticated configuration;
-a token alone is not a browser request-protection contract. Before shipping, specify Host/
-Origin validation, cross-site request protections, token handling and DNS-rebinding defense.
-A fetched page must not gain daemon privileges. Isolate untrusted active content by immutable
-content/name origin and safe routing; define cookie, redirect, MIME and content-sniffing rules.
-Mutable-name origin behavior and IP-literal/local browser fallbacks need explicit tests in
-Safari on macOS as well as Firefox/Chromium. Until origin isolation is proven, path hosting
-serves downloads/non-active content or a tested sandbox/CSP fallback, not unrestricted sites.
+The local API, the loopback gateway and any later public/member HTTPS serving share one
+security contract. Rules are numbered so tests and reviews can cite them; mechanics and
+the current implementation state are in [api.md](api.md). Everything here is a feature
+entry gate, not post-release hardening.
 
-Public HTTPS deployment is opt-in and must separate control API from content serving. Member-
-only gateways require explicit reader authentication or remain local/network-restricted;
-cluster libp2p gating does not protect an accidentally exposed HTTP listener. Verify fetched
-bytes before serving; ordinary browsers trust the gateway/TLS, while Nu-aware clients verify
-content/proofs independently. Do not claim an ordinary browser performs Bao verification.
+### Threat model
 
-DASL/atproto surfaces follow the same rules ([D21](dasl.md)). RASL responses are
-`application/octet-stream`/`nosniff` and cover only content already served publicly. MASL
-headers pass an allowlist and never loosen gateway policy. Bundles and `.tile`s render only
-on isolated origins. atproto records render as inert JSON/text. Public seeds never fetch
-unheld CIDs or live repos on demand. Third-party atproto archives serve current verified
-state publicly only while the account is active; retained history stays private unless an
-explicit override is set. RASL/FISL/`at://` fetches apply SSRF guards to URLs, redirects and
-DID-document endpoints.
+Attackers: **T1** any web page the user's browser visits (cross-site requests, DNS
+rebinding of a public name to 127.0.0.1, navigations, forms, preflight-free fetches);
+**T2** content fetched into the node and rendered by the gateway (HTML/JS, SVG, hostile
+MIME types, names, symlinks, MASL headers), including content the user did not choose to
+view; **T3** hosts on the LAN/Internet that reach an exposed listener (a port forward or
+a `0.0.0.0` listener on a members-only node); **T4** a tree extracted to disk by `nu get -o`.
+Assets: daemon control (`add`/`get` read and write local files as the user), the store
+contents of a members-only node, other content's browser state, the user's filesystem.
+Out of scope: processes running as the same OS user (they are the CLI's trust level),
+browser bugs, a compromised OS. The invariant the matrix tests: **a fetched page or tree
+can never operate the daemon, read another origin's content or write outside the requested
+destination.**
 
-Extraction must reject path traversal and unsafe symlinks; cross-platform filename/metadata
-handling must report transformations rather than silently produce a different archive.
-OAuth/discovery SSRF and malicious endpoint validation are prerequisites for names.
+### A. Local API
+
+- **A1** API and gateway listen on loopback by default; a non-loopback `api.listen` or
+  `gateway.listen` is refused until the authenticated mode (A8) exists in the build.
+- **A2** `Host` must be `localhost`, `127.0.0.1`, `[::1]` or another loopback literal with
+  this listener's port, else `403 forbidden`. A public name rebound to 127.0.0.1 still
+  carries the public name and is refused.
+- **A3** `GET`/`HEAD` never change state. Every state change is `POST`/`DELETE`.
+- **A4** For any method other than `GET`/`HEAD`: an `Origin` header must equal
+  `http://<Host>`; a `Sec-Fetch-Site` header must be `same-origin` or `none`; `OPTIONS`
+  is always `403`. The gateway's origins are foreign to the API and are refused too.
+- **A5** Request bodies are read only with `Content-Type: application/json`
+  (`400 invalid_argument` otherwise). HTML forms cannot send that type and a script that
+  sets it triggers a preflight, which A4 refuses, so browsers that send neither `Origin`
+  nor `Sec-Fetch-Site` still cannot deliver a state-changing body.
+- **A6** No `Access-Control-*` header is ever sent; no cookie is ever set, read or used
+  for authorization; responses carry `X-Content-Type-Options: nosniff` and
+  `Cache-Control: no-store`.
+- **A7** Errors are the JSON envelope; request content is never reflected as HTML.
+- **A8** *Authenticated non-loopback API (not in v0; implemented by the task that first
+  needs it).* Authorization is a bearer token in the `Authorization` header only (never a
+  query parameter or cookie), stored 0600 under `$NU_PATH`, created at init, rotated by a
+  command and revoked by deleting it. The token must travel over TLS or a network the
+  operator declares trusted in config; A2 applies with a configured host allowlist in
+  place of loopback; A3–A7 apply unchanged, so a token never authorizes a
+  browser-originated cross-site request. The API listener is never the content listener
+  (P1).
+
+### G. Gateway and browsers
+
+- **G1** `Host` must be `localhost`, a loopback literal, or `<cid>.localhost` (exactly one
+  label that parses as a canonical DASL CID), with this listener's port; else `403`.
+- **G2** Only `GET`/`HEAD` (`400` otherwise); no `OPTIONS` handling, no `Access-Control-*`
+  headers, no cookies set, and request cookies are dropped before routing.
+- **G3** **Two origin classes.** The *bare* origins (`http://localhost:<port>`, loopback
+  IP literals) serve `/tree/<cid>/<path>` and `/blob/<cid>` as **non-active** content only.
+  The *site* origin `http://<cid>.localhost:<port>/` serves exactly one root as a site
+  (`index.html`, listings, active content allowed) and nothing else: no `/tree`, `/blob`,
+  `/api` or other roots exist there. Isolation comes from the browser's same-origin policy
+  between distinct hosts, not from the gateway inspecting content.
+- **G4** **Non-active fallback.** On a bare origin a file is served inline only when its
+  sanitized type is `text/plain`, `text/css`, `application/json`,
+  `application/octet-stream`, `image/*` except SVG, `video/*`, `audio/*` or `font/*`.
+  Everything else (HTML, SVG, XML, JavaScript, PDF, unknown) is `application/octet-stream`
+  with `Content-Disposition: attachment` and a `Link: <site URL>; rel="alternate"`. The
+  fallback is the default for every browser; a browser that does not resolve `*.localhost`
+  simply never reaches a site origin. Nothing active is ever rendered on a bare origin,
+  on an IP-literal origin, or on any path route.
+- **G5** **Mutable-name origins** (later `/nu/<handle>/<name>/…`, `/c/<dataset>…`): active
+  rendering only on a dedicated origin per name, `<label>.localhost`, whose label is a
+  deterministic encoding of the name that cannot parse as a CID (prefix reserved before
+  the first name route ships). The name origin re-resolves on each request; it never
+  shares an origin with a CID site. Name paths on bare origins follow G4. `/at/…` content
+  is inert (JSON/plain text with the listing CSP, blobs as downloads) and has no site origin.
+- **G6** **Redirects** are only same-origin path redirects generated by the gateway
+  (directory → trailing slash, cleaned path). A request path with an empty segment (`//`)
+  is `400`, never redirected. No `Location` ever comes from content.
+- **G7** **Types.** Content types are parsed; only a `utf-8` charset parameter survives;
+  invalid or missing types fall back to the name's extension, then
+  `application/octet-stream`. Blobs are always downloads. `nosniff` is on every response.
+  Symlink entries are listed but answer `422`.
+- **G8** Gateway-generated pages (root, listings) carry
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`; errors are
+  plain text, never HTML. Listings link only safe names; unsafe names are shown unlinked. Paths with
+  `.`, `..`, empty or NUL segments are `400`.
+- **G9** Caching: CID-addressed responses are `public, max-age=31536000, immutable` with
+  `ETag: "<cid>"`; errors are `no-store`; name routes (G5) are `no-cache` and revalidate.
+- **G10** **MASL headers** (reflected once 0055 lands) pass an allowlist: `content-type`
+  through G7 and G4; `content-language` as a language tag; `content-disposition` as
+  `inline`/`attachment` with a sanitized filename only; `content-encoding` only when the
+  stored bytes are actually encoded and only on site origins. A content
+  `content-security-policy` is sent as an *additional* CSP header (browsers intersect
+  policies, so it can only tighten). Header values with CR/LF are dropped. `location`,
+  `set-cookie`, `access-control-*`, `link`, `refresh`, `service-worker-allowed`,
+  source-map and manifest fields are never reflected. Bundles render only on site origins.
+- **G11** Cross-origin reads from a site origin to a bare origin, to another site origin or
+  to the API are blocked by G2/A6 (no CORS). Navigations and embeds between them are
+  allowed; they transfer nothing.
+
+### P. Public and member-only serving
+
+- **P1** The control API is never on a listener that serves content. Public HTTPS serving
+  uses its own listener and configuration; `/api/` does not exist there.
+- **P2** Public serving is opt-in per root: only content explicitly published or marked
+  public is served; a member's held cluster content is never implicitly public. A share
+  link mentions a public URL only when that URL serves the root now.
+- **P3** A members-only gateway is loopback/network-restricted or requires reader
+  authentication (A8-style token or TLS client auth). "Not configured" means the daemon
+  refuses the listener; libp2p membership gating never counts as HTTP protection.
+- **P4** Public listeners serve held, verified bytes only; they never fetch unheld CIDs,
+  live repos or name resolutions on demand (RASL, `/at/`, FISL included).
+- **P5** Public active content needs per-root origins under the operator's domain (G3
+  with `<cid>.<domain>`) or the G4 fallback; `localhost` tricks do not apply. RASL
+  responses may add `Access-Control-Allow-Origin: *` on public listeners only (so browser
+  clients can verify by hash), never on loopback, where it would let any page enumerate
+  held content.
+- **P6** Browsers trust the gateway/TLS; Nu-aware clients verify CIDs/proofs themselves.
+  No document claims an ordinary browser performs Bao verification.
+
+### X. Extraction (`nu get -o`)
+
+- **X1** Tree paths must be relative, with no empty, `.`, `..`, NUL or backslash segment
+  and names ≤ 255 bytes; a violation is `invalid_argument` and nothing is written.
+- **X2** Every existing component under the destination is `Lstat`ed; a symlink on the
+  way, or in place of a file being written, aborts the extraction.
+- **X3** Symlink entries are never created; they are reported as skipped with their target.
+- **X4** A name the filesystem maps onto an existing entry this run did not write (case
+  folding, Unicode normalization) is reported as skipped naming the entry it collides
+  with; a skipped directory's contents are skipped too. Nothing is merged or renamed
+  silently. Pre-existing files of exactly the same name are replaced atomically.
+- **X5** Modes are `0644`/`0755` (executable bit only); no ownership, xattrs, times or
+  special files. Writes go to a temp file in the target directory and are renamed.
+- **X6** The report (files, dirs, bytes, skipped with reasons) is returned in the
+  operation result and printed by the CLI; `get` is not "success" if skipped is non-empty
+  without saying so.
+
+### Negative-test matrix
+
+Automated rows name their Go test; "browser" rows are in the
+[browser plan](validation.md#browser-origin-isolation-checks-0035); "gate" rows are
+required by the named task before it ships.
+
+| # | Rule | Attack | Expected | Coverage |
+|---|---|---|---|---|
+| N1 | A2 | API request with `Host: nu.example.com:<port>` (rebinding) | 403 | `api.TestLoopbackProtections` |
+| N2 | A2 | API request with loopback host, wrong port | 403 | `api.TestLoopbackProtections` |
+| N3 | A4 | POST with `Origin: http://127.0.0.1:8171` (gateway origin) | 403 | `api.TestLoopbackProtections` |
+| N4 | A4 | POST with `Sec-Fetch-Site: cross-site` / `same-site` | 403 | `api.TestLoopbackProtections` |
+| N5 | A4 | `OPTIONS` preflight | 403, no CORS headers | `api.TestLoopbackProtections` |
+| N6 | A5 | POST `/pins`, `/dag` as `text/plain`, form or multipart, or no type | 400 | `api.TestLoopbackProtections` |
+| N7 | A6 | any response | no `Access-Control-*`, `nosniff`, `no-store`, no `Set-Cookie` | `api.TestLoopbackProtections` |
+| N8 | A3 | GET with foreign `Origin` | 200, unreadable by the page (no CORS) | `api.TestLoopbackProtections` |
+| N9 | A1 | daemon with `api.listen = 0.0.0.0:…` or `gateway.listen = [::]:…` | refuses to start, action names loopback | `daemon.TestDaemon` |
+| N10 | G1 | gateway `Host` not loopback/`<cid>.localhost`, or `evil.localhost`, or wrong port | 403 | `gateway.TestGatewayOrigins` |
+| N11 | G3/G4 | `/tree/<cid>/index.html` on bare origin | octet-stream attachment + `Link` alternate | `gateway.TestGatewayOrigins` |
+| N12 | G4 | SVG/XML/JS/PDF types on bare origin | attachment | `gateway.TestMimeRules` |
+| N13 | G7 | hostile `mime` (`text/html; charset=x-evil`, `foo`, `a/b/c`, CRLF) | sanitized or octet-stream | `gateway.TestMimeRules` |
+| N14 | G3 | `<cid>.localhost/` serves `index.html` as HTML with no listing CSP | 200 `text/html` | `gateway.TestGatewayOrigins` |
+| N15 | G8 | `/sub/../index.html`, NUL, empty segments | 400 | `gateway.TestGatewayOrigins` |
+| N16 | G6 | `//evil.example` on a site whose tree has `evil.example/` | 400, no `Location` | `gateway.TestGatewayOrigins` |
+| N17 | G6 | directory without slash | 301 to same-origin path | `gateway.TestGatewayOrigins` |
+| N18 | G7 | symlink entry | 422, listed | `gateway.TestGatewayOrigins` |
+| N19 | G8 | entry name with NUL / `..` in a listing | shown, not linked | `gateway.TestGatewayOrigins` |
+| N20 | G2 | POST/PUT/OPTIONS with foreign `Origin` | 400, no CORS, no cookie | `gateway.TestGatewayOrigins` |
+| N21 | G9 | `If-None-Match: "<cid>"` | 304 | `gateway.TestGatewayOrigins` |
+| N22 | G3/G11 | script on `<cidA>.localhost` reads `localhost:8171/tree/<cidB>/`, the API, or `<cidB>.localhost` | blocked | browser B2–B4 |
+| N23 | A4/A5 | script on a site origin POSTs to the API (JSON and `text/plain`) | no state change | browser B5 |
+| N24 | G3 | cookies/localStorage set on `<cidA>.localhost` | not visible on `<cidB>.localhost` or `localhost` | browser B6 |
+| N25 | G4 | browser without `*.localhost` (Safari?) opens the bare origin | downloads, never renders HTML | browser B1/B7 |
+| N26 | G5 | name route on a bare origin | non-active fallback | gate: first name route |
+| N27 | G10 | MASL `content-type: text/html` on bare origin; `set-cookie`/`location`/CRLF in values; CSP that loosens | download; dropped; intersected | gate: 0055 |
+| N28 | P1–P3 | public listener configured on a members-only node without reader auth | refuses to listen; `/api/` absent on public listener | gate: 0043 |
+| N29 | P4/P5 | RASL for unheld CID on a public seed; CORS on loopback RASL | 404, no fetch; no CORS header | gate: 0052 |
+| N30 | G5 | `/at/` record with HTML/script in a string field | inert JSON/text, CSP | gate: 0053 |
+| N31 | X1 | `../x`, `/x`, `a/../../x`, `a\..\x`, NUL, `./x` | invalid_argument, nothing written | `extract.TestExtractSafety` |
+| N32 | X2 | symlink in destination (dir on the way, file being replaced) | aborts, nothing through the link | `extract.TestExtractSafety` |
+| N33 | X3 | symlink entry | skipped, reported | `extract.TestExtractSafety` |
+| N34 | X4 | `a.txt` and `A.txt` in one directory | both written on case-sensitive FS; second skipped naming `a.txt` on case-insensitive FS | `extract.TestExtractSafety` (Linux); macOS/APFS: browser plan B8 |
+| N35 | X5 | mode `0777`, setuid in tree | `0755` only | `extract.TestExtractSafety` |
+
+### Feature-entry gates
+
+- **0028 (v0)**: A1–A7, G1–G4, G6–G9, G11, X1–X6 implemented; matrix rows with a named
+  test pass in CI; browser rows B1–B7 recorded in validation.md for Chromium and Firefox
+  (Safari may be recorded as "no `*.localhost`; fallback verified"). Until recorded, the
+  site origin is *available* but the only *claim* is the fallback.
+- **0043 (public HTTPS)**: A8 (if any non-loopback API ships), P1–P6, N28; browser rows
+  rerun against the public origin scheme in all three browsers; cert/deployment runbook.
+- **0052 (RASL)**: N29; RASL on loopback has no CORS; the SSRF rows of 0061 for `rasl://`.
+- **0053 (atproto)**: N30; `/at/` has no site origin and blobs are downloads (G5).
+- **0055 (MASL bundles)**: G10 in full, N27, bundle rendering only on site origins,
+  `.tile` headers through the same allowlist.
+- **First name route** (names track): G5 label encoding and N26 before any name path
+  renders anything but the fallback.
+
+### Independent review plan
+
+Before each gate above, a reviewer who did not write the code: (1) reads this section
+and api.md and diffs them against `api/`, `gateway/`, `node/extract/` and
+`node/daemon/` (listener refusal), noting any rule without an enforcing line of code;
+(2) runs the matrix: `go test ./api/ ./gateway/ ./node/extract/ ./node/daemon/` and the
+browser plan, attaching results to validation.md; (3) tries five attacks not in the
+matrix (suggested: Host with trailing dot or uppercase, `Origin: null`, chunked bodies,
+`Range` on listings, a tree whose names are 255-byte Unicode) and adds any that bite as
+rows; (4) checks that every new route since the last review is in the route table, the
+OpenAPI document and (if it changes state) rejected by N3–N6; (5) signs off in the task's
+work log with the commit reviewed. A gate without a signed review is not met.
 
 ### Shared HTTPS source policy
 

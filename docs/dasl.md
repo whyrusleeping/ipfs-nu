@@ -287,8 +287,9 @@ head:   { target: "<commit cid>", kind: "atrepo", rev, … }
 
 - Whether oversized atproto blobs (video) need an archive path. The 8 MiB whole-object
   limit currently skips them.
-- The MASL header allowlist, CSP-merge rules and `.tile` rendering headers. These are gated
-  on the [API/browser security contract](operations.md#api-gateway-and-public-exposure).
+- `.tile` rendering headers. The MASL header allowlist and CSP-merge rule are G10 of the
+  [API/browser security contract](operations.md#g-gateway-and-browsers); 0055 implements
+  them.
 - The verified HTTP range/proof mapping for BDASL (with bao-tree/iroh-blobs parity), shared
   with D14.
 - `atrepo` dataset lifecycle: DID migration between PDSes, key rotation relative to retained

@@ -168,24 +168,27 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
 
 ## Loopback protections
 
-The API accepts only requests whose `Host` is a loopback name or address (`localhost`,
+Mechanics of rules A1–A7 of the [security contract](operations.md#a-local-api). The API
+accepts only requests whose `Host` is a loopback name or address (`localhost`,
 `127.0.0.1`, `[::1]`) with this listener's port (DNS-rebinding defense). Requests other
 than GET/HEAD are rejected with `forbidden` when they carry an `Origin` that is not the
 API's own `http://<host>` or a `Sec-Fetch-Site` other than `same-origin`/`none`; the
 gateway's origin is therefore rejected too. `OPTIONS` is refused and no `Access-Control-*`
-header is ever sent, so a browser page cannot read responses or change state. Responses
-carry `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The full
-[security contract](operations.md#api-gateway-and-public-exposure) precedes any
-non-loopback exposure.
+header is ever sent, so a browser page cannot read responses or change state. Request
+bodies are read only as `Content-Type: application/json` (`invalid_argument` otherwise),
+which HTML forms cannot send and scripts cannot send without the refused preflight.
+Responses carry `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`; cookies
+are never set or read. The daemon refuses non-loopback listeners (A1) until A8 exists.
 
 ## Gateway (v0 baseline)
 
 The loopback gateway (`gateway.listen`, default `127.0.0.1:8171`) serves held content
 through the `gateway.Content` interface (`Resolve(root, path)`, `Open`, `List`), which
 `node/content` implements on the store: tree headers and directory nodes list and resolve
-paths, file nodes and tree entries supply name, MIME type and mode, raw blobs are bytes. These rules are the v0 baseline; the full
-[security contract](operations.md#api-gateway-and-public-exposure) comes before any
-non-loopback exposure.
+paths, file nodes and tree entries supply name, MIME type and mode, raw blobs are bytes.
+These are the mechanics of rules G1–G9 of the
+[security contract](operations.md#g-gateway-and-browsers); G5 (name origins) and G10
+(MASL headers) are not implemented yet.
 
 - **Hosts.** `Host` must be `localhost`, a loopback IP literal, or `<cid>.localhost`
   (one label, a syntactically valid base32 CIDv1), always with the gateway's own port.
@@ -214,10 +217,12 @@ non-loopback exposure.
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. No cookies are
   ever set or read. Only `GET`/`HEAD` are accepted; `Range`, `If-Range` and
   `If-None-Match` work on files. Errors are plain text (`<code>: <message>`), never HTML.
-- **Paths.** Paths with empty, `.` or `..` segments or NUL are `400`; a directory URL
-  without a trailing slash redirects (`301`) to one. Listings show the directory CID and
-  total size below it, and each entry's name, kind, size and CID; entries with unsafe
-  names are shown but not linked. The MASL header allowlist (D21) is not applied yet.
+- **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (an empty
+  segment is refused before any redirect, so `//host` can never become a scheme-relative
+  `Location`); a directory URL without a trailing slash redirects (`301`) to its own
+  escaped path plus `/`. Listings show the directory CID and total size below it, and each
+  entry's name, kind, size and CID; symlinks and entries with unsafe names are shown but
+  not linked. The MASL header allowlist (D21, G10) is not applied yet.
 
 ## Safe extraction (`nu get -o`)
 
@@ -228,7 +233,13 @@ paths must be relative with no empty, `.`, `..`, NUL or backslash segments and n
 written, aborts the extraction; symlink entries are never created and are listed in the
 report; files are written to a temp file in the target directory and renamed into place;
 modes are `0644`, or `0755` when the tree marks the file executable, `0755` for
-directories. The report counts files, directories and bytes and lists skipped entries.
+directories. A name that already exists although this extraction did not write it, and
+whose exact spelling is absent from the directory listing, has been mapped by the
+filesystem onto another entry (case-insensitive APFS/NTFS, NFD-normalizing HFS+): it is
+skipped and reported with the entry it collides with, and so is everything under a
+skipped directory; a pre-existing file of exactly that name is replaced. The report
+counts files, directories and bytes and lists skipped entries with reasons; the CLI
+prints each one (rules X1–X6 of the [contract](operations.md#x-extraction-nu-get--o)).
 
 ## Daemonless commands
 

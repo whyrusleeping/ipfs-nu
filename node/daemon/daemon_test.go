@@ -57,6 +57,13 @@ func TestDaemonEndToEnd(t *testing.T) {
 	}
 	defer d.Close()
 
+	// Non-loopback listeners are refused until authentication exists (operations.md A1).
+	for _, o := range []Options{{Repo: r, APIListen: "0.0.0.0:0"}, {Repo: r, GatewayListen: "[::]:0"}} {
+		if _, err := Start(ctx, o); !isCode(err, apiv0.CodeInvalidArgument) {
+			t.Fatalf("non-loopback listener %+v: %v", o, err)
+		}
+	}
+
 	// A second daemon on the same repo is refused.
 	if _, err := Start(ctx, Options{Repo: r, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0"}); !isCode(err, apiv0.CodeConflict) {
 		t.Fatalf("second daemon: %v", err)

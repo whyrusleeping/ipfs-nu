@@ -57,6 +57,24 @@ func TestExtractSafety(t *testing.T) {
 	if names, _ := filepath.Glob(filepath.Join(dest, ".nu-extract-*")); len(names) != 0 {
 		t.Fatalf("temp files left: %v", names)
 	}
+	// Re-extracting replaces files in place; names that differ only by case are distinct
+	// entries here (a case-insensitive or normalizing volume reports them as skipped with
+	// the entry they map onto, never merging silently — checked by hand on macOS).
+	rep, err = Extract(ctx, dest, walkOf(file("a.txt", "again", 0), file("A.txt", "upper", 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, "a.txt")); string(b) != "again" {
+		t.Fatalf("a.txt not replaced: %q", b)
+	}
+	if rep.Files+len(rep.Skipped) != 2 {
+		t.Fatalf("case-variant names: %+v", rep)
+	}
+	for _, sk := range rep.Skipped {
+		if !strings.Contains(sk.Reason, "a.txt") {
+			t.Fatalf("skip reason must name the colliding entry: %+v", sk)
+		}
+	}
 
 	// Hostile paths never produce a write.
 	outside := filepath.Join(t.TempDir(), "victim")

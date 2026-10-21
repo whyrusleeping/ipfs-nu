@@ -1,10 +1,10 @@
 ---
 id: "0014"
 title: '0b: Port mapping (PCP/NAT-PMP/UPnP) + network-change monitor and reaction pipeline'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0005"
 spec_refs:

@@ -1,7 +1,7 @@
 ---
 id: "0061"
 title: 'httpsrc: shared HTTPS fetching with SSRF guards, allowlists and resume'
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"

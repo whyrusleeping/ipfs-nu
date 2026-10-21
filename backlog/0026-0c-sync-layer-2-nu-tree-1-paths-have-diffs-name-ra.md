@@ -34,3 +34,4 @@ Layer 2 of the sync protocols (D14): the optional accelerator. Never needed for 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (21bae0a, b34fa66; merged 13f5525). /nu/tree/1 server+client with framed verified pre-order stream, have diffs, name_range boundary nodes, inline blobs ≤16 KiB, stateless cursors, nodes batch mode; fetcher prefers it with layer-1 fallback. Evidence: TestTreeLookup (20k) + TestSlowTreeLookup1M (NU_SLOW, 10.7 s, one request, O(log n) nodes), TestTreeHaveDiff (10k-file site: diff = exactly changed objects), TestTreeResume (no loss/duplication), FuzzTreeRequest/FuzzTreeStream, TestTreeStreamCorrupt, TestTreeRangeAndNodes, fetch/TestTreeProtocolAndFallback. Deferred: atrepo profile for /nu/tree/1 (plan in docs/data.md), layer-1 walk using nodes batches, client re-validation of have-marked subtrees. Follow-up: nutest Corrupt only wraps /nu/bytes/1.

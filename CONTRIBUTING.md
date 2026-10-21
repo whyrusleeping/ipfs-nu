@@ -87,9 +87,11 @@ will churn; tests that pin down internals make every change slower.
   not to feature tasks.
 - If an existing test is slow or flaky, fix or delete it rather than routing around it.
 
-NAT and isolated-egress scenarios use the netns lab behind the `natlab` build tag; they need
-root and run in dedicated CI jobs. Wire interop with other libp2p implementations lives in
-the separate `experiments/` module (a go-libp2p smoke test per protocol before v0) and 0011.
+NAT and isolated-egress scenarios use [the netns lab](p2p/natlab/README.md) behind the
+`natlab` build tag. They run rootless with user+network namespaces where enabled, with a
+root fallback in the dedicated on-demand CI job. Wire interop with other libp2p
+implementations lives in the separate `experiments/` module (a go-libp2p smoke test per
+protocol before v0) and 0011.
 
 ## Commits
 

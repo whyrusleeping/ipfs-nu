@@ -495,6 +495,14 @@ No multicast-capable interface is a reported startup error, not silent enablemen
 - Record first-run sharing/browser success and recovery alongside connectivity metrics.
   Hardware/field evidence, methodology and failures go in [validation](validation.md).
 
+The opt-in Linux harness is [`p2p/natlab`](../p2p/natlab/README.md), run with
+`go test -tags natlab ./p2p/natlab`. It isolates even root callers, uses rootless
+user+network namespaces when available, and runs only bounded v0 smoke scenarios.
+Explicit endpoint fixtures model RFC mapping/filtering classes; ordinary Linux
+masquerade is not treated as proof of any mapping class. The harness README lists
+unvalidated/deferred topology and allocator cases; synthetic evidence is indexed
+in [validation](validation.md#linux-nat-lab-smoke-2026-10-21).
+
 ## Details still to verify
 
 Production HTTPS-compatible fallback wire/security rules, relay admission/economics,

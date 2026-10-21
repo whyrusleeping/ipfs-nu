@@ -67,7 +67,11 @@ func (n *Local) CollectionPush(ctx context.Context, name string, req apiv0.Colle
 	if err != nil || wait <= 0 {
 		return p, err
 	}
-	return m.WaitPush(ctx, name, p.Path, p.ID, wait)
+	w, err := m.WaitPush(ctx, name, p.Path, p.ID, wait)
+	if w != nil && w.ID == p.ID {
+		w.Duplicate = p.Duplicate
+	}
+	return w, err
 }
 
 func (n *Local) CollectionPushBatch(ctx context.Context, name string, reqs []apiv0.CollectionPushRequest) ([]apiv0.CollectionPushBatchLine, error) {

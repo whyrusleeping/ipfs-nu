@@ -28,8 +28,17 @@ type Error = apiv0.Error
 
 // Client talks to one daemon.
 type Client struct {
-	base string // e.g. http://127.0.0.1:5171
-	http *http.Client
+	base  string // e.g. http://127.0.0.1:5171
+	http  *http.Client
+	token string // bearer token for a producer listener (A8), or ""
+}
+
+// WithToken returns a copy of c that sends token as its bearer credential (the push
+// token of a remote node's producer listener).
+func (c *Client) WithToken(token string) *Client {
+	d := *c
+	d.token = token
+	return &d
 }
 
 // New returns a client for addr, given as host:port or an http:// URL.
@@ -76,19 +85,31 @@ func (c *Client) url(path string, q url.Values) string {
 // the response. The response is closed unless raw is true, in which case it is returned.
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) (*http.Response, error) {
 	var rd io.Reader
+	ctype := ""
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
-		rd = bytes.NewReader(b)
+		rd, ctype = bytes.NewReader(b), "application/json"
 	}
+	return c.send(ctx, method, path, q, ctype, rd, -1, out)
+}
+
+// send is do with a raw body of the given type (size -1 when unknown).
+func (c *Client) send(ctx context.Context, method, path string, q url.Values, ctype string, rd io.Reader, size int64, out any) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.url(path, q), rd)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	if size >= 0 {
+		req.ContentLength = size
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	res, err := c.http.Do(req)
 	if err != nil {

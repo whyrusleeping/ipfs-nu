@@ -55,6 +55,7 @@ type env struct {
 	json           bool
 	nuPath         string // --nu-path override
 	apiAddr        string // --api override
+	token          string // --token: push token for a remote producer listener (A8)
 	repo           *repo.Repo
 	network        bool     // start the swarm in an in-process node
 	verbose        bool     // --verbose: log in-process networking to stderr
@@ -146,6 +147,7 @@ func (e *env) globalFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&e.json, "json", false, "machine-readable JSON output")
 	fs.StringVar(&e.nuPath, "nu-path", "", "repo directory (default $"+repo.EnvPath+" or ~/"+nu.DefaultDir+")")
 	fs.StringVar(&e.apiAddr, "api", "", "daemon API address (default: the running daemon's)")
+	fs.StringVar(&e.token, "token", os.Getenv("NU_API_TOKEN"), "push token for --api on another node's producer listener (default $NU_API_TOKEN)")
 	fs.BoolVar(&e.verbose, "verbose", false, "log in-process networking to stderr")
 }
 
@@ -267,7 +269,7 @@ func (e *env) nodeOrLocalWrite(ctx context.Context) (node.Node, error) {
 // node, printing the note on stderr.
 func (e *env) connect(ctx context.Context, localNote string) (node.Node, error) {
 	if e.apiAddr != "" {
-		return client.New(e.apiAddr), nil
+		return client.New(e.apiAddr).WithToken(e.token), nil
 	}
 	r, err := e.openRepo()
 	if err != nil {

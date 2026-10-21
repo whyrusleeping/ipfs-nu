@@ -30,6 +30,8 @@ type Options struct {
 	APIListen, GatewayListen string
 	// SwarmListen overrides swarm.listen when non-empty (multiaddrs).
 	SwarmListen []string
+	// ProducerListen overrides api.producer.listen when non-empty (tests).
+	ProducerListen string
 	// NoNetwork runs without a swarm (no fetching, no serving); NoMDNS keeps the swarm
 	// but disables LAN discovery. Swarm customizes the swarm further (tests).
 	NoNetwork, NoMDNS bool
@@ -55,6 +57,10 @@ type Daemon struct {
 	maintainCtx  context.Context
 	maintainStop context.CancelFunc
 	maintainDone chan struct{}
+
+	// The producer listener (api.producer.*, rule A8), when configured.
+	prodLn  net.Listener
+	prodSrv *http.Server
 }
 
 // ShutdownTimeout bounds graceful shutdown of the HTTP servers.
@@ -101,7 +107,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		lock.Release()
 		return nil, err
 	}
-	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 2)}
+	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 3)}
 	if !opts.NoNetwork {
 		scfg, err := swarm.RepoConfig(opts.Repo, n.Key, n.Store)
 		if err != nil {
@@ -170,6 +176,10 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	go d.serve(d.apiSrv, d.apiLn)
 	go d.serve(d.gwSrv, d.gwLn)
+	if err := d.startProducer(ctx, opts); err != nil {
+		d.Close()
+		return nil, err
+	}
 	// Store maintenance (D17 A7): GC at the watermark or below the free-space reserve.
 	d.maintainCtx, d.maintainStop = context.WithCancel(ctx)
 	d.maintainDone = make(chan struct{})
@@ -232,12 +242,12 @@ func (d *Daemon) Close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()
-	for _, srv := range []*http.Server{d.apiSrv, d.gwSrv} {
+	for _, srv := range []*http.Server{d.apiSrv, d.gwSrv, d.prodSrv} {
 		if srv != nil {
 			keep(srv.Shutdown(ctx))
 		}
 	}
-	for _, ln := range []net.Listener{d.apiLn, d.gwLn} {
+	for _, ln := range []net.Listener{d.apiLn, d.gwLn, d.prodLn} {
 		if ln != nil {
 			_ = ln.Close()
 		}

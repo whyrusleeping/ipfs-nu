@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/client"
 	"github.com/whyrusleeping/nu/cluster"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/nutest"
@@ -203,5 +204,41 @@ func TestClusterRestart(t *testing.T) {
 	nutest.Eventually(t, "heartbeats", func() bool {
 		hb := a.Local.ClusterService().Peers()[c.ID]
 		return hb.Heartbeat != nil
+	})
+}
+
+// Through the HTTP API (as the CLI uses it): init, secret invite, join, and a dataset
+// whose metadata acknowledgment is reported apart from its content status.
+func TestClusterAPI(t *testing.T) {
+	n := nutest.New(t, 2, nutest.Options{API: true})
+	a := client.New(n.Nodes[0].Daemon.APIAddr())
+	b := client.New(n.Nodes[1].Daemon.APIAddr())
+	if _, err := a.ClusterInit(ctx(t), apiv0.ClusterInitRequest{Name: "lab"}); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := a.ClusterInvite(ctx(t), apiv0.ClusterInviteRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := b.ClusterJoin(ctx(t), apiv0.ClusterJoinRequest{Token: inv.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Member || len(info.Members) != 2 || info.Mode != cluster.ModePrivate {
+		t.Fatalf("joined info %+v", info)
+	}
+	d, err := a.DatasetCreate(ctx(t), node.ScopeCluster, apiv0.DatasetCreateRequest{Name: "photos"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Metadata.Acknowledged || d.Content.State != "none" {
+		t.Fatalf("dataset %+v", d)
+	}
+	if _, err := a.DatasetCreate(ctx(t), node.ScopeLocal, apiv0.DatasetCreateRequest{Name: "photos"}); err == nil {
+		t.Fatal("a local dataset reused a networked dataset's name")
+	}
+	nutest.Eventually(t, "dataset replicated", func() bool {
+		_, err := b.Dataset(ctx(t), node.ScopeCluster, "photos")
+		return err == nil
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -107,6 +108,7 @@ func (s *Server) register() {
 		{"POST", "/get"}:                    s.get,
 		{"POST", "/share"}:                  s.share,
 	}
+	maps.Copy(handlers, s.clusterHandlers())
 	paths := map[string]bool{}
 	for _, rt := range Routes {
 		h, ok := handlers[rt]

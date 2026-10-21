@@ -416,6 +416,6 @@ var root = &command{
 	summary: nu.Name + ": add files, share a link, fetch them elsewhere, browse them locally.",
 	sub: []*command{
 		cmdInit, cmdDaemon, cmdStatus, cmdDoctor, cmdConfig, cmdOperations,
-		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdVersion,
+		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdDataset, cmdCluster, cmdVersion,
 	},
 }

@@ -235,12 +235,9 @@ func (n *Local) ClusterInit(ctx context.Context, req apiv0.ClusterInitRequest) (
 			WithAction("a daemon belongs to at most one networked cluster; use another " + nu.EnvPrefix + "PATH for a second one")
 	}
 	var addrs []string
-	if cs.sw != nil {
-		for _, a := range cs.sw.Addrs() {
+	for _, a := range n.Addrs() {
+		if len(addrs) < 16 {
 			addrs = append(addrs, a.String())
-		}
-		if len(addrs) > 16 {
-			addrs = addrs[:16]
 		}
 	}
 	c, err := cluster.Create(n.clusterOpts("net"), req.Name, req.Mode, n.PeerID(), addrs)
@@ -327,7 +324,7 @@ func (n *Local) ClusterInvite(ctx context.Context, req apiv0.ClusterInviteReques
 // cluster.MaxBoot).
 func (n *Local) bootPeers(c *cluster.Cluster) []cluster.Boot {
 	n.clusters.mu.Lock()
-	sw, svc := n.clusters.sw, n.clusters.svc
+	svc := n.clusters.svc
 	n.clusters.mu.Unlock()
 	v := c.View()
 	addrsOf := func(id wire.PeerID) []string {
@@ -349,14 +346,10 @@ func (n *Local) bootPeers(c *cluster.Cluster) []cluster.Boot {
 	}
 	var boot []cluster.Boot
 	self := cluster.Boot{Peer: n.PeerID()}
-	if sw != nil {
-		for _, a := range sw.Addrs() {
-			if len(self.Addrs) < cluster.MaxBootAddrs {
-				self.Addrs = append(self.Addrs, a.String())
-			}
+	for _, a := range n.Addrs() {
+		if len(self.Addrs) < cluster.MaxBootAddrs {
+			self.Addrs = append(self.Addrs, a.String())
 		}
-	} else {
-		self.Addrs = addrsOf(n.PeerID())
 	}
 	if len(self.Addrs) > 0 {
 		boot = append(boot, self)
@@ -494,6 +487,8 @@ func (n *Local) ack(ctx context.Context, c *cluster.Cluster, w *cluster.Written)
 		wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		acked = svc.WaitAcked(wctx, w.DID, w.Rev, 1)
 		cancel()
+	} else if m, ok := c.View().Members[n.PeerID()]; ok && !m.Deleted && m.Value.State != cluster.StateRemoved && slices.Contains(m.Value.Roles, cluster.RoleStorage) {
+		acked = []wire.PeerID{n.PeerID()} // offline: this storage member holds the commit
 	}
 	for _, id := range acked {
 		md.AckedBy = append(md.AckedBy, id.Base36())

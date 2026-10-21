@@ -23,3 +23,4 @@ Acceptance: reproducible transfer/path tests and congestion/resource results in 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (fabac7e; merged). GO for 0015 on stock quic-go v0.64.1, with conservative adjustments now normative in docs/networking.md D11/D11c/D12: fixed ~1200-byte inner packets with PMTU discovery off, explicit ReadBatch (no SyscallConn passthrough), DATAGRAM payload budget over relays, bounded relay workers, conditional connection preservation. Evidence (experiments/nupath, docs/validation.md): verified 17+ MiB stream survived relay→direct→lossy→outage→new circuit without inner redial (3 runs, 4.1–4.65 s); 3 rootless NAT-lab runs between two NAT fixtures incl. WAN down/up. Not claimed: shared-socket CID demux, physical socket replacement, authenticated probing, final qpath framing, GSO/ECN.

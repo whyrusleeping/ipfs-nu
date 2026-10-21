@@ -1,7 +1,7 @@
 ---
 id: "0036"
 title: Specify readiness evidence, exact-target waits and safe release
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"

@@ -30,6 +30,38 @@ first-byte/direct durations are absent until a consumer measures them. The
 on-demand `natlab` workflow uses root as the stock-runner fallback; remote CI
 execution is not part of this local evidence.
 
+### Port mapping and reaction pipeline (0014, 2026-10-21)
+
+Reproduce with `go test -tags natlab -run '^TestNATLab' -v ./p2p/portmap ./p2p/netmon`
+(or the full `go test -tags natlab ./p2p/...`). In the same rootless environment:
+
+- PCP MAP, NAT-PMP and UPnP SSDP/SOAP clients obtained mappings from in-test router
+  servers. Each successful protocol request installed a real nft DNAT rule before its
+  reply. A new public UDP source reached a private application that had never contacted
+  it. Resetting the server epoch to **zero** and deleting its rule triggered re-mapping;
+  fresh-source inbound probes worked again. Explicit release removed reachability for
+  another fresh source, avoiding conntrack false positives. Measured protocol scenarios:
+  PCP 414 ms, NAT-PMP 435 ms, UPnP 439 ms; complete isolated test 1.75 s.
+- A real dummy-interface creation, link-up and address assignment delivered Linux
+  rtnetlink events and completed all six registered D12 pipeline hooks in **10.5 ms**
+  from the start of the scripted changes (acceptance bound: 1 s).
+- Fast tests additionally cover half-life renewal (one-second granted lease), PCP nonce
+  correlation, PEER/IPv6 packet handling, UPnP endpoint/nesting guards, stage order/error
+  continuation, coalescing and inferred sleep/wake. Wire vectors are in
+  `testdata/vectors/portmap.json`; parser fuzz seeds run in the normal test suite.
+- Pure-Go Darwin arm64 cross-build passed. This is compile evidence, not macOS runtime
+  route-monitor, sleep/wake or router compatibility evidence.
+
+`miniupnpd` and a standalone PCP server were unavailable locally; passwordless sudo was
+unavailable. **Real-daemon interop remains deferred to the on-demand natlab CI workflow**,
+which now installs miniupnpd and runs the portmap/netmon lab binaries as well as the base
+lab. Current automated mapping scenarios still select deterministic in-test servers;
+installation alone does not claim daemon interop. Fake lease expiry is not a kernel lease
+scheduler: renewal timing is tested separately at the client boundary. IPv6 firewall/
+PEER forwarding, UPnP IPv6FirewallControl, real suspend/resume and consumer-router field
+validation remain deferred. Host/AutoNAT/relay/identify/path hooks need owner-side wiring;
+the measured reaction invokes registered test hooks, not a production daemon's recovery.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

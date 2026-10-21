@@ -9,10 +9,20 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
 )
+
+var ErrPeerIDMismatch = errors.New("wire: PeerId mismatch")
+
+type PeerIDMismatchError struct{ Expected, Actual PeerID }
+
+func (e *PeerIDMismatchError) Error() string {
+	return fmt.Sprintf("%v: expected %s, got %s", ErrPeerIDMismatch, e.Expected, e.Actual)
+}
+func (e *PeerIDMismatchError) Unwrap() error { return ErrPeerIDMismatch }
 
 const TLSALPN = "libp2p"
 const tlsSignaturePrefix = "libp2p-tls-handshake:"
@@ -121,7 +131,7 @@ func VerifyTLSCertificate(chain [][]byte, expected PeerID, now time.Time, maxByt
 		return PublicKey{}, err
 	}
 	if expected != "" && key.PeerID() != expected {
-		return PublicKey{}, fmt.Errorf("wire: PeerId mismatch: expected %s, got %s", expected, key.PeerID())
+		return PublicKey{}, &PeerIDMismatchError{Expected: expected, Actual: key.PeerID()}
 	}
 	return key, nil
 }

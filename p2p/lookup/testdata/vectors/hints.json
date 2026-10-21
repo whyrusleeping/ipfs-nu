@@ -1,0 +1,4 @@
+[
+ {"link":"nu://bafk-test?peer=12D3KooWBtg3aaRMjxwedh83aGiUkwSxDwUZkzuJcfaqUmo7R3pq&addr=%2Fip4%2F127.0.0.1%2Fudp%2F4171%2Fquic-v1", "peer":"12D3KooWBtg3aaRMjxwedh83aGiUkwSxDwUZkzuJcfaqUmo7R3pq", "address":"/ip4/127.0.0.1/udp/4171/quic-v1/p2p/12D3KooWBtg3aaRMjxwedh83aGiUkwSxDwUZkzuJcfaqUmo7R3pq"},
+ {"link":"nu://did:plc:example/site?peer=12D3KooWBtg3aaRMjxwedh83aGiUkwSxDwUZkzuJcfaqUmo7R3pq&via=did%3Aplc%3Aexample", "peer":"12D3KooWBtg3aaRMjxwedh83aGiUkwSxDwUZkzuJcfaqUmo7R3pq", "address":""}
+]

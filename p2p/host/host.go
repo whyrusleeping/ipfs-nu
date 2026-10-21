@@ -19,6 +19,7 @@ import (
 
 var ErrLimit = errors.New("host: resource limit reached")
 var ErrNoConnection = errors.New("host: peer not connected")
+var ErrUnsupportedAddress = errors.New("host: direct dial requires /ip4|ip6/.../udp/.../quic-v1/p2p/<id>; DNS and relay resolution are not available")
 
 // Limits are hard local bounds, including handshakes in MaxConnections. Zero
 // selects the documented defaults. Stream slots last until Close or Reset.
@@ -53,6 +54,7 @@ type Config struct {
 	Limits      Limits
 	// ManualStreams disables automatic protocol routing for transport-level users.
 	ManualStreams bool
+	AllowPeer     ConnectionGater
 }
 type endpoint struct {
 	socket    net.PacketConn
@@ -75,6 +77,10 @@ type Host struct {
 	handlers      map[string]*protocolHandler
 	watchers      map[uint64]chan struct{}
 	nextWatcher   uint64
+	gater         ConnectionGater
+	gaters        map[uint64]ConnectionGater
+	nextGater     uint64
+	gateVersion   uint64
 	mu            sync.Mutex
 	closed        bool
 	peers         map[wire.PeerID][]*Conn
@@ -107,6 +113,7 @@ func New(cfg Config) (h *Host, err error) {
 	h.slots = make(chan struct{}, h.limits.MaxConnections)
 	h.acceptReady = make(chan struct{}, 1)
 	h.manualStreams = cfg.ManualStreams
+	h.gater = cfg.AllowPeer
 	h.handlers = make(map[string]*protocolHandler)
 	cert, err := wire.NewTLSCertificate(cfg.Key, time.Now())
 	if err != nil {
@@ -114,8 +121,11 @@ func New(cfg Config) (h *Host, err error) {
 	}
 	h.tls = &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{wire.TLSALPN}, Certificates: []tls.Certificate{cert}, ClientAuth: tls.RequireAnyClientCert, InsecureSkipVerify: true, SessionTicketsDisabled: true} // libp2p identity is verified below, not Web PKI.
 	h.tls.VerifyPeerCertificate = func(raw [][]byte, _ [][]*x509.Certificate) error {
-		_, err := wire.VerifyTLSCertificate(raw, "", time.Now(), 16<<10)
-		return err
+		key, err := wire.VerifyTLSCertificate(raw, "", time.Now(), 16<<10)
+		if err != nil {
+			return err
+		}
+		return h.checkPeer(key.PeerID())
 	}
 	h.quic = &quic.Config{Versions: []quic.Version{quic.Version1}, HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: time.Minute, KeepAlivePeriod: 20 * time.Second, MaxIncomingStreams: int64(h.limits.MaxStreamsPerConnection), MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: 64 << 10, MaxStreamReceiveWindow: 1 << 20, InitialConnectionReceiveWindow: 256 << 10, MaxConnectionReceiveWindow: 4 << 20}
 	listen := cfg.Listen
@@ -303,7 +313,17 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		return nil, err
 	}
 	c := &Conn{host: h, quic: qc, peer: key.PeerID(), key: key, outbound: outbound, streams: make(map[*Stream]struct{})}
-	h.mu.Lock()
+	for {
+		version, err := h.checkPeerVersion(c.peer)
+		if err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		if h.gateVersion == version {
+			break
+		}
+		h.mu.Unlock()
+	}
 	defer h.mu.Unlock()
 	if h.closed {
 		return nil, net.ErrClosed
@@ -376,6 +396,9 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := h.checkPeer(id); err != nil {
+		return nil, err
+	}
 	if c, ok := h.Connection(id); ok {
 		return c, nil
 	}
@@ -393,8 +416,18 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 		return nil, err
 	}
 	tlsConfig := h.tls.Clone()
+	verificationError := make(chan error, 1)
 	tlsConfig.VerifyPeerCertificate = func(raw [][]byte, _ [][]*x509.Certificate) error {
 		_, err := wire.VerifyTLSCertificate(raw, id, time.Now(), 16<<10)
+		if err == nil {
+			err = h.checkPeer(id)
+		}
+		if err != nil {
+			select {
+			case verificationError <- err:
+			default:
+			}
+		}
 		return err
 	}
 	dialCtx, cancel := context.WithCancel(ctx)
@@ -404,6 +437,11 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 	qc, err := ep.transport.Dial(dialCtx, remote, tlsConfig, h.quic)
 	if err != nil {
 		h.releaseConnection()
+		select {
+		case verification := <-verificationError:
+			err = errors.Join(err, verification)
+		default:
+		}
 		return nil, err
 	}
 	context.AfterFunc(qc.Context(), h.releaseConnection)
@@ -419,7 +457,7 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 }
 func dialAddress(addr wire.Multiaddr) (*net.UDPAddr, wire.PeerID, int, error) {
 	if addr.Opaque() {
-		return nil, "", 0, wire.ErrFormat
+		return nil, "", 0, ErrUnsupportedAddress
 	}
 	m, err := ma.NewMultiaddrBytes(addr.Bytes())
 	if err != nil {
@@ -427,7 +465,7 @@ func dialAddress(addr wire.Multiaddr) (*net.UDPAddr, wire.PeerID, int, error) {
 	}
 	parts := ma.Split(m)
 	if len(parts) != 4 || parts[1].Protocol().Code != ma.P_UDP || parts[2].Protocol().Code != ma.P_QUIC_V1 || parts[3].Protocol().Code != ma.P_P2P {
-		return nil, "", 0, wire.ErrFormat
+		return nil, "", 0, ErrUnsupportedAddress
 	}
 	family := 4
 	switch parts[0].Protocol().Code {
@@ -435,7 +473,7 @@ func dialAddress(addr wire.Multiaddr) (*net.UDPAddr, wire.PeerID, int, error) {
 	case ma.P_IP6:
 		family = 6
 	default:
-		return nil, "", 0, wire.ErrFormat
+		return nil, "", 0, ErrUnsupportedAddress
 	}
 	id, err := wire.ParsePeerID(parts[3].Value())
 	if err != nil {

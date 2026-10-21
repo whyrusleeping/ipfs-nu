@@ -180,6 +180,54 @@ relay/direct packet paths (D11). With standard peers, a session can hold separat
 and relayed connections once that support lands. [Resumable requests](data.md#d14-transfer-protocols)
 let transfers change connections without restarting the entire download.
 
+### v0 direct/hinted sessions
+
+`host.NewSessions` wraps a Host with one canonical Session per PeerId. `Connect`
+coalesces concurrent attempts and reuses live authenticated host connections;
+`Session.OpenStream` opens an optimistic protocol stream, reconnecting before a
+new request if the connection has gone away. Never replay sent application bytes.
+The request protocol verifies chunks/objects and supplies a new resume request.
+Stream creation contexts do not replace request I/O deadlines; always Close/Reset.
+A canceled connect waiter does not cancel the shared attempt for other waiters;
+the attempt is bounded by ConnectTimeout, and manager Close/Forget cancels it.
+
+Candidates come from explicit/member/link addresses, the local cache, and streaming
+lookup results, starting dials as soon as addresses arrive. Sort available candidates
+LAN/loopback first, then global IPv6, then public IPv4, using confidence within each
+rank. Default stagger is 50 ms; a failed last active dial advances immediately.
+Defaults are 128 canonical sessions/explicit peers, 32 candidates per attempt,
+16 concurrent dials across the manager, four per attempt, 2 s per dial and 5 s per
+connect attempt. The first successful authenticated path wins; cancel/join losing
+dials and close extra successful connections. Retained session handles become invalid
+after Forget, which releases the session slot and can also revoke membership.
+
+Only literal QUIC-v1 direct addresses are dialable in v0. DNS/circuit hints are
+preserved but fail with ErrUnsupportedAddress until their resolver/transport lands.
+No-address cases match ErrNoAddresses. DialError retains per-address reasons
+and lookup errors and unwraps them for errors.Is/As. Certificate PeerId mismatch
+has a typed Expected/Actual error, preserved through QUIC's handshake failure.
+Successful dial addresses enter the optional cache at confidence 1 with seven-day
+expiry; do not promote an address merely because Dial reused another connection.
+Cache persistence failure warns but does not discard a working connection.
+
+Private mode treats explicit Peers/SetPeer as administrative authorization and
+never queries the supplied Resolver. Hints/cache cannot authorize a new member;
+AddHints for a nonmember is rejected. The owner must not separately start public
+lookup/mDNS services in explicit mode. Private sessions install an additional host
+connection guard, intersecting any application/harness policy. Construct it before
+registering application handlers; use Host.Config.AllowPeer to gate private identity
+admission from the moment the listener opens. The guard does not undo data served
+before its installation. Closing the private manager leaves a deny-all guard until
+host shutdown, never silently making it public.
+The session manager owns neither the Host nor the lookup service; close those too.
+
+Host connection gating applies to inbound/outbound certificate identities, connection
+admission and new stream admission. Primary and additional policies intersect and
+run outside host locks. SetConnectionGater/RecheckConnections invalidate concurrent
+admission decisions and close newly denied live connections. This supports harness
+partitions without socket replacement; clearing the primary gate cannot override a
+private-membership guard. Disconnect explicitly drops a peer's current connections.
+
 ## D10. Home relays
 
 Every non-publicly-reachable node on the public Nu network maintains home/backup circuit
@@ -341,6 +389,47 @@ CIDv1 PeerIds to fit DNS labels; the PeerId in the dial address authenticates th
 A node record containing only relay/dnsaddr hints does not conceal direct IPs in public
 DNS/peer records. Specify/explain default address exposure and relay-only behavior. Hint,
 LAN and explicit-member discovery work independently of global Amino support.
+
+### v0 lookup, cache and mDNS
+
+`p2p/lookup.Resolver` streams results while all sources run in parallel. The default
+service combines the cache and libp2p mDNS; additional sources implement the bounded,
+cancelable Source interface. Defaults: 32 simultaneous lookups, 3 s per lookup, ten
+sources including cache/mDNS, 256 distinct results per lookup and 32 buffered results.
+Cancellation stops source work; a source must honor context and the emit callback.
+Hints are address claims, never membership or identity authorization. Normalize every
+address to a terminal `/p2p/<destination>`; reject conflicting destination identities.
+Share links accept repeated `peer` and `addr` query fields (8 KiB link, 16 peers,
+32 addresses, 1024 bytes per address). A suffix-less address needs exactly one peer;
+with multiple peers the destination suffix disambiguates, and must name a listed peer.
+The member-record adapter accepts an authenticated member rkey and its addrs field;
+cluster record verification remains the caller's job. Content/name/`via` resolution
+is separate. The lookup layer does not consume atproto feeds.
+
+The address cache retains Seen, Expires, source and original confidence. Effective
+confidence is `original * 2^(-age / halfLife)`, with age clamped to zero and a default
+24 h half-life. Hints start at 0.6 with 24 h expiry; mDNS at 0.5 with up to 120 s expiry.
+Expired entries are not returned. Defaults cap 256 peers and 32 source/address entries
+per peer, evicting oldest entries. Independent sources do not refresh each other's
+confidence. Persistence has a Load/Save snapshot interface for a later SQLite adapter.
+The interim FileStore uses JSON `{v:1, entries:[...]}`, at most 1 MiB/8192 entries,
+regular 0600 files, same-directory temporary files, fsync, atomic rename and directory
+fsync. Callers own the private parent directory. Invalid versions/entries fail closed.
+
+mDNS advertises PTR/SRV/TXT plus A/AAAA under `_p2p._udp.local.` on UDP 5353
+(224.0.0.251 and ff02::fb), using `dnsaddr=<multiaddr>/p2p/<id>` TXT strings.
+TXT, SRV and address records use cache-flush; PTR does not. SRV port 4001 is a
+compatibility placeholder: only TXT multiaddrs are used for peer connectivity.
+Query on startup and lookup, then every 30 s; answer matching service/instance/host
+queries, including unicast-response requests. Advertise at most eight addresses,
+TTL 120 s, expand wildcard listeners to the selected interface's IPs, and omit
+unscoped link-local IPv6. Packet limit is 9000 bytes, 128 questions/records total
+checked before DNS decoding, and 32 received address claims per packet. Ignore
+malformed/other-service/self advertisements and cap received TTL at 120 s.
+Cluster service names are `_p2p-<first-10-hex-SHA256(clusterID)>._udp.local.`;
+this is collision avoidance, not authentication or privacy. Discovery is enabled
+unless DisableMDNS is set; explicit interfaces allow loopback-only test harnesses.
+No multicast-capable interface is a reported startup error, not silent enablement.
 
 ## D16. Testing and diagnostics
 

@@ -1,10 +1,10 @@
 ---
 id: "0026"
 title: '0c: Sync layer 2: `/nu/tree/1` (paths, have-diffs, name ranges, inline, resumable)'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0022"
     - "0007"

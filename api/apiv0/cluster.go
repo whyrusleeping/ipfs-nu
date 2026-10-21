@@ -122,9 +122,22 @@ type RepoInfo struct {
 // DatasetCreateRequest creates a dataset record.
 type DatasetCreateRequest struct {
 	Name     string   `json:"name"`
-	Replicas int64    `json:"replicas,omitempty"`
+	Replicas int64    `json:"replicas,omitempty"` // collections default to 0 (no guaranteed copies)
 	Writers  []string `json:"writers,omitempty"`
 	Note     string   `json:"note,omitempty"`
+	// Collection makes the dataset a collection (D22) with Facets declared over item
+	// metadata, Merge "union" (default) or "lww", and Expire "<time facet>=<duration>".
+	Collection bool                 `json:"collection,omitempty"`
+	Facets     map[string]FacetDecl `json:"facets,omitempty"`
+	Merge      string               `json:"merge,omitempty"`
+	Expire     string               `json:"expire,omitempty"`
+}
+
+// FacetDecl declares a collection facet: a JSON Pointer into the metadata record's JSON
+// form and a type (time, number, string or bbox).
+type FacetDecl struct {
+	Ptr  string `json:"ptr" toml:"ptr"`
+	Type string `json:"type" toml:"type"`
 }
 
 // Dataset is a dataset's merged record and heads, with metadata and content status
@@ -136,7 +149,9 @@ type Dataset struct {
 	Replicas int64         `json:"replicas"`
 	Writers  []string      `json:"writers,omitempty"`
 	Note     string        `json:"note,omitempty"`
-	Signer   string        `json:"signer"`
+	// Collection carries a collection's facets and merge mode.
+	Collection *DatasetCollection `json:"collection,omitempty"`
+	Signer     string             `json:"signer"`
 	Head     *DatasetHead  `json:"head,omitempty"`
 	Heads    []DatasetHead `json:"heads,omitempty"` // per-signer heads (union-head input)
 	Metadata MetadataState `json:"metadata"`
@@ -149,4 +164,11 @@ type DatasetHead struct {
 	Kind   string `json:"kind"`
 	Signer string `json:"signer"`
 	HLC    string `json:"hlc"`
+}
+
+// DatasetCollection is a dataset's collection policy.
+type DatasetCollection struct {
+	Facets map[string]FacetDecl `json:"facets,omitempty"`
+	Merge  string               `json:"merge"`
+	Expire string               `json:"expire,omitempty"`
 }

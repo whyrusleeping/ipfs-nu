@@ -126,6 +126,12 @@ var migrations = []string{
 		cid BLOB NOT NULL, mode TEXT NOT NULL, profile TEXT NOT NULL, source TEXT NOT NULL,
 		name TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (cid, mode, source, name)
 	);`,
+	// 2: import cache: (path, hash) → blob CID with the source's size/mtime/inode, so an
+	// unchanged file is not re-hashed on re-add.
+	`CREATE TABLE import_cache (
+		path TEXT NOT NULL, hash INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+		inode INTEGER NOT NULL, cid BLOB NOT NULL, used INTEGER NOT NULL, PRIMARY KEY (path, hash)
+	) WITHOUT ROWID;`,
 }
 
 // SchemaVersion is the schema version this binary writes.

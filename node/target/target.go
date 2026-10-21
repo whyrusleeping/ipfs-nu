@@ -4,11 +4,11 @@
 package target
 
 import (
-	"encoding/base32"
 	"regexp"
 	"strings"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/core/cid"
 )
 
 // Kind is the form a target took.
@@ -51,10 +51,13 @@ type Target struct {
 // Forms is the plain-language list of accepted forms, used in errors.
 const Forms = "a CID (b…[/path]), a link (nu://…, at://…, rasl://…), a public name (<handle-or-did>/<name>[/path]) or a dataset (<dataset>[@<version>][/path])"
 
+// cidTextLen is the length of a CID's text form; a string of that length starting with
+// 'b' that does not parse is reported as a bad CID rather than a dataset name.
+const cidTextLen = 1 + (cid.Size*8+4)/5
+
 var (
-	cidEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
-	datasetRE   = regexp.MustCompile(`^[a-z0-9-]+$`)
-	versionRE   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	datasetRE = regexp.MustCompile(`^[a-z0-9-]+$`)
+	versionRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 // Parse parses s. Errors are *apiv0.Error with code invalid_argument and list the forms.
@@ -87,6 +90,9 @@ func Parse(s string) (Target, error) {
 		t.Kind, t.CID, t.Path = KindCID, first, rest
 		return t, nil
 	}
+	if len(first) == cidTextLen && first[0] == 'b' {
+		return t, invalid("%q is not a DASL CID (raw or DRISL, SHA-256 or BLAKE3)", first)
+	}
 	if strings.Contains(first, ".") || strings.HasPrefix(first, "did:") {
 		name, path, _ := strings.Cut(rest, "/")
 		if name == "" {
@@ -103,19 +109,11 @@ func Parse(s string) (Target, error) {
 	return t, invalid("%q is not a valid target", s)
 }
 
-// IsCID reports whether s looks like a base32 CIDv1 (`b` multibase prefix, lowercase
-// base32 body that decodes and starts with version 1). Full validation of codec and hash
-// belongs to the CID package.
+// IsCID reports whether s is a CID this build can act on: the canonical text form of a
+// DASL/BDASL CIDv1 (raw or DRISL, SHA-256 or BLAKE3), per core/cid.
 func IsCID(s string) bool {
-	if len(s) < 2 || s[0] != 'b' {
-		return false
-	}
-	body := s[1:]
-	b, err := cidEncoding.DecodeString(body)
-	if err != nil || len(b) < 4 {
-		return false
-	}
-	return b[0] == 0x01
+	_, err := cid.Parse(s)
+	return err == nil
 }
 
 // Supported returns nil when this build can act on the target, else a not_supported error

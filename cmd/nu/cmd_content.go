@@ -140,8 +140,8 @@ func finishOperation[T any](e *env, ctx context.Context, n node.Node, op *apiv0.
 
 var cmdCat = &command{
 	name:    "cat",
-	args:    "<cid[/path]>",
-	summary: "write a file's bytes to stdout",
+	args:    "<cid[/path] | at://did/collection/rkey>",
+	summary: "write a file's bytes to stdout (an atproto record as JSON)",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		if err := parseFlags(fs, args); err != nil {
@@ -167,8 +167,8 @@ var cmdCat = &command{
 
 var cmdLs = &command{
 	name:    "ls",
-	args:    "<cid[/path]>",
-	summary: "list a directory (or describe a file)",
+	args:    "<cid[/path] | at://did[/collection]>",
+	summary: "list a directory (or describe a file); list an atproto snapshot's collections or records",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		if err := parseFlags(fs, args); err != nil {
@@ -196,11 +196,12 @@ var cmdLs = &command{
 
 var cmdGet = &command{
 	name:    "get",
-	args:    "[-o path] <cid-or-link>",
-	summary: "write a CID or share link to disk (a file, or a directory for a tree)",
+	args:    "[-o path] [--blobs] <cid-or-link | at://did/collection/rkey | at://did>",
+	summary: "write a CID or share link to disk; print a verified atproto record; snapshot an atproto repository",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		out := fs.String("o", "", "output path (default: the content's name or CID in the current directory)")
+		blobs := fs.Bool("blobs", false, "with an at://<did> repository: also fetch the blobs its records reference (≤ 8 MiB each)")
 		noWait := fs.Bool("no-wait", false, "print the operation and return instead of following it")
 		if err := parseFlags(fs, args); err != nil {
 			return err
@@ -208,6 +209,17 @@ var cmdGet = &command{
 		t, err := oneTarget(fs.Args())
 		if err != nil {
 			return err
+		}
+		if t.Kind == target.KindAtproto {
+			if *out != "" {
+				if *out, err = filepath.Abs(*out); err != nil {
+					return err
+				}
+			}
+			return getAt(ctx, e, t.Raw, *out, *blobs, *noWait)
+		}
+		if *blobs {
+			return usagef("--blobs applies to at://<did> repository snapshots")
 		}
 		req := apiv0.GetRequest{Target: t.Raw}
 		if *out != "" {

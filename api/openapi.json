@@ -146,6 +146,26 @@
     },
     "/cluster/metrics": {
       "get": {"summary": "Collection aggregates in the Prometheus text format", "responses": {"200": {"description": "metrics", "content": {"text/plain": {"schema": {"type": "string"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/at/record": {
+      "get": {"summary": "Fetch at://<handle-or-did>/<collection>/<rkey> from the account's PDS with its proof (commit signature against the DID document key, MST inclusion) and return the verified record as atproto-style JSON with its commit CID and rev. The proof blocks are kept in the store.",
+        "parameters": [{"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "at:// record URI"}],
+        "responses": {"200": {"description": "verified record", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AtRecord"}}}}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "500": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/at/snapshot": {
+      "post": {"summary": "Start a snapshot operation (result: AtSnapshot): getRepo for at://<handle-or-did>, verified completely (signature, MST, records), stored and pinned under the atrepo profile; with blobs, referenced blobs ≤ 8 MiB too (atrepo+blobs). Browse the result with /ls and /cat on at:// targets and on the gateway's /at/ routes.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AtSnapshotRequest"}}}},
+        "responses": {"202": {"$ref": "#/components/responses/Operation"}, "400": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/car/import": {
+      "post": {"summary": "Start a CAR import operation (result: CarImport): read a DASL CAR from an absolute local path, verify it under a walk profile (nu-tree, atrepo, drisl; detected from the root when omitted) and pin it. atrepo imports verify the signature with the given key or the online-resolved DID document; offline imports verify structure only and say so.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CarImportRequest"}}}},
+        "responses": {"202": {"$ref": "#/components/responses/Operation"}, "400": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/car": {
+      "get": {"summary": "Export a held root as a CAR under a walk profile: atrepo in streamable order (commit, MST pre-order with records interleaved), nu-tree and drisl in pre-order; every block once. The root must be complete under the profile.",
+        "parameters": [{"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "root CID"}, {"name": "profile", "in": "query", "schema": {"type": "string", "enum": ["nu-tree", "atrepo", "drisl"]}, "description": "walk profile (detected from the root when omitted)"}],
+        "responses": {"200": {"description": "CAR v1", "content": {"application/vnd.ipld.car": {"schema": {"type": "string", "format": "binary"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
     }
   },
   "components": {
@@ -153,7 +173,7 @@
       "id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
       "cursor": {"name": "cursor", "in": "query", "schema": {"type": "string"}, "description": "opaque cursor from next_cursor"},
       "limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 1000}, "description": "page size (default 100)"},
-      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path; other target forms answer not_supported"}
+      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path, a nu:// link, or an at:// URI (ls/cat); other target forms answer not_supported"}
     },
     "responses": {
       "Error": {"description": "error envelope", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
@@ -243,7 +263,12 @@
       "CollectionPush": {"type": "object", "required": ["path", "id", "state", "seq", "created", "updated"], "properties": {"path": {"type": "string"}, "id": {"type": "string"}, "state": {"type": "string", "enum": ["accepted", "fetching", "written", "failed", "removed"]}, "duplicate": {"type": "boolean"}, "replace": {"type": "boolean"}, "entry": {"type": "string"}, "size": {"type": "integer"}, "meta": {"type": "string"}, "head": {"type": "string"}, "sources": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/URLSource"}}, "tries": {"type": "integer"}, "error": {"$ref": "#/components/schemas/Error"}, "seq": {"type": "integer"}, "created": {"type": "string", "format": "date-time"}, "updated": {"type": "string", "format": "date-time"}}},
       "CollectionPushBatchLine": {"type": "object", "required": ["line"], "properties": {"line": {"type": "integer"}, "path": {"type": "string"}, "push": {"$ref": "#/components/schemas/CollectionPush"}, "error": {"$ref": "#/components/schemas/Error"}}},
       "CollectionPushPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/CollectionPush"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean"}}},
-      "CollectionUpload": {"type": "object", "required": ["cid", "size"], "properties": {"cid": {"type": "string"}, "size": {"type": "integer"}}}
+      "CollectionUpload": {"type": "object", "required": ["cid", "size"], "properties": {"cid": {"type": "string"}, "size": {"type": "integer"}}},
+      "AtRecord": {"type": "object", "required": ["uri", "did", "collection", "rkey", "cid", "commit", "rev", "value", "source"], "properties": {"uri": {"type": "string"}, "did": {"type": "string"}, "handle": {"type": "string"}, "pds": {"type": "string"}, "collection": {"type": "string"}, "rkey": {"type": "string"}, "cid": {"type": "string"}, "commit": {"type": "string"}, "rev": {"type": "string"}, "value": {"description": "atproto-style JSON ($link, $bytes)"}, "source": {"type": "string", "enum": ["pds", "snapshot"]}, "identity_age": {"type": "string"}, "data_model": {"type": "string"}}},
+      "AtSnapshotRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "at://<handle-or-did>"}, "blobs": {"type": "boolean"}}},
+      "AtSnapshot": {"type": "object", "required": ["did", "commit", "rev", "records", "nodes", "profile"], "properties": {"did": {"type": "string"}, "handle": {"type": "string"}, "pds": {"type": "string"}, "commit": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "nodes": {"type": "integer"}, "bytes": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "profile": {"type": "string", "enum": ["atrepo", "atrepo+blobs"]}, "blobs": {"type": "integer"}, "blobs_oversized": {"type": "integer"}, "blobs_failed": {"type": "integer"}}},
+      "CarImportRequest": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "absolute path of the CAR"}, "profile": {"type": "string", "enum": ["nu-tree", "atrepo", "drisl"]}, "key": {"type": "string", "description": "did:key or publicKeyMultibase that signed the commit"}, "offline": {"type": "boolean"}, "pin": {"type": "boolean"}}},
+      "CarImport": {"type": "object", "required": ["root", "profile", "blocks", "bytes", "objects", "pinned"], "properties": {"root": {"type": "string"}, "profile": {"type": "string"}, "blocks": {"type": "integer"}, "bytes": {"type": "integer"}, "unreferenced": {"type": "integer"}, "objects": {"type": "integer"}, "pinned": {"type": "boolean"}, "did": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "signature": {"type": "string"}, "signed_by": {"type": "string"}}}
     }
   }
 }

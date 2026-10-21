@@ -255,6 +255,24 @@ nu ls at://<did>[/<collection>]                # list a held snapshot or live re
 - Content commands work on atproto objects by CID like any other object: `cat`/`dag get` on
   record and commit CIDs, and `/nu/bytes/1` and RASL on repo blocks and blobs.
 
+Decided in 0053 (mechanics in [api.md](api.md#atproto-records-snapshots-and-cars-0053)):
+
+- A held snapshot is a recursive `atrepo` (or `atrepo+blobs`) pin of the verified commit
+  named `at://<did>@<rev>`; browsing reads the held MST without re-verifying. Every
+  `get at://<did>` adds a snapshot pin; older revs stay until unpinned (local history is
+  private by default, as above). `@<rev>` in an at:// target or `/at/` path selects one.
+- Record proofs are stored but not pinned: `get` of a record keeps the commit, path nodes
+  and record re-verifiable until GC, without growing the pin set per record.
+- `--blobs` takes blob CIDs from the verified records' refs (the `atrepo+blobs` walk),
+  never from `listBlobs`, so every blob fetched is one a record names.
+- Offline `car import --profile atrepo` verifies structure and reports the signature as
+  unverified unless `--key` is given or the DID resolves; the import is still pinned, so
+  the user decides what an unverified signature means for their data.
+- The `drisl` profile follows every tag-42 link of held DRISL blocks (raw blocks end the
+  walk); it is bounded by the store's held set and the CAR's 2²⁴-block limit. Exports under
+  `nu-tree`/`drisl` refuse raw blobs over the 8 MiB whole-object limit, since CAR blocks
+  are verified whole.
+
 ### atproto accounts as archive datasets
 
 A cluster or one-node dataset may use an atproto account as its source (see

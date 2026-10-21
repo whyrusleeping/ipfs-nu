@@ -32,6 +32,7 @@ import (
 
 	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/blob"
+	"github.com/whyrusleeping/nu/core/car"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
@@ -107,6 +108,7 @@ func Open(dir string, opts Options) (*Store, error) {
 		"nu-catalog":   tree.CatalogLinks,
 		"atrepo":       atrepo.Links,
 		"atrepo+blobs": atrepo.LinksWithBlobs,
+		"drisl":        car.DRISLLinks,
 	}}
 	return s, nil
 }

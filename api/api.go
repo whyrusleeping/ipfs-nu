@@ -111,6 +111,7 @@ func (s *Server) register() {
 	maps.Copy(handlers, s.clusterHandlers())
 	maps.Copy(handlers, s.collectionHandlers())
 	maps.Copy(handlers, s.pushHandlers())
+	maps.Copy(handlers, s.atprotoHandlers())
 	paths := map[string]bool{}
 	for _, rt := range Routes {
 		h, ok := handlers[rt]

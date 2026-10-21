@@ -517,7 +517,7 @@ required by the named task before it ships.
 | N27 | G10 | MASL `content-type: text/html` on bare origin; `set-cookie`/`location`/CRLF in values; CSP that loosens | download; dropped; intersected | gate: 0055 |
 | N28 | P1–P3 | public listener configured on a members-only node without reader auth | refuses to listen; `/api/` absent on public listener | gate: 0043 |
 | N29 | P4/P5 | RASL for unheld CID on a public seed; CORS on loopback RASL | 404, no fetch; no CORS header | gate: 0052 |
-| N30 | G5 | `/at/` record with HTML/script in a string field | inert JSON/text, CSP | gate: 0053 |
+| N30 | G5 | `/at/` record with HTML/script in a string field; hostile collection/rkey names | inert JSON with CSP; listings escape, link only valid names | `gateway.TestAtRoutesInert`, `node.TestAtprotoSnapshotBrowseCar` |
 | N31 | X1 | `../x`, `/x`, `a/../../x`, `a\..\x`, NUL, `./x` | invalid_argument, nothing written | `extract.TestExtractSafety` |
 | N32 | X2 | symlink in destination (dir on the way, file being replaced) | aborts, nothing through the link | `extract.TestExtractSafety` |
 | N33 | X3 | symlink entry | skipped, reported | `extract.TestExtractSafety` |
@@ -538,6 +538,10 @@ required by the named task before it ships.
   rerun against the public origin scheme in all three browsers; cert/deployment runbook.
 - **0052 (RASL)**: N29; RASL on loopback has no CORS; the SSRF rows of 0061 for `rasl://`.
 - **0053 (atproto)**: N30; `/at/` has no site origin and blobs are downloads (G5).
+  Implemented: `/at/` serves held snapshots only (P4; `gateway.TestAtRoutesInert` covers
+  the site-origin and unheld cases), DID documents and PDS endpoints go through the
+  `httpsrc` policy (`atproto.TestFetch` refuses a private PDS address). Independent
+  review pending.
 - **0055 (MASL bundles)**: G10 in full, N27, bundle rendering only on site origins,
   `.tile` headers through the same allowlist.
 - **First name route** (names track): G5 label encoding and N26 before any name path
@@ -558,8 +562,8 @@ work log with the commit reviewed. A gate without a signed review is not met.
 
 ### Shared HTTPS source policy
 
-`httpsrc` is the common streaming GET client for URL ingest and future RASL/FISL/atproto
-consumers. HTTPS is mandatory unless explicitly configured otherwise. It uses no ambient
+`httpsrc` is the common streaming GET client for URL ingest, atproto identity and PDS
+requests (package `atproto`) and future RASL/FISL consumers. HTTPS is mandatory unless explicitly configured otherwise. It uses no ambient
 proxy, cookies, credentials, decompression or connection reuse. Each connection resolves
 once, rejects any forbidden address in the answer, then dials a checked IP literal (TLS
 still authenticates the URL hostname). Loopback, private, link-local, unspecified,

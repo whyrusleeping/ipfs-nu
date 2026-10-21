@@ -126,15 +126,12 @@ func IsCID(s string) bool {
 }
 
 // Supported returns nil when this build can act on the target, else a not_supported error
-// saying what to do. CID targets and CID share links are supported; at://, rasl://, names
-// and datasets are not yet.
+// saying what to do. CID targets, CID share links and at:// targets are supported;
+// rasl://, names and datasets are not yet.
 func (t Target) Supported() error {
 	switch t.Kind {
-	case KindCID, KindLink:
+	case KindCID, KindLink, KindAtproto:
 		return nil
-	case KindAtproto:
-		return &apiv0.Error{Code: apiv0.CodeNotSupported, Message: "at:// targets are not supported yet",
-			Action: "atproto record and repo fetch arrive after v0; use a CID for now"}
 	case KindRASL:
 		return &apiv0.Error{Code: apiv0.CodeNotSupported, Message: "rasl:// targets are not supported yet",
 			Action: "RASL retrieval arrives after v0; use a CID for now"}

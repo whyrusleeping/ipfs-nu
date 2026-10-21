@@ -27,3 +27,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (d20d70a). core/blob outboards, ExtractSlice, incremental DecodeSlice with per-group CorruptError. Evidence: TestBaoVectors (standard + abao 16 KiB group vectors), TestRangeSliceAndCorruption. Byte-range→group rule (start rounds down, end up) recorded in docs/data.md D2; the BDASL page's 'round start up' looks like an upstream error — worth raising with DASL.

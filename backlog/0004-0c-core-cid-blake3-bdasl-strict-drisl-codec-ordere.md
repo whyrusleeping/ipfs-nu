@@ -29,3 +29,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (a9f578c, merged 2358a5c). Hand-rolled strict core/cid; core/drisl (limits, struct mapping, $type, atproto mode, $link/$bytes JSON); core/car streaming verified reader/writer, CARv2 rejection, PreOrder helper. Evidence: TestDASLTestingVectors (92 cases incl. BDASL), TestAtprotoFixtures, TestRejectNonCanonical, TestRoundTripProperty, FuzzDecode, FuzzReader. JSON rules recorded in docs/dasl.md.

@@ -1,7 +1,7 @@
 ---
 id: "0010"
 title: '0a: identify (+push), ping, observed-address tracking'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

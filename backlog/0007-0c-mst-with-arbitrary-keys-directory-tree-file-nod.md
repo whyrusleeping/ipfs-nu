@@ -30,3 +30,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (024023f). core/mst profiled MST (Get/Put/Delete/Walk/Prefix/Diff/Prove/VerifyProof), core/tree formats + BuildFS over fs.FS. Evidence: TestOrderIndependence, TestVectors (testdata/vectors/nu-tree), TestLookup100k (≤5 nodes), TestDiffAndProofs, FuzzNodeDecode, FuzzDirNode. Node encoding, name/mode/symlink/size rules decided in docs/data.md D3. Range/boundary proofs not yet (needed by 0026).

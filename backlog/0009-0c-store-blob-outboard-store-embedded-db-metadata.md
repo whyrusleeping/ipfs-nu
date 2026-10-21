@@ -31,3 +31,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (f4edbc3). store/ with SQLite (user_version migrations), blob+outboard files, partial blobs, pins with sources/walk profiles, GC with grace, no-copy. Evidence: TestAddGet64MiB (peak heap), TestAddGetMultiGB (NU_SLOW, 3 GiB, 24 s), TestPartialResume, TestGCKeepsPinned, TestKillMidWrite (SIGKILL child), TestNoCopy. Gap: outboards are always files (only blobs ≤16 KiB are inline) — a storage optimization, deferred. Name/peer cache tables are left for their owners as new migrations; unique-bytes accounting is 0064.

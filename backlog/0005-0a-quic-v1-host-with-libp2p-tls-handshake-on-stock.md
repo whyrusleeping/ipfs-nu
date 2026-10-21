@@ -1,7 +1,7 @@
 ---
 id: "0005"
 title: '0a: QUIC-v1 host with libp2p TLS handshake on stock quic-go'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

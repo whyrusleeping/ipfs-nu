@@ -1,7 +1,7 @@
 ---
 id: "0008"
 title: '0a: multistream-select 1.0 (optimistic) + stream/protocol routing'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

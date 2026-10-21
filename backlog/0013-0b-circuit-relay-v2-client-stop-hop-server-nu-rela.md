@@ -29,3 +29,4 @@ Circuit relay v2 (`/libp2p/circuit/relay/0.2.0/hop` + `/stop`) and the `nu relay
 
 ## Work log
 - 2026-10-21: Done on track/net (bcb11d1, 6f6b503; merged 415b43e). p2p/proto/circuit client (reserve/vouchers/renewal/CONNECT/STOP) + HOP server with limits and an admitted allow-list; relay/ assembly (host+identify+AutoNAT server+HOP, UDP 443 default). Evidence: loopback client/relay/target + limits tests, natlab TestCircuitToNATTarget, experiments/TestCircuitV2 vs go-libp2p v0.50.0 in both roles, decoder fuzz seeds. Not done: answering from an alternate IP on request (no standard AutoNAT v2 field; moved to 0018, which consumes it); `nu relay` CLI wiring (relay.New is ready).
+- 2026-10-21: `nu relay` CLI wired (2a69d89): key under repo lock, --listen/--advertise/--admit/limits, [relay] config section; TestCLIRelayServesAndStops.

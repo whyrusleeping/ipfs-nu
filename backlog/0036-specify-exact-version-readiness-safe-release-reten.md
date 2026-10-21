@@ -27,3 +27,4 @@ Acceptance: explicit feasibility/freshness/release rules in the owning docs with
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/app (18a950c; merged). Contracts: docs/operations.md Readiness E1–E10, waits W1–W6, safe release S1–S8, matrix R1–R20 with gates for 0045/0046/0047/0048; docs/cluster.md completion-report heartbeat encoding; docs/follow.md seed waits, DID-wide follows; docs/api.md ContentState hook. Conservative defaults chosen (ready = every owner's fresh report; evidence.fresh 5 min; release.settle 10 min; release.auto=false) — open questions raised to the user: per-owner vs per-blob k counting, default timings, non-member public seeds satisfying seed waits.

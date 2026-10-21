@@ -1,13 +1,15 @@
 // Package mst implements one Merkle Search Tree with profiles (D3, D21). A profile fixes the
 // depth hash granularity (SHA-256 of the key, counted in LevelBits-bit units), the node
 // schema (Codec), value form and limits. The Nu directory profile lives in core/tree; the
-// atproto v3 profile (2-bit units, prefix-compressed {l, e: [{p, k, v, t}]}) is a second
-// Codec/LevelBits pair.
+// atproto v3 profile (2-bit units, prefix-compressed {l, e: [{p, k, v, t}]}, layered) lives
+// in core/atrepo.
 //
 // Structure: the tree for a key set S is a node holding, in order, the keys of S with the
 // highest layer, and between (and around) them the trees of the remaining keys in each gap.
 // Empty gaps have no subtree and no empty nodes exist except the root of an empty tree, so
-// the root CID depends only on the key/value set.
+// the root CID depends only on the key/value set. Layered profiles (atproto) additionally
+// encode a subtree that skips layers through empty intermediate nodes holding only a left
+// link; those exist only in encoded form, the in-memory tree is the same.
 package mst
 
 import (
@@ -33,6 +35,7 @@ var (
 	ErrNotFound     = errors.New("mst: block not found")
 	ErrInvalidNode  = errors.New("mst: invalid node")
 	ErrNodeTooLarge = errors.New("mst: node exceeds the node size limit")
+	ErrLimit        = errors.New("mst: tree exceeds a structural limit")
 )
 
 // Node is the schema-neutral form of one MST node: an optional left subtree and entries,
@@ -64,6 +67,14 @@ type Profile[V any] struct {
 	Codec       Codec[V]
 	ValidKey    func(key string) error // nil accepts any key
 	Equal       func(a, b V) bool      // value equality for Diff
+	// Layered profiles never let a link skip a layer: a link from a node at layer L points
+	// to a node at layer L-1, and missing layers are empty nodes with only a left link. The
+	// root is never such a node. (atproto v3)
+	Layered bool
+	// MaxEntries limits entries per node and MaxLayer the layer of any key, both when
+	// loading and when producing; 0 means unlimited. They bound key-mined trees.
+	MaxEntries int
+	MaxLayer   int
 }
 
 // Layer returns the layer of key.
@@ -81,9 +92,18 @@ func (p *Profile[V]) Layer(key string) int {
 }
 
 type ref[V any] struct {
-	c cid.CID  // zero while dirty
+	c cid.CID  // the node's CID; zero while dirty (or, layered, until loaded)
 	n *node[V] // nil until loaded
+	// Layered profiles: the link as encoded in a parent at layer ctx, which may lead to the
+	// node through empty intermediate nodes. ctx is rootCtx for a tree root.
+	link cid.CID
+	ctx  int
 }
+
+const rootCtx = math.MaxInt
+
+// resolved reports whether r's node CID is known (loaded, flushed, or a root).
+func (r *ref[V]) resolved() bool { return r.c.Defined() }
 
 type node[V any] struct {
 	layer int
@@ -164,47 +184,92 @@ type Tree[V any] struct {
 func (p *Profile[V]) Load(st Store, c cid.CID) *Tree[V] {
 	t := &Tree[V]{p: p, st: st}
 	if c.Defined() {
-		t.root = &ref[V]{c: c}
+		t.root = &ref[V]{c: c, ctx: rootCtx}
 	}
 	return t
+}
+
+// childRef returns the ref for link l found in a node at layer ctx.
+func (t *Tree[V]) childRef(l cid.CID, ctx int) *ref[V] {
+	if !l.Defined() {
+		return nil
+	}
+	if t.p.Layered {
+		return &ref[V]{link: l, ctx: ctx}
+	}
+	return &ref[V]{c: l}
+}
+
+// read fetches, verifies and decodes one node block.
+func (p *Profile[V]) read(st Store, c cid.CID) (*Node[V], error) {
+	data, err := st.Get(c)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > p.MaxNodeSize {
+		return nil, ErrNodeTooLarge
+	}
+	if err := c.Verify(data); err != nil {
+		return nil, err
+	}
+	if c.Codec() != cid.DRISL {
+		return nil, fmt.Errorf("%w: not a DRISL block", ErrInvalidNode)
+	}
+	w, err := p.Codec.Decode(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidNode, err)
+	}
+	if p.MaxEntries > 0 && len(w.Entries) > p.MaxEntries {
+		return nil, fmt.Errorf("%w: %d entries in one node (limit %d)", ErrLimit, len(w.Entries), p.MaxEntries)
+	}
+	return w, nil
 }
 
 func (t *Tree[V]) load(r *ref[V], b bounds) (*node[V], error) {
 	if r.n != nil {
 		return r.n, nil
 	}
-	data, err := t.st.Get(r.c)
-	if err != nil {
-		return nil, err
+	c, ctx := r.c, r.ctx
+	if !c.Defined() {
+		c = r.link
 	}
-	if len(data) > t.p.MaxNodeSize {
-		return nil, ErrNodeTooLarge
-	}
-	if err := r.c.Verify(data); err != nil {
-		return nil, err
-	}
-	if r.c.Codec() != cid.DRISL {
-		return nil, fmt.Errorf("%w: not a DRISL block", ErrInvalidNode)
-	}
-	w, err := t.p.Codec.Decode(data)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidNode, err)
-	}
-	n := &node[V]{}
-	if w.Left.Defined() {
-		n.left = &ref[V]{c: w.Left}
-	}
-	if len(w.Entries) == 0 {
-		if b != top || n.left != nil {
+	emptyOK := b == top && (!t.p.Layered || ctx == rootCtx)
+	var w *Node[V]
+	for {
+		var err error
+		if w, err = t.p.read(t.st, c); err != nil {
+			return nil, err
+		}
+		if len(w.Entries) > 0 || !w.Left.Defined() {
+			break
+		}
+		// An empty node with only a left link: a layered intermediate node.
+		if !t.p.Layered || ctx == rootCtx || ctx <= 1 {
 			return nil, fmt.Errorf("%w: empty node", ErrInvalidNode)
 		}
-		r.n = n
+		ctx--
+		c = w.Left
+		emptyOK = false
+	}
+	n := &node[V]{}
+	if len(w.Entries) == 0 {
+		if !emptyOK {
+			return nil, fmt.Errorf("%w: empty node", ErrInvalidNode)
+		}
+		r.c, r.n = c, n
 		return n, nil
 	}
 	n.layer = t.p.Layer(w.Entries[0].Key)
 	if n.layer >= b.below {
 		return nil, fmt.Errorf("%w: layer %d not below parent layer %d", ErrInvalidNode, n.layer, b.below)
 	}
+	if t.p.Layered && ctx != rootCtx && n.layer != ctx-1 {
+		return nil, fmt.Errorf("%w: node at layer %d linked from layer %d", ErrInvalidNode, n.layer, ctx)
+	}
+	if t.p.MaxLayer > 0 && n.layer > t.p.MaxLayer {
+		return nil, fmt.Errorf("%w: layer %d (limit %d)", ErrLimit, n.layer, t.p.MaxLayer)
+	}
+	n.left = t.childRef(w.Left, n.layer)
 	n.ents = make([]ent[V], len(w.Entries))
 	for i, e := range w.Entries {
 		if t.p.ValidKey != nil {
@@ -218,15 +283,12 @@ func (t *Tree[V]) load(r *ref[V], b bounds) (*node[V], error) {
 		if t.p.Layer(e.Key) != n.layer {
 			return nil, fmt.Errorf("%w: mixed layers", ErrInvalidNode)
 		}
-		n.ents[i] = ent[V]{key: e.Key, val: e.Val}
-		if e.Right.Defined() {
-			n.ents[i].right = &ref[V]{c: e.Right}
-		}
+		n.ents[i] = ent[V]{key: e.Key, val: e.Val, right: t.childRef(e.Right, n.layer)}
 	}
 	if (b.hasLo && n.ents[0].key <= b.lo) || (b.hasHi && n.ents[len(n.ents)-1].key >= b.hi) {
 		return nil, fmt.Errorf("%w: key outside its subtree range", ErrInvalidNode)
 	}
-	r.n = n
+	r.c, r.n = c, n
 	return n, nil
 }
 
@@ -255,7 +317,11 @@ func (t *Tree[V]) Put(key string, val V) error {
 			return err
 		}
 	}
-	r, err := t.insert(t.root, top, key, val, t.p.Layer(key))
+	layer := t.p.Layer(key)
+	if t.p.MaxLayer > 0 && layer > t.p.MaxLayer {
+		return fmt.Errorf("%w: key %q has layer %d (limit %d)", ErrLimit, key, layer, t.p.MaxLayer)
+	}
+	r, err := t.insert(t.root, top, key, val, layer)
 	if err != nil {
 		return err
 	}
@@ -340,6 +406,12 @@ func (t *Tree[V]) Delete(key string) (bool, error) {
 	r, found, err := t.delete(t.root, top, key)
 	if err != nil || !found {
 		return false, err
+	}
+	if r != nil && t.p.Layered && !r.resolved() {
+		// A former subtree became the root: strip its intermediate nodes.
+		if _, err := t.load(r, top); err != nil {
+			return false, err
+		}
 	}
 	t.root = r
 	return true, nil
@@ -433,42 +505,78 @@ func (t *Tree[V]) Flush() (cid.CID, error) {
 }
 
 func (t *Tree[V]) persist(r *ref[V]) error {
-	if r == nil || r.c.Defined() {
+	if r == nil || r.resolved() || r.n == nil {
 		return nil
 	}
 	n := r.n
-	w := &Node[V]{Entries: make([]Entry[V], len(n.ents))}
-	if err := t.persist(n.left); err != nil {
-		return err
+	if t.p.MaxEntries > 0 && len(n.ents) > t.p.MaxEntries {
+		return fmt.Errorf("%w: %d entries in one node (limit %d)", ErrLimit, len(n.ents), t.p.MaxEntries)
 	}
-	if n.left != nil {
-		w.Left = n.left.c
+	w := &Node[V]{Entries: make([]Entry[V], len(n.ents))}
+	var err error
+	if w.Left, err = t.linkFor(n.left, n.layer); err != nil {
+		return err
 	}
 	for i, e := range n.ents {
-		if err := t.persist(e.right); err != nil {
+		w.Entries[i] = Entry[V]{Key: e.key, Val: e.val}
+		if w.Entries[i].Right, err = t.linkFor(e.right, n.layer); err != nil {
 			return err
 		}
-		w.Entries[i] = Entry[V]{Key: e.key, Val: e.val}
-		if e.right != nil {
-			w.Entries[i].Right = e.right.c
-		}
 	}
+	r.c, err = t.put(w)
+	return err
+}
+
+func (t *Tree[V]) put(w *Node[V]) (cid.CID, error) {
 	data, err := t.p.Codec.Encode(w)
 	if err != nil {
-		return err
+		return cid.CID{}, err
 	}
 	if len(data) > t.p.MaxNodeSize {
-		return fmt.Errorf("%w (%d bytes, %d entries)", ErrNodeTooLarge, len(data), len(n.ents))
+		return cid.CID{}, fmt.Errorf("%w (%d bytes, %d entries)", ErrNodeTooLarge, len(data), len(w.Entries))
 	}
 	c, err := cid.SumCID(cid.DRISL, cid.SHA256, data)
 	if err != nil {
-		return err
+		return cid.CID{}, err
 	}
-	if err := t.st.Put(c, data); err != nil {
-		return err
+	return c, t.st.Put(c, data)
+}
+
+// linkFor persists subtree r and returns the link to it from a node at layer ctx. Layered
+// profiles add empty intermediate nodes for the layers r skips.
+func (t *Tree[V]) linkFor(r *ref[V], ctx int) (cid.CID, error) {
+	if r == nil {
+		return cid.CID{}, nil
 	}
-	r.c = c
-	return nil
+	if err := t.persist(r); err != nil {
+		return cid.CID{}, err
+	}
+	if !t.p.Layered {
+		return r.c, nil
+	}
+	if r.link.Defined() && r.ctx == ctx {
+		return r.link, nil
+	}
+	var base cid.CID
+	var from int
+	switch {
+	case r.n != nil:
+		base, from = r.c, r.n.layer+1
+	case r.link.Defined() && r.ctx < ctx:
+		base, from = r.link, r.ctx
+	default:
+		return cid.CID{}, errors.New("mst: internal error: unloaded subtree moved to a lower layer")
+	}
+	for l := from; l < ctx; l++ {
+		var err error
+		if base, err = t.put(&Node[V]{Left: base}); err != nil {
+			return cid.CID{}, err
+		}
+	}
+	if r.n != nil {
+		r.link, r.ctx = base, ctx
+	}
+	return base, nil
 }
 
 // Walk calls fn for each key >= from in order until fn returns false or an error.
@@ -511,26 +619,45 @@ func (t *Tree[V]) walk(r *ref[V], b bounds, from string, fn func(string, V) (boo
 // Prove returns the blocks on the search path of key, root first: an inclusion proof if
 // key is present and an absence proof otherwise. The tree must be flushed.
 func (t *Tree[V]) Prove(key string) ([][]byte, error) {
+	if t.root == nil {
+		return nil, nil
+	}
+	if !t.root.resolved() {
+		return nil, errors.New("mst: Prove needs a flushed tree")
+	}
+	return t.p.Path(t.st, t.root.c, key, nil)
+}
+
+// Path returns the encoded nodes on the search path of key from root, root first,
+// including layered intermediate nodes. visit, if non-nil, is called with each node's CID.
+// Nodes are decoded but not validated; VerifyProof and Load validate.
+func (p *Profile[V]) Path(st Store, root cid.CID, key string, visit func(cid.CID)) ([][]byte, error) {
 	var out [][]byte
-	r, b := t.root, top
-	for r != nil {
-		if !r.c.Defined() {
-			return nil, errors.New("mst: Prove needs a flushed tree")
+	for c := root; c.Defined(); {
+		w, err := p.read(st, c)
+		if err != nil {
+			return nil, err
 		}
-		data, err := t.st.Get(r.c)
+		data, err := st.Get(c)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, data)
-		n, err := t.load(r, b)
-		if err != nil {
-			return nil, err
+		if visit != nil {
+			visit(c)
 		}
-		i := n.search(key)
-		if i < len(n.ents) && n.ents[i].key == key {
-			break
+		i := sort.Search(len(w.Entries), func(i int) bool { return w.Entries[i].Key >= key })
+		switch {
+		case i < len(w.Entries) && w.Entries[i].Key == key:
+			return out, nil
+		case i == 0:
+			c = w.Left
+		default:
+			c = w.Entries[i-1].Right
 		}
-		r, b = n.gap(i), n.gapBounds(b, i)
+		if len(out) > 256 {
+			return nil, fmt.Errorf("%w: path too long", ErrLimit)
+		}
 	}
 	return out, nil
 }
@@ -602,10 +729,34 @@ func (c *cursor[V]) layer(tk *tok[V]) (int, error) {
 	return n.layer, nil
 }
 
-func sameRef[V any](a, b *ref[V]) bool { return a == b || (a.c.Defined() && a.c == b.c) }
+// sameRef reports whether two subtree refs are known to hold the same node: equal node
+// CIDs, or (layered, before loading) equal links from the same layer.
+func sameRef[V any](a, b *ref[V]) bool {
+	switch {
+	case a == b:
+		return true
+	case a.c.Defined() && b.c.Defined():
+		return a.c == b.c
+	}
+	return a.link.Defined() && a.link == b.link && a.ctx == b.ctx
+}
+
+// within reports whether bounds in lie inside bounds out.
+func within(in, out bounds) bool {
+	if out.hasLo && (!in.hasLo || in.lo < out.lo) {
+		return false
+	}
+	if out.hasHi && (!in.hasHi || in.hi > out.hi) {
+		return false
+	}
+	return in.below <= out.below
+}
 
 // Diff reports the changes from tree a to tree b in key order, skipping subtrees the two
-// trees share.
+// trees share. a is the trusted side: nodes of b are validated as they load, and a subtree
+// b shares with a is skipped only where b places it inside the key range and layer bounds
+// it has in a (otherwise it is expanded and checked). Applying an untrusted diff to a
+// verified tree therefore validates every node of the result that differs.
 func Diff[V any](a, b *Tree[V], fn func(Change[V]) error) error {
 	ca, cb := &cursor[V]{t: a}, &cursor[V]{t: b}
 	if a.root != nil {
@@ -620,7 +771,7 @@ func Diff[V any](a, b *Tree[V], fn func(Change[V]) error) error {
 		case x == nil && y == nil:
 			return nil
 		case x != nil && y != nil && x.sub != nil && y.sub != nil:
-			if sameRef(x.sub, y.sub) {
+			if sameRef(x.sub, y.sub) && within(x.b, y.b) {
 				ca.pop()
 				cb.pop()
 				continue

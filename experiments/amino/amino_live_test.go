@@ -35,27 +35,51 @@ func TestLiveAminoProviderKeys(t *testing.T) {
 
 func newDHTClient(t *testing.T) (host.Host, *dht.IpfsDHT) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	h, err := libp2p.New()
 	if err != nil {
+		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
-	r, err := dht.New(h, dht.Mode(dht.ModeClient))
+	infos := dht.GetDefaultBootstrapPeerAddrInfos()
+	if len(infos) == 0 {
+		cancel()
+		t.Fatal("go-libp2p has no default bootstrap peers")
+	}
+	// Prefer the fixed TCP bootstrapper (mars) for reproducible TCP connectivity;
+	// resolving all DNSADDR bootstrap entries creates a very large, noisy candidate set.
+	mars := infos[len(infos)-1]
+	r, err := dht.New(h, dht.Mode(dht.ModeClient), dht.BootstrapPeers(mars))
 	if err != nil {
+		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = r.Close() })
-	if err := r.Bootstrap(ctx); err != nil {
-		t.Fatal(err)
+
+	// Force an initial connection: Bootstrap schedules its refresh asynchronously.
+	connectCtx, connectCancel := context.WithTimeout(ctx, 15*time.Second)
+	err = h.Connect(connectCtx, mars)
+	connectCancel()
+	connected := 0
+	if err != nil {
+		t.Logf("bootstrap connect failed peer=%s addrs=%v err=%v", mars.ID, mars.Addrs, err)
+	} else {
+		connected = 1
+		t.Logf("bootstrap connected peer=%s addrs=%v", mars.ID, mars.Addrs)
 	}
-	// A bounded wait makes lookup observations meaningful while allowing public routing to settle.
-	deadline := time.Now().Add(35 * time.Second)
+	if err := r.Bootstrap(ctx); err != nil {
+		t.Logf("DHT Bootstrap returned error: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
 	for r.RoutingTable().Size() == 0 && time.Now().Before(deadline) {
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Logf("host=%s routing_table_peers=%d", h.ID(), r.RoutingTable().Size())
+	t.Logf("host=%s connected_bootstrappers=%d network_peers=%d routing_table_peers=%d", h.ID(), connected, len(h.Network().Peers()), r.RoutingTable().Size())
+	cancel()
+	if r.RoutingTable().Size() == 0 {
+		t.Fatalf("unable to bootstrap DHT: no routing peers; connected=%d network_peers=%d", connected, len(h.Network().Peers()))
+	}
 	return h, r
 }
 
@@ -82,7 +106,7 @@ func liveRoundTrip(t *testing.T, label string, code uint64, run int) {
 	}
 	key := cid.NewCidV1(cid.Raw, mh.Multihash(mhbytes))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	start := time.Now()
 	if err := a.Provide(ctx, key, true); err != nil {
@@ -105,7 +129,15 @@ func liveRoundTrip(t *testing.T, label string, code uint64, run int) {
 			gotSelf = true
 		}
 	}
-	t.Logf("key_type=%s cid=%s provider_peer=%s query_peer=%s announce_latency=%s lookup_latency=%s providers_returned=%d provider_found=%t", label, key, hostA.ID(), hostB.ID(), provided, latency, len(found), gotSelf)
+	var advertised []string
+	for _, p := range found {
+		if p.ID == hostA.ID() {
+			for _, addr := range p.Addrs {
+				advertised = append(advertised, addr.String())
+			}
+		}
+	}
+	t.Logf("key_type=%s cid=%s provider_peer=%s query_peer=%s announce_latency=%s lookup_latency=%s providers_returned=%d provider_found=%t provider_addrs=%v", label, key, hostA.ID(), hostB.ID(), provided, latency, len(found), gotSelf, advertised)
 	if !gotSelf {
 		t.Errorf("independent client did not retrieve provider record (found %d other providers)", len(found))
 	}

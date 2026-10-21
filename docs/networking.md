@@ -355,6 +355,33 @@ router-mapped addresses, predicted EDM ports and NAT64-synthesized addresses on 
 networks. Port mapping covers UPnP-IGD, NAT-PMP and PCP, including IPv6 firewall pinholes and
 PCP PEER mappings where available. Detect router mapping-epoch changes and re-map.
 
+`p2p/portmap` owns one UDP lease for an explicitly selected gateway and bound local
+address; callers replace the client when either changes. It tries PCP v2 MAP, NAT-PMP,
+then UPnP WANIPConnection (v1/v2) or WANPPPConnection v1. Supplying a remote endpoint
+requests PCP PEER and constrains the candidate to that peer. IPv6 uses PCP MAP/PEER
+firewall pinholes, not NAT-PMP or UPnP IPv6FirewallControl. A mapping is a **tentative**
+candidate, not a reachability proof. Consumers must honor its peer restriction and expiry.
+
+Default requested lifetime is two hours (configurable 1 s–24 h), renewal is at half the
+**granted** lifetime, and epoch probes run every 30 s or sooner when renewal is due. An
+epoch rollback, including zero, or lag beyond elapsed-time/drift tolerance invalidates
+the candidate and re-maps it. UPnP uses WAN connection uptime as a conservative reboot/
+reconnect signal. Transient renewal failures never extend the previous expiry. Cancel
+and join the renewal loop, then explicitly release the lease on shutdown. Gateway/local
+address selection and lifecycle wiring belong to the socket owner, not a global daemon.
+
+PCP/NAT-PMP requests use a connected UDP socket to the selected gateway (port 5351),
+with bounded retransmission and a default two-second per-protocol timeout. Replies are
+capped at 1100 bytes and checked for opcode, result, local port and, for PCP, nonce,
+protocol and PEER endpoint. Unknown mandatory PCP options fail. UPnP performs unicast
+SSDP discovery at the gateway (port 1900); discovery and HTTP headers are capped at
+8 KiB, HTTP/XML bodies at 64 KiB and XML nesting at 32. Description, URLBase and control
+URLs must be HTTP IP literals at that gateway: no DNS, proxy, credentials or redirects.
+UPnP requests a finite lease on a nonzero external port; it never requests an all-ports
+wildcard or silently falls back to a permanent mapping. Protocol failures are returned
+by `Refresh`/`Check`; `Run` retries until canceled. Per-file Tailscale v1.104.2 adaptation
+origins and the full BSD-3 license are in `NOTICE`; no Tailscale runtime is imported.
+
 ### 3. Probe scheduling
 
 Probe candidate pairs concurrently, ordered LAN → IPv6 → mapped → EIM reflexive → predicted.
@@ -423,6 +450,32 @@ with AutoNAT v2, refresh mappings, renew relay reservations, send identify push 
 probing. Nu-path aims to preserve the inner QUIC connection through relay fallback; standard
 sessions resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
 than importing the full module.
+
+`p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
+before returning. Events are bounded, coalesced invalidations: consumers re-read OS
+state rather than treating notifications as complete snapshots. Overflow requests a
+full rescan. Darwin has a pure-Go polling fallback comparing interfaces/addresses and
+the BSD routing RIB (250 ms default); it is compile-checked, not yet runtime-validated.
+A wall-clock gap greater than two seconds (or backward jump) emits a combined inferred
+sleep/wake/rescan event on return. This is not a pre-suspend notification; integrations
+with explicit suspend/resume signals may call `Notify`. Short sleeps without OS network
+changes or an explicit notification are not guaranteed to be detected.
+
+`Pipeline.Register(Stage, Hook)` installs ordered, context-aware recovery hooks at
+`Rebind`, `ConfirmAddresses`, `RefreshMappings`, `RenewRelay`, `IdentifyPush`, and
+`RestartProbing`. Multiple hooks at a stage run in registration order. Each hook has a
+caller-selected timeout and must honor cancellation; Go cannot interrupt arbitrary
+blocking callbacks. Failure is reported but does not suppress later recovery stages.
+Monitor subscriptions start with a rescan, merge bursts into a one-element queue and
+close on unsubscribe/monitor close. Pipeline subscribers receive stage results and a
+`Complete` result with joined errors; their bounded queues drop oldest results under
+backpressure. The pipeline takes a snapshot of registrations for each reaction.
+
+Socket/host owners wire rebind and AutoNAT first, then mapping-client replacement or
+`Refresh`, relay reservation renewal, identify push and path probing. These hooks are
+provided without editing those owners; unregistered stages are no-ops, not evidence
+that a running daemon has performed the operation. The NAT-lab test registers all six
+hooks and verifies a real interface/address change completes the pipeline within 1 s.
 
 ## D13. Peer-address discovery
 

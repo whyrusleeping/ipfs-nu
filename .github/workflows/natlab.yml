@@ -14,19 +14,27 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: namespace tools
-        run: sudo apt-get update && sudo apt-get install -y iproute2 nftables util-linux procps
+      - name: namespace tools and router daemon
+        # miniupnpd supplies UPnP/NAT-PMP (and PCP on enabled builds) for the
+        # deferred real-daemon interop run. Current mapping smoke tests use
+        # deterministic protocol fixtures that install real nft DNAT rules.
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps miniupnpd
       - name: build lab tests (never run the Go toolchain as root)
-        run: go test -c -tags natlab -o "$RUNNER_TEMP/natlab.test" ./p2p/natlab
+        run: |
+          for package in natlab portmap netmon; do
+            go test -c -tags natlab -o "$RUNNER_TEMP/$package.test" "./p2p/$package"
+          done
       - name: isolated scenarios
         # Root is the portable CI fallback; local go test uses user+net
         # namespaces automatically. Even root re-execs into a fresh netns.
         shell: bash
         run: |
           set -o pipefail
-          sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" \
-            "$RUNNER_TEMP/natlab.test" -test.v -test.timeout=60s \
-            2>&1 | tee "$RUNNER_TEMP/natlab.log"
+          for package in natlab portmap netmon; do
+            sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" \
+              "$RUNNER_TEMP/$package.test" -test.v -test.timeout=60s \
+              2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

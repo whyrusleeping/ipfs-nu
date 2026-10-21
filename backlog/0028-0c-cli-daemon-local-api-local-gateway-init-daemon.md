@@ -1,7 +1,7 @@
 ---
 id: "0028"
 title: '0c: Networked first share: get/share between nodes, share links, daemonless get, local API security'
-status: in_progress
+status: in_review
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"
@@ -32,3 +32,4 @@ First-magic networked journey on top of the local skeleton (0065): the go-ipfs-s
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Implemented on track/app (7d3f33a, ed950cd, f6cdece; merged d121658). node/swarm assembles host+identify+lookup/mDNS+sessions+/nu/bytes server+fetcher into daemon and daemonless get/cat/ls/share; doctor connectivity checks. Evidence: nutest TestAddShareGet (file+dir, fresh recipient without daemon/init, gateway <cid>.localhost site, gateway-origin API DELETE → 403), cmd/nu TestAddSiteAndBrowse (foreground share, daemonless get, doctor), node/extract TestExtractSafety. Coordinator smoke with the built binary: two NU_PATHs over a LAN interface address, 20 MB tree fetched by a fresh no-daemon recipient in 0.38 s, identical; site origin renders; API rejects gateway origin. Remaining: the manual two-physical-machine demo (checklist in docs/validation.md) — needs the user.

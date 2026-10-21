@@ -1,7 +1,7 @@
 ---
 id: "0066"
 title: 'nutest: in-process multi-node test harness'
-status: in_progress
+status: done
 priority: 1
 created: "2026-10-21"
 updated: "2026-10-21"
@@ -28,3 +28,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/app (a1c4eb3, merged d121658). nutest: N real nodes, explicit peering, Stop/Start/Restart/Kill, Partition/Heal via gaters, Corrupt provider, Eventually, deterministic seeds. Evidence: TestRestartMidTransfer (3 nodes start in ~30 ms), TestPartitionHeal, TestCorruptProvider; -race -count=5 clean; CONTRIBUTING.md paragraph added.

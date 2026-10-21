@@ -276,3 +276,62 @@ func TestWriterExpire(t *testing.T) {
 }
 
 func jsonUnmarshal(s string, v any) error { return json.Unmarshal([]byte(s), v) }
+
+// TestUnionVolume pushes overlapping items through two writers' heads in batches and
+// checks the merged stream has every item exactly once; it logs catalog bytes per item and
+// the re-evaluation cost (rough figures; benchmarks belong to hardening, 0068).
+func TestUnionVolume(t *testing.T) {
+	r := newRig(t)
+	const n = 600
+	leaves := []map[string]tree.Entry{{}, {}}
+	for i := range n {
+		e := r.scene(fmt.Sprint("s", i), t0.Add(-time.Duration(i)*time.Minute), alps, float64(i%100))
+		p := fmt.Sprintf("2026/10/%02d/s%04d", 10+i/100, i)
+		if i < n*2/3 {
+			leaves[0][p] = e
+		}
+		if i >= n/3 {
+			leaves[1][p] = e
+		}
+		if i%100 == 99 { // a head write per batch, as coalesced writers do
+			r.head(r.wA, leaves[0])
+			r.head(r.wB, leaves[1])
+			r.reconcile()
+		}
+	}
+	page, err := r.m.Items("s2", apiv0.CollectionItemsQuery{Since: "0", Limit: 1000})
+	if err != nil || len(page.Items) != n {
+		t.Fatalf("stream has %d items, want %d (%v)", len(page.Items), n, err)
+	}
+	seen := map[string]bool{}
+	for _, it := range page.Items {
+		if seen[it.Path] || it.Removed {
+			t.Fatalf("duplicate or removed %s", it.Path)
+		}
+		seen[it.Path] = true
+	}
+	st, _ := r.m.Status("s2")
+	ws, err := r.st.Walk(context.Background(), catalogPin(cid.MustParse(st.Root), ""), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bytes int
+	_, _ = r.st.Walk(context.Background(), catalogPin(cid.MustParse(st.Root), ""), func(c cid.CID, _ bool) error {
+		b, _ := r.st.Get(c)
+		bytes += len(b)
+		return nil
+	})
+	start := time.Now()
+	r.rules(`[{"cloud": {"max": 50}, "sensed": {"within": "6h"}}]`)
+	r.reconcile()
+	t.Logf("%d items: catalog %d objects, %.0f B/item (metadata ~%d B); full re-evaluation and fetch of the selection %v",
+		n, ws.Objects, float64(bytes)/n, len(mustGet(t, r, page.Items[0].Meta)), time.Since(start))
+}
+
+func mustGet(t *testing.T, r *rig, c string) []byte {
+	b, err := r.st.Get(cid.MustParse(c))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

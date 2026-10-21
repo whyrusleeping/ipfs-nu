@@ -25,3 +25,4 @@ Protocol negotiation and stream routing on the host.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (cfff5d1, merged 4ae1cad). Evidence: experiments/TestMultistreamSelect (optimistic select, na, incoming routing vs go-libp2p), TestProtocolConcurrency, TestMessageFraming, FuzzMultistreamReader seeds.

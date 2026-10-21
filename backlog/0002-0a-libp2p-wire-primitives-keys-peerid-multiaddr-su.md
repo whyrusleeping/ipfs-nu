@@ -27,3 +27,4 @@ The encoding layer of the libp2p subset (`p2p/wire`). No networking yet.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (afd806c, merged 4ae1cad). p2p/wire keys/PeerId/multiaddr/envelopes/peer records. Evidence: TestKeyVectors, TestNodeKeyFile, TestPeerIDVectors, TestMultiaddrVectors, TestSignedPeerRecord (byte-exact upstream vectors); fuzz seeds FuzzKeyProtobuf, FuzzMultiaddrBytes, FuzzSignedEnvelope, FuzzPeerID, FuzzProtobuf. D18 now lists decred secp256k1 (verify-only). Vector generator: experiments/cmd/wirevectors.

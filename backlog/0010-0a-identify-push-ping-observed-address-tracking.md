@@ -23,3 +23,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (93b7cef, merged 4ae1cad). Evidence: experiments/TestIdentifyPushPing (protocols, observed addrs, signed records, push both ways, ping vs go-libp2p), TestIdentifyVectorAndParts, TestIdentifyConnectionBinding, FuzzIdentify seeds. Wire details recorded in docs/networking.md.

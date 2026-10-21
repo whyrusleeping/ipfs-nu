@@ -28,3 +28,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (e3dc457, merged 4ae1cad). Stock quic-go v0.64.1, libp2p TLS. Evidence: TestDirectAuthentication (mutual auth, wrong PeerId rejected), TestTLSVectors (all four spec cert vectors), FuzzTLSKeyExtension seeds, experiments/TestQUICHandshakeStream vs go-libp2p v0.50.0.

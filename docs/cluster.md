@@ -72,7 +72,7 @@ inspected and verified with stock atproto tooling.
 io.ipfs.nu.cluster.key/<did>          { role: "admin"|"writer", revoked?: {after: <commit cid>}, hlc }
 io.ipfs.nu.cluster.member/<peerId>    { roles, capacity, store_limit, tags?: {zone: …}, addrs?, label?,
                                         state: "active"|"draining"|"unavailable"|"removed", hlc }
-io.ipfs.nu.cluster.invite/<id>        { secretHash, roles, tags?, capacity?, expires, hlc }
+io.ipfs.nu.cluster.invite/<id>        { proofKey, roles, tags?, capacity?, expires, hlc }
 io.ipfs.nu.cluster.dataset/<name>     { source, policy, writers?: [<did>], collection?, note?, hlc }
 io.ipfs.nu.cluster.head/<name>        { target: "<cid>", kind, size?, note?, hlc }
 io.ipfs.nu.cluster.drop/<name>        { … }                                  # union collections, D22
@@ -97,8 +97,9 @@ any key → { deleted: true, hlc }       # tombstone
   are ignored. Root-signed `key` records override
   admin-signed ones, which resolves disputes such as two admins revoking each other.
 - **Replication:** every member stores and serves every state repository. When connected
-  members meet, they exchange `{did → (rev, commit cid)}` heads, then fetch newer commits with
-  `/nu/tree/1` diffs against the commits they hold. Changes are also pushed to watchers. A
+  members meet, they exchange `{did → (rev, commit cid)}` heads, then fetch newer commits as
+  atproto repo diffs (`getRepo?since` CAR slices) against the commits they hold, over
+  [`/nu/cluster/1`](#nucluster1). Changes are also pushed to watchers. A
   write from a client returns after one storage member acknowledges **signed state**; a
   metadata wait can require more. This does not confirm stored content. Exact-version
   content/policy waits are separate and return evidence, age, epoch and unmet requirements.
@@ -110,6 +111,49 @@ resolve by LWW; there are no multi-record transactions. CLI/API outcomes must ex
 resulting head and displaced intent. An observed-head guard is not global compare-and-swap;
 conflict detection/reconciliation remains protocol design work. Archive history preserves
 concurrent snapshots subject to explicit retention and content availability.
+
+#### State encoding and evaluation
+
+- **HLC:** a TID string (atproto TID syntax, clock-ID bits zero) whose timestamp field counts
+  microseconds since the Unix epoch; values compare as integers. A writer stamps
+  `max(now_µs, last + 1, seen + 1)`, where `seen` is the greatest `hlc` in its merged state,
+  so the logical counter lives in the sub-millisecond digits.
+- **Records** are DRISL maps whose `$type` is their collection, each with an `hlc` (except
+  genesis). Unknown fields are ignored; a record that fails its schema or record-key rule is
+  ignored like an out-of-scope one. A **tombstone** is `{$type, deleted: true, hlc}`.
+
+| Collection (record key) | Fields |
+|---|---|
+| `genesis` (`self`, root repository) | `name`, `mode` (`public`, `private`, `isolated`, or `local` for the implicit local cluster), `rootKey` (did:key), `createdAt` (datetime). No `hlc`; immutable; the cluster ID is its CID |
+| `key` (`<did:key>`) | `role` (`admin`, `writer`), `revoked?` `{after: <commit link>, rev: <TID>}` |
+| `member` (`<PeerId base58>`) | `roles` ([`storage`\|`client`]), `capacity` (int), `store_limit?`, `tags?` (string map), `addrs?` (≤ 16 multiaddrs), `label?`, `state` |
+| `invite` (`<id>`, 16 base32 chars) | `proofKey` (32 bytes, [below](#invites-and-join)), `roles`, `tags?`, `capacity?`, `expires` (datetime) |
+| `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas}` plus the policy fields above), `writers?` ([did]), `note?` |
+| `head` (`<name>`) | `target` (CID string), `kind` (`tree`, `file`, `blob`), `size?`, `note?` |
+| `config` (`self`) | `clock?` (`{max_future_ms?, warn_skew_ms?}`) |
+
+- **Authorization:** root writes any record but `genesis` after the first; admins write `key`
+  (never about the root key), `member`, `invite`, `dataset`, `head`, `history`, `drop` and
+  `config`; writers write `head/<n>` and `history/<n>` only while `dataset/<n>` lists them.
+  Any other record is out of scope and ignored.
+- **Evaluation** is a pure function of the held repositories and the clock:
+  1. The root repository is the one whose DID is `genesis.rootKey`.
+  2. Keys: starting from `{root}`, merge the `key` records of the root and current admin
+     repositories (a root-signed record beats any admin-signed one for the same key; ties
+     otherwise by `(hlc, signer)`), and take every non-deleted `admin`/`writer` key as
+     authorized. Repeat until the set is stable; after 16 rounds without a fixpoint only
+     root-signed keys count.
+  3. A key with `revoked` is evaluated at commit `after` only: commits with a greater `rev` are
+     refused, a member holding a later commit fetches `after`, and until `after` is held the
+     repository contributes nothing. Its earlier records still count.
+  4. All other records merge by LWW over the authorized repositories under the matrix.
+     Records with `hlc` more than `clock.max_future` ahead are held back until then.
+- **Writer heads:** `head/<n>` of every authorized signer stays readable per signer (union
+  heads, [D22](collections.md#union-heads)); the LWW winner is the head of a `merge: lww`
+  dataset.
+- **Storage:** repository blocks live in the store, each held head pinned (`cluster`
+  source, `atrepo` profile); the held heads per cluster and the node's authority keys
+  (0600) live under `$NU_PATH/cluster/`. The local cluster's root key writes its records.
 
 ### Datasets and updates
 
@@ -386,6 +430,63 @@ nu cluster join nuc1…
   boundary; content encryption and finer read permissions are later work. Private HTTP
   gateways require their own reader restrictions; libp2p gating is not HTTP authentication.
 
+#### Invites and join
+
+- **Token:** `nuc1` followed by lowercase unpadded RFC 4648 base32 of `T ‖ SHA-256(T)[0:4]`,
+  where `T` (at most 4 KiB) is the DRISL map `{v: 1, genesis: <genesis record>, keys:
+  [<admin did:key>], boot: [{peer: <PeerId bytes>, addrs: [<multiaddr>]}], expires:
+  <datetime>, peer?: <PeerId bytes>, invite?: {id, secret: <32 bytes>}}` with exactly one of
+  `peer` (pre-authorized) and `invite` (secret), 1–8 `boot` entries of at most 8 addresses
+  each. The cluster ID is the CID of the DRISL `genesis` map. A token carries public keys,
+  addresses and at most one admission secret, never an authority private key.
+- **Secret proof:** `seed = SHA-256("nu.cluster.invite.v1\0" ‖ secret)` is an Ed25519 seed;
+  the invite record's `proofKey` is its public key. The joiner proves the secret with the
+  Ed25519 signature by that key over `"nu.cluster.join.v1\0" ‖ cluster CID bytes ‖ joiner
+  PeerId bytes`. The admitting member verifies it for the TLS-authenticated PeerId, so a
+  captured proof admits no other peer and no member learns the secret. Vectors for the HLC,
+  genesis/cluster ID, proof and both token kinds: `testdata/vectors/nu-cluster/vectors.json`.
+- **Expiry:** an invite admits only while `expires` lies ahead on the admitting member's
+  clock; joiners refuse expired tokens up front. For a pre-authorized invite `expires`
+  bounds only the token, because its member record exists from the start.
+- **Join:** the joiner persists the token's genesis, admin keys and boot addresses (all
+  public) as its cluster configuration and keeps the secret in memory only for the
+  exchange. With a pre-authorized token it simply connects to boot peers and syncs. With a
+  secret it sends `join` to a boot peer. A boot member holding an admin key writes
+  `member/<peer>` (roles, tags and capacity from the invite, addresses from the request,
+  `active`) and the invite's tombstone in one commit; otherwise it forwards `admit` to
+  connected members until one holding an admin key accepts. The answer comes after the
+  commit, then the joiner syncs like any member. During a partition, concurrent uses can
+  admit more than one peer; each admission is a visible member record.
+- **Revocation:** `member rm` writes `state: removed`; on merge, members close its
+  connections and refuse it. An invite is revoked by its tombstone, a key by `revoked`
+  naming its last accepted commit (above). All three work offline at the writing admin
+  and take effect wherever the state replicates.
+- **Gating:** private and isolated nodes accept and dial only PeerIds with a non-removed
+  member record, plus the boot peers while joining. While an unexpired secret invite exists,
+  inbound connections from other peers are accepted, but such a peer can open only
+  `/nu/cluster/1` streams carrying `join`, and the connection closes after the exchange. In
+  public mode the same stream rule covers `/nu/cluster/1` only.
+
+#### `/nu/cluster/1`
+
+One request per stream: a uvarint-framed DRISL map of at most 64 KiB, `{op, cluster: <cluster
+ID link>, …}`, answered by `{status, error?, …}` (statuses of `/nu/bytes/1`, plus 6 for a
+request a non-member or non-admin may not make). Requests naming another cluster get status 3.
+
+- `heads {heads: [{did, rev, commit}]}` (at most 1024 entries) answers with the responder's
+  heads. Members send it when a connection to a member opens, after every change to their
+  held state (pushing to all connected members, the watchers), and every heartbeat interval.
+  A receiver pulls each authorized DID whose `rev` is newer than its own.
+- `pull {did, since?: <data root link>, commit?: <commit link>}` answers `{status}` followed by
+  a CARv1: the atproto repo diff from the `since` tree to the head (or to `commit`, for a
+  revocation cutoff), or a full export when the server lacks the `since` tree. The client
+  verifies it as a `getRepo?since` response against the tree it holds (at most 100k blocks).
+- `heartbeat {hb: {peer, seq, time, free, used, addrs?, sig}}` answers `{status}`; `sig` is the
+  member's node-key signature over `"nu.cluster.heartbeat.v1\0" ‖ DRISL(hb without sig)`.
+  Members send one to every connected member each interval (30 s).
+- `join {invite, proof, addrs?}` and, between members, `admit {invite, proof, peer, addrs?}`
+  answer `{status}` once the member record is committed.
+
 ### Network modes
 
 The mode is fixed at genesis.
@@ -515,14 +616,12 @@ restore before a production recommendation.
   capacity adjustment, conflict reconciliation and key/state recovery/export procedures.
 - Version tree encoding, span-index storage cost at 10M entries × hundreds of versions,
   exact bucket boundaries for the retention schedule, and `compact_after` defaults.
-- `/nu/cluster/1` messages: head exchange, watch, heartbeat and join; mesh degree once full
-  mesh stops scaling; and heartbeat delta encoding.
-- Record lexicons, HLC encoding, tombstone compaction and the authorization matrix in full.
+- `/nu/cluster/1` mesh degree once full mesh stops scaling, and heartbeat delta encoding.
+- Tombstone compaction.
 - Exact placement encoding, `spread` selection, cross-implementation vectors, rescan
   benchmarks and the mapping from capacity to weight.
 - Storage cost and invalidation of per-epoch completeness marks.
 - `down_after`/`up_after` defaults, flap damping, and handoff when an owner is `full`.
-- Invite token encoding, secret proof and expiry handling.
 - Bundle size limits and splitting, and atproto proof verification against a pinned key.
 - Audit rate, deadlines and failure thresholds.
 

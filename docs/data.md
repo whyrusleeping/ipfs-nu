@@ -244,8 +244,9 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   directly ([D19](follow.md#delta-sync)).
 - Walk profiles: `atrepo` (commit → MST → records, `path`/`name_range` as repo-path keys,
   held commits as `have`) is the next profile; locations of its layered empty intermediate
-  nodes are specified with it. State repositories and atproto datasets sync by `/nu/bytes/1`
-  walks until then ([D21](dasl.md#walk-profiles)).
+  nodes are specified with it. Atproto datasets sync by `/nu/bytes/1` walks until then
+  ([D21](dasl.md#walk-profiles)); cluster state repositories use repo diffs on
+  [`/nu/cluster/1`](cluster.md#nucluster1).
 - The fetcher asks peers for `scope: subtree` with 16 KiB inlining first, resuming at the
   next peer from the cursor on failure, and finishes with the layer-1 walk, which fetches
   large blobs and anything the tree responses did not deliver. Peers without the protocol

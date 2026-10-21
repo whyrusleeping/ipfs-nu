@@ -116,7 +116,9 @@ func (f *fixture) config() atproto.Config {
 		HTTP: httpsrc.Config{
 			AllowHTTP:  true,
 			AllowedIPs: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")},
-			LookupIP:   func(context.Context, string) ([]netip.Addr, error) { return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil },
+			LookupIP: func(context.Context, string) ([]netip.Addr, error) {
+				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+			},
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, network, addr)
 			},

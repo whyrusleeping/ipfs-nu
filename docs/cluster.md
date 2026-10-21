@@ -167,6 +167,16 @@ concurrent snapshots subject to explicit retention and content availability.
 
 A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <cid>`.
 
+**Presets (0047).** `nu [cluster] dataset create <ds> --archive|--mirror [--source <dir>]`
+writes ordinary policy fields, nothing preset-specific: `--archive` sets `history` to the
+default schedule below (visible in the record and in `dataset status`); `--mirror` leaves
+`history` unset (current state with the protected-version safeguard). Both keep the scope's
+`replicas` default: `k=1` on the one-node local cluster, shown as one copy (never "two
+copies"), and the team default otherwise. `--source <dir>` stores `source.path`, a
+writer-local absolute directory: `nu dataset update <ds>` without a target re-adds it
+(incrementally, through the import cache) and writes the new head. Name and atproto sources
+(0045, 0054) are further `source` variants; their versions record `observed` provenance.
+
 | Policy | Meaning |
 |---|---|
 | `replicas` | Copies per blob: team default `k=2` or explicit `all`; one-node archive preset visibly requests `k=1`; collections may set `0` (no guaranteed copies) |
@@ -228,34 +238,45 @@ bytes were ever replicated.
 Time/label lookup selects a version and reports its availability, rather than silently falling
 back to another snapshot. Version HLC times are ordering metadata, not trusted timestamps.
 
-**Version tree.** Each dataset with history has a version tree: an atproto-profile MST
-([D21](dasl.md#atproto-repository-profile)) keyed by version TID (the writer's HLC time),
-whose values link to entry records:
+**Version tree.** Each dataset with history has a version tree: the version records
+`io.ipfs.nu.cluster.version/<name>.<tid>` of the authorized signers' state repositories,
+keyed by version TID (the author's HLC when it wrote the version) and therefore stored in
+the state MST itself (0047; a separate MST behind `history/<name>` would need its own sync
+path, so `history/<name>` stays reserved):
 
 ```text
-<tid> → { root: <cid>, kind, parent?: <tid>, author: <did>, note?, files, bytes, newBytes,
-          label?, restoredFrom?: <tid>, observed?: {rev, commit: <cid>},
-          imported?: {source: "<original IPFS root>", manifest: <Nu manifest cid>}, hlc }
+version/<name>.<tid> → { root: "<cid>", kind, parent?: "<tid>", author: "<did>", files,
+          bytes, newBytes, restoredFrom?: "<tid>", observed?: {rev, commit},
+          imported?: {source, manifest}, label?, note?, hlc }
 ```
 
-- A writer that writes a new head also appends an entry and writes `history/<name>` in the same
-  commit. The signed state commit covers the record that points to the tree, so every entry is
-  authenticated without separate signatures. The version tree is kept apart from the `head`
-  record, so a label edit cannot overwrite a newer head.
-- `newBytes` is the size of blobs absent from the parent version. It comes from the diff the
-  writer already computes, so each version's marginal cost is known without a scan.
-- **Merge:** history unions authorized version trees. A version's root, author, parent,
-  restore/source/provenance references and creation identity are immutable. An existing
-  version cannot be redefined by a higher-HLC annotation write. Label/note edits follow
-  separately defined authority; annotation LWW applies only when immutable fields agree.
-  Same-ID conflicting immutable entries are visible conflicts, never silent replacement;
-  canonical identity/collision and validation rules must be specified before history ships.
-  Preserve concurrent versions subject to retention, even when only one head wins. The
-  next write folds the validated union into its tree; history remains administratively
-  prunable, not a compliance log.
-- Entries are estimated at about 200 bytes and sync as MST diffs. Pruned versions keep
-  metadata until `history.compact_after` permits removal. Expose that policy; history is
-  neither permanently complete nor a compliance/append-only guarantee.
+- A writer that writes a new head also writes the version record in the same commit, so
+  the signed state commit authenticates every entry without separate signatures; the
+  version records are kept apart from the `head` record, so a label edit cannot overwrite a
+  newer head. `root` is a CID string (like `head.target`), so the version tree is metadata
+  only: content is pinned per retained version, never through the tree. `files` and
+  `bytes` come from the tree header (blob/file node: 1 and its size); `newBytes` is the
+  size of blobs absent from the parent version, computed by the writer from both walks.
+- **Identity, annotations and authority (0047).** A version's identity is its TID plus
+  every field except the annotations `label`, `note` and `hlc`, compared as the DRISL
+  encoding of the record without those keys (unknown fields included). Keys that may write
+  the dataset's head (admins and listed writers) may write and annotate its versions.
+  Annotating another author's version copies its identity fields into the annotator's own
+  record. Merge per TID: the *canonical* record is the author's own (`author` = signer),
+  else the earliest (`hlc`, then signer DID) record; records whose identity differs are
+  **conflicts**, shown with the version and never merged into it; among the agreeing
+  records and the tombstones the greatest (`hlc`, signer) supplies the annotations, and a
+  winning tombstone compacts the version's metadata. Labels match `[a-z][a-z0-9._-]{0,63}`
+  and must not parse as a TID or a time; a label already on another version is refused at
+  write time, and two versions merged with the same label are reported ambiguous by
+  lookup rather than resolved silently.
+- Preserve concurrent versions subject to retention, even when only one head wins;
+  history remains administratively prunable, not a compliance log.
+- Entries are about 300 bytes and sync with the state repository's MST diffs. Pruned
+  versions keep metadata until an explicit compaction tombstones them (`history.compact_after`
+  is not automatic yet). History is neither permanently complete nor a compliance/append-only
+  guarantee. Every record is re-evaluated with the state, so very long histories are a
+  scale-track item (0050).
 
 **Retention.**
 
@@ -268,7 +289,17 @@ history: { keep_last: 10, hourly: 24, daily: 30, weekly: 12, monthly: 12, yearly
   then the newest version in each hour, day, week, month and year bucket, up to each count.
   Buckets are measured back from the newest version's timestamp, not the wall clock. Every
   member therefore derives the same retained set from the merged version tree, and nothing
-  is pruned while no new versions arrive.
+  is pruned while no new versions arrive. Exactly (0047): a version's time is its TID's
+  HLC; bucket `i` of a period `d` (1 h, 24 h, 7 d, 30 d, 365 d) holds versions with
+  `floor((newest − t) / d) = i`, and the newest version of buckets `0 … count−1` is
+  selected (`-1` = `all`: every bucket). The archive preset writes `{keep_last: 10,
+  hourly: 24, daily: 30, weekly: 12, monthly: 12, yearly: -1}` into the policy (visible,
+  provisional until pilot data, 0034). The **live set** is the schedule's selection plus
+  labeled versions plus the current head's version; `max_bytes` then drops the oldest
+  unlabeled, non-head selected versions while the sum of the live versions' `newBytes`
+  exceeds it, and reports protected excess instead of dropping more. Its identity is the
+  CID of the DRISL `{$type: "io.ipfs.nu.cluster.liveset", name, versions: [[tid, root]…]}`
+  in TID order, the `live` binding of reports.
 - The current served head, the last policy-ready head and labeled versions retain content,
   not just metadata. A known incoming head selected by retention remains an acquisition
   obligation only while it remains selected by the current schedule or an explicit label.
@@ -314,6 +345,26 @@ nu cluster dataset rollback <ds> <v>              # append restored head; existi
   that head in the current epoch are separate results. Incomplete/pruned versions require
   recovery from a provider/export or fail with missing-content status, not false immediate
   success. Concurrent head writes still resolve by LWW.
+- **Availability (0047)**, per version as this node sees it, reported apart from
+  readiness: `retained-complete` (content complete: locally on a one-node cluster;
+  in a networked cluster once an archive-ready evaluation covered the version, or locally
+  complete), `fetching` (live, being acquired; a pause carries its reason), `observed`
+  (live, nothing acquired here yet), `degraded` (established complete, but a fresh owner
+  report lists it incomplete or its content is no longer complete here), `unknown`
+  (established, owner evidence stale), `skipped` (not live and never completed here: its
+  partial acquisition is abandoned) and `pruned` (metadata only: released by `prune`).
+  A version outside the live set whose content is still complete stays `retained-complete`
+  with `live: false` (a release candidate) until pruned. Reads, rollback and gateway
+  lookups of a version that is not `retained-complete` fail with `unavailable` naming the
+  availability, and never fall back to another version. Labeling a version whose content
+  is not complete requires `--reacquire`, which makes it live (an acquisition obligation)
+  and reports it `fetching`/`observed` until complete.
+- **Pruning (0047)**: `nu dataset prune <ds> [--dry-run]` lists versions outside the live
+  set whose content is still pinned, with the bytes releasing them would free (objects no
+  other pin reaches, so content shared with live versions, other datasets or explicit
+  pins is reported as shared and kept) and applies only with explicit intent. On a
+  networked cluster it is dry-run only until 0048 (S8). The current head, last ready,
+  held and staged targets and every live root are never pruned.
 - Inside the cluster, any retained version can serve as the `have` root for `/nu/tree/1`
   diffs. For datasets with history, this replaces D19's `retain_structure`.
 - The gateway serves `/c/<dataset>@<version>/<path>`.
@@ -432,7 +483,10 @@ claiming proofs remain verifiable after key/account changes.
   policy: <hash>, epoch, complete: bool, missing?: {blobs, bytes}, owned: {blobs, bytes},
   state: "syncing"|"held"|"paused"|"error", seq}`. `target` is the exact head CID the
   member is working toward; `complete: true` is set only from completeness marks for
-  `(target, epoch)` and `(live, epoch)` and cleared by any scrub failure or deletion.
+  `(target, epoch)` and cleared by any scrub failure or deletion. For a dataset with
+  history, `live` is the live-set identity and `incomplete: [<tid>]` (at most 256) lists
+  the live versions whose structure or owned blobs this member lacks; the live set is
+  complete when `complete` is true and `incomplete` is empty (0047).
   `policy` is the SHA-256 of the DRISL-encoded `policy` map of the dataset record; `epoch`
   is the placement epoch hash. The heartbeat's `seq` orders reports per member.
 - A dataset is **ready** at head H in epoch E by [E5–E6](operations.md#e-readiness-evidence):

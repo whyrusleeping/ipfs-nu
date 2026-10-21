@@ -15,10 +15,8 @@ jobs:
         with:
           go-version: stable
       - name: namespace tools and router daemon
-        # miniupnpd supplies UPnP/NAT-PMP (and PCP on enabled builds) for the
-        # deferred real-daemon interop run. Current mapping smoke tests use
-        # deterministic protocol fixtures that install real nft DNAT rules.
-        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps miniupnpd
+        # The real-daemon test requires the nft backend with PCP enabled.
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps miniupnpd-nftables
       - name: build lab tests (never run the Go toolchain as root)
         run: |
           for package in natlab portmap netmon; do
@@ -31,7 +29,7 @@ jobs:
         run: |
           set -o pipefail
           for package in natlab portmap netmon; do
-            sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" \
+            sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" NU_MINIUPNPD=/usr/sbin/miniupnpd \
               "$RUNNER_TEMP/$package.test" -test.v -test.timeout=60s \
               2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
           done

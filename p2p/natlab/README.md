@@ -76,6 +76,29 @@ The caller decides when events occur, using protocol/transfer progress rather
 than sleeps. `Rebind` rewrites NAT rules and flushes state; assign the new WAN IP
 with `Address` first. Flush uses a small netfilter netlink helper, not host state.
 
+## Real port-mapping daemon
+
+`go test -tags natlab -run '^TestNATLabMiniUPnPd$' -v ./p2p/portmap` exercises
+PCP, NAT-PMP and UPnP against miniupnpd's **nftables** backend. Set `NU_MINIUPNPD`
+to an absolute binary path, or install `miniupnpd-nftables` on PATH. Without it,
+this test explicitly skips; the fixture-backed portmap lab still runs. No sudo
+is needed to obtain the Ubuntu binary:
+
+```sh
+tmp=$(mktemp -d)
+(cd "$tmp" && apt-get download miniupnpd miniupnpd-nftables &&
+  for package in *.deb; do dpkg -x "$package" root; done)
+NU_MINIUPNPD="$tmp/root/usr/sbin/miniupnpd" go test -tags natlab -run '^TestNATLabMiniUPnPd$' -v ./p2p/portmap
+```
+
+The test launches the daemon only inside the isolated router, with temporary
+config/PID/lease/minissdpd paths. It creates its own nft mappings; fresh public
+sources must reach the private application only while mapped. miniupnpd rejects
+reserved WAN addresses, so this scenario uses `11.0.0.0/24` **inside the isolated
+lab only**, with no real-network uplink. Ubuntu 2.2.3's startup log confirms PCP
+support as well as NAT-PMP and UPnP. Its shared libraries must be available on the
+host (inspect `ldd` when using an extracted binary).
+
 ## NAT models and limits
 
 **Kernel mode** (default) is ordinary nftables masquerade + conntrack filtering.

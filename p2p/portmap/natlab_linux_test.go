@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,24 @@ func runLabHelper(mode string) error {
 			}
 		} else {
 			switch cmd.Op {
+			case "ready":
+				probe, e := New(Config{Gateway: netip.MustParseAddr("10.0.0.1"), Local: netip.MustParseAddrPort("10.0.0.2:4001")})
+				if e != nil {
+					err = e
+					break
+				}
+				ticker := time.NewTicker(20 * time.Millisecond)
+				for {
+					_, err = probe.request(ctx, "GET", "http://10.0.0.1:5000/rootDesc.xml", "", "")
+					if err == nil || ctx.Err() != nil {
+						break
+					}
+					select {
+					case <-ctx.Done():
+					case <-ticker.C:
+					}
+				}
+				ticker.Stop()
 			case "map":
 				c, err = New(Config{Gateway: netip.MustParseAddr("10.0.0.1"), Local: netip.MustParseAddrPort("10.0.0.2:4001"), Protocols: []Protocol{cmd.Protocol}})
 				if err == nil {
@@ -168,7 +187,21 @@ func runLabHelper(mode string) error {
 		}
 	}
 }
-func TestNATLabPortMappings(t *testing.T) {
+func TestNATLabPortMappings(t *testing.T) { testLabMappings(t, "") }
+
+func TestNATLabMiniUPnPd(t *testing.T) {
+	binary := os.Getenv("NU_MINIUPNPD")
+	if binary == "" {
+		var err error
+		binary, err = exec.LookPath("miniupnpd")
+		if err != nil {
+			t.Skip("real-daemon interop: install miniupnpd-nftables or set NU_MINIUPNPD to an extracted binary")
+		}
+	}
+	testLabMappings(t, binary)
+}
+
+func testLabMappings(t *testing.T, binary string) {
 	if !natlab.Isolate(t) {
 		return
 	}
@@ -183,7 +216,11 @@ func TestNATLabPortMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := internet.Segment("public", "198.18.0.1/24")
+	publicPrefix := "198.18.0."
+	if binary != "" {
+		publicPrefix = "11.0.0."
+	} // miniupnpd rejects reserved WAN IPs; this netns has no real-network uplink
+	public, err := internet.Segment("public", publicPrefix+"1/24")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +228,7 @@ func TestNATLabPortMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = public.Attach(router, "wan", "198.18.0.20/24", ""); err != nil {
+	if err = public.Attach(router, "wan", publicPrefix+"20/24", ""); err != nil {
 		t.Fatal(err)
 	}
 	lan, err := router.Segment("lan", "10.0.0.1/24")
@@ -209,7 +246,7 @@ func TestNATLabPortMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = public.Attach(observer, "eth0", "198.18.0.30/24", ""); err != nil {
+	if err = public.Attach(observer, "eth0", publicPrefix+"30/24", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = router.Run("sysctl", "-qw", "net.ipv4.ip_forward=1"); err != nil {
@@ -231,17 +268,41 @@ func TestNATLabPortMappings(t *testing.T) {
 	if _, err = client.StartHost(natlab.HostConfig{Echo: []string{"10.0.0.2:4001"}}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := startLabRPC(router, "router")
-	if err != nil {
-		t.Fatal(err)
+	var server *labRPC
+	if binary == "" {
+		server, err = startLabRPC(router, "router")
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		// The nft backend creates its own miniupnpd table and native hook chains.
+		// Only the real daemon creates translation rules in this scenario.
+		dir := t.TempDir()
+		config := filepath.Join(dir, "miniupnpd.conf")
+		if err = os.WriteFile(config, []byte("ext_ifname=wan\next_ip="+publicPrefix+"20\nlistening_ip=lan\nhttp_port=5000\nlease_file="+filepath.Join(dir, "leases")+"\nminissdpdsocket="+filepath.Join(dir, "minissdpd.sock")+"\nenable_natpmp=yes\nenable_upnp=yes\nsecure_mode=yes\nsystem_uptime=no\nuuid=25fe7acc-798b-4219-b2f9-45b74a288c43\nallow 1024-65535 10.0.0.0/24 1024-65535\ndeny 0-65535 0.0.0.0/0 0-65535\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		version, err := router.Run(binary, "--version")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("real daemon: %s", version)
+		if _, _, err = router.Start(binary, "-d", "-4", "-f", config, "-P", filepath.Join(dir, "pid")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	mapper, err := startLabRPC(client, "client")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if binary != "" {
+		if _, err = mapper.call(labCommand{Op: "ready"}); err != nil {
+			t.Fatal("daemon readiness", err)
+		}
+	}
 	probe := func(target string, want bool) {
 		t.Helper()
-		node, err := observer.StartHost(natlab.HostConfig{ProbeListen: "198.18.0.30:0"})
+		node, err := observer.StartHost(natlab.HostConfig{ProbeListen: publicPrefix + "30:0"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,32 +317,41 @@ func TestNATLabPortMappings(t *testing.T) {
 			t.Fatal(err)
 		}
 		addr, err := netip.ParseAddrPort(seen)
-		if err != nil || addr.Addr() != netip.MustParseAddr("198.18.0.30") {
+		if err != nil || addr.Addr() != netip.MustParseAddr(publicPrefix+"30") {
 			t.Fatal("bad echoed endpoint", seen, err)
 		}
 	}
 	for _, p := range []Protocol{PCP, PMP, UPnP} {
 		start := time.Now()
-		if _, err = server.call(labCommand{Op: "reset"}); err != nil {
-			t.Fatal(err)
+		if server != nil {
+			if _, err = server.call(labCommand{Op: "reset"}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		m, err := mapper.call(labCommand{Op: "map", Protocol: p})
 		if err != nil {
 			t.Fatal(err)
 		}
 		probe(m.External.String(), true)
-		if _, err = server.call(labCommand{Op: "reboot"}); err != nil {
-			t.Fatal(err)
+		if server != nil {
+			if _, err = server.call(labCommand{Op: "reboot"}); err != nil {
+				t.Fatal(err)
+			}
+			m, err = mapper.call(labCommand{Op: "check"})
+			if err != nil || !m.Reboot {
+				t.Fatal("remap after reboot", m, err)
+			}
+			probe(m.External.String(), true)
+		} else {
+			rules, err := router.Run("nft", "list", "ruleset")
+			if err != nil || !strings.Contains(string(rules), "dnat to 10.0.0.2:4001") {
+				t.Fatalf("daemon did not install DNAT: %s %v", rules, err)
+			}
 		}
-		m, err = mapper.call(labCommand{Op: "check"})
-		if err != nil || !m.Reboot {
-			t.Fatal("remap after reboot", m, err)
-		}
-		probe(m.External.String(), true)
 		if _, err = mapper.call(labCommand{Op: "release"}); err != nil {
 			t.Fatal(err)
 		}
 		probe(m.External.String(), false)
-		t.Logf("protocol=%s mapping+epoch-zero-reboot+delete via real nft DNAT: %v", p, time.Since(start))
+		t.Logf("protocol=%s real_daemon=%t mapping+delete via nft DNAT (fixture also checks epoch-zero reboot): %v", p, binary != "", time.Since(start))
 	}
 }

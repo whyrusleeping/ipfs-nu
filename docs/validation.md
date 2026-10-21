@@ -79,13 +79,24 @@ Reproduce with `go test -tags natlab -run '^TestNATLab' -v ./p2p/portmap ./p2p/n
 - Pure-Go Darwin arm64 cross-build passed. This is compile evidence, not macOS runtime
   route-monitor, sleep/wake or router compatibility evidence.
 
-`miniupnpd` and a standalone PCP server were unavailable locally; passwordless sudo was
-unavailable. **Real-daemon interop remains deferred to the on-demand natlab CI workflow**,
-which now installs miniupnpd and runs the portmap/netmon lab binaries as well as the base
-lab. Current automated mapping scenarios still select deterministic in-test servers;
-installation alone does not claim daemon interop. Fake lease expiry is not a kernel lease
-scheduler: renewal timing is tested separately at the client boundary. IPv6 firewall/
-PEER forwarding, UPnP IPv6FirewallControl, real suspend/resume and consumer-router field
+**Real-daemon follow-up (2026-10-21):** Ubuntu `miniupnpd-nftables` 2.2.3-1 was
+downloaded with `apt-get download miniupnpd miniupnpd-nftables` and extracted with
+`dpkg -x` into a temporary directory, without sudo. Its `--version` reports the nft
+backend and its startup log confirms NAT-PMP/PCP and UPnP-IGD support. Run:
+`NU_MINIUPNPD=/absolute/extracted/usr/sbin/miniupnpd go test -tags natlab -run '^TestNATLabMiniUPnPd$' -v ./p2p/portmap`.
+The daemon ran as root **inside an unprivileged user/network namespace**, installed its
+own nft rules, and all three Nu clients produced working fresh-source inbound UDP
+reachability and removed it on release (PCP 335 ms, NAT-PMP 337 ms, UPnP 391 ms;
+complete test about 1.5 s). No production client changes were needed. The daemon rejects
+reserved WAN addresses, so this fully isolated topology uses `11.0.0.0/24`, with no
+real-network uplink. Config, PID, lease and minissdpd paths are private temporary paths.
+The on-demand CI workflow installs the nft build and runs this test explicitly; it no
+longer merely installs an unused daemon. Without a binary, only this opt-in daemon test
+skips with an explanation; the deterministic fixture scenarios still run.
+
+Fake lease expiry is not a kernel lease scheduler: renewal timing is tested separately
+at the client boundary. Real-daemon reboot/lease-expiry timing, IPv6 firewall/PEER
+forwarding, UPnP IPv6FirewallControl, real suspend/resume and consumer-router field
 validation remain deferred. Host/AutoNAT/relay/identify/path hooks need owner-side wiring;
 the measured reaction invokes registered test hooks, not a production daemon's recovery.
 
@@ -174,6 +185,39 @@ GSO/ECN/batching, capacity-collapse and long lossy reliable-relay performance re
 unproven. The bounded congestion tests do not establish fairness under arbitrary path
 changes; reliable framing retains head-of-line blocking. Three local runs support
 medians/ranges, not meaningful p95 estimates or field success claims.
+**Netmon natlab flake follow-up:** the original test failed 4/20 isolated repetitions
+without other packages running (`Stage:3`, expected `Rebind`). It waited until all `ip`
+commands finished before reading a 32-entry, intentionally drop-oldest diagnostics queue;
+link/IPv6/route notification bursts could evict the beginning of a reaction. Namespace
+names and addresses were not shared across these runs. The test now records actual hook
+executions in a single complete receipt and still enforces the 1 s bound; production
+queue policy is unchanged. The full tagged `./p2p/... ./cluster/...` set passed three
+uncached repetitions after this correction, with the real miniupnpd binary enabled.
+
+### Public address lookup (0016, 2026-10-21)
+
+Fast in-process tests in `p2p/lookup/public_test.go` publish a signed record through
+bounded HTTP PUT, retrieve its addresses through both DNS and routing/v1 Sources, and
+combine them through the existing Resolver. Twenty addresses force UDP truncation and
+TCP DNS fallback. Other checks cover recursive TXT concatenation/suffix filtering,
+cycle/query limits, cancellation before DNS egress, signature tampering, replay rejection,
+relay-only signing, change-triggered publication, unknown JSON schemas/fields, NDJSON,
+legacy 404 and forbidden upload redirects. TXT, DNS wire, routing JSON and signed-record
+parser fuzz seeds run without external traffic. Tests explicitly opt into loopback HTTP;
+production uses the shared HTTPS/SSRF policy.
+
+Interop: `cd experiments && CGO_ENABLED=0 go test -run '^TestDNSADDRLookupInterop$' -v .`
+passed in about 0.02 s (distinct `dnsaddr_lookup_httptrack_test.go`). A stock go-libp2p
+v0.50.0 host received **only** `/dnsaddr/<Nu-base36-id>.peers.example.test/p2p/<Nu-id>`,
+queried Nu's DNS server through its standard multiaddr resolver, connected over QUIC,
+authenticated Nu's PeerId and exchanged an echo stream. Nu also verified a signed peer
+record created by go-libp2p and returned its addresses through DNS. Everything used
+loopback and test-local DNS; there was no real-network lookup or external operator.
+
+Deferred: CLI/daemon owner wiring of public Sources, persisted publication sequences,
+address-change publisher lifecycle, public TLS/authoritative-DNS deployment and operational
+admission/rate policy. DNSSEC and persistent lookup-directory anti-replay are not claimed.
+Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
 
 ## Early experiments
 

@@ -86,6 +86,7 @@ type Result struct {
 	LastModified string
 	Date         string
 	ContentType  string
+	CacheControl string
 	Size         int64
 }
 
@@ -101,6 +102,26 @@ type Sink func(offset int64) (io.Writer, error)
 // Fetch performs one GET, streaming without whole-body buffering. It never retries
 // automatically. The caller must not publish partially written bytes on error.
 func (c *Client) Fetch(ctx context.Context, rawURL string, sink Sink, opts Options) (Result, error) {
+	return c.fetch(ctx, rawURL, http.MethodGet, nil, sink, opts)
+}
+
+// Put uploads a bounded signed control record, with the same destination guards
+// as Fetch. Redirects and resume are forbidden; response bodies remain bounded.
+// The caller must not mutate body until Put returns. Only HTTP 200 is successful.
+func (c *Client) Put(ctx context.Context, rawURL string, body []byte, sink Sink, opts Options) (Result, error) {
+	if len(body) > 8192 || opts.Resume != nil {
+		return Result{}, ErrTooLarge
+	}
+	return c.fetch(ctx, rawURL, http.MethodPut, body, sink, opts)
+}
+
+// StatusError preserves HTTP status without weakening errors.Is(ErrResponse).
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("httpsrc: HTTP status %d", e.Code) }
+func (e *StatusError) Unwrap() error { return ErrResponse }
+
+func (c *Client) fetch(ctx context.Context, rawURL, method string, body []byte, sink Sink, opts Options) (Result, error) {
 	var result Result
 	if opts.MaxBytes <= 0 || opts.Timeout <= 0 || opts.IdleTimeout <= 0 || sink == nil {
 		return result, errors.New("httpsrc: positive size/time limits and a sink are required")
@@ -127,6 +148,9 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, sink Sink, opts Optio
 	}
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if method != http.MethodGet {
+			return fmt.Errorf("%w: upload redirects forbidden", ErrPolicy)
+		}
 		if err := c.checkURL(req.URL, opts.Hosts); err != nil {
 			return err
 		}
@@ -139,11 +163,14 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, sink Sink, opts Optio
 		req.Header.Del("Referer") // source URLs may contain private query tokens
 		return nil
 	}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), strings.NewReader(string(body)))
 	if err != nil {
 		return result, err
 	}
 	req.Header.Set("Accept-Encoding", "identity")
+	if method == http.MethodPut {
+		req.Header.Set("Content-Type", "application/octet-stream")
+	}
 	var offset int64
 	if r := opts.Resume; r != nil && r.Size > 0 && r.FinalURL == u.String() {
 		if v := r.validator(); v != "" {
@@ -162,7 +189,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, sink Sink, opts Optio
 	defer resp.Body.Close()
 	result = Result{FinalURL: resp.Request.URL.String(), ETag: resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"), Date: resp.Header.Get("Date"),
-		ContentType: resp.Header.Get("Content-Type")}
+		ContentType: resp.Header.Get("Content-Type"), CacheControl: resp.Header.Get("Cache-Control")}
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
 		return result, fmt.Errorf("%w: encoded body", ErrResponse)
 	}
@@ -199,7 +226,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, sink Sink, opts Optio
 		}
 		expected = total - start
 	default:
-		return result, fmt.Errorf("%w: HTTP status %d", ErrResponse, resp.StatusCode)
+		return result, &StatusError{Code: resp.StatusCode}
 	}
 	if expected > opts.MaxBytes-offset {
 		return result, ErrTooLarge

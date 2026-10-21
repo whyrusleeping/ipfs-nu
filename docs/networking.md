@@ -546,6 +546,69 @@ A node record containing only relay/dnsaddr hints does not conceal direct IPs in
 DNS/peer records. Specify/explain default address exposure and relay-only behavior. Hint,
 LAN and explicit-member discovery work independently of global Amino support.
 
+### Public dnsaddr and routing/v1 lookup
+
+`p2p/lookup.NewDNS` and `NewHTTPSource` implement the existing `Source` interface;
+add them explicitly to `lookup.Config.Sources`. They do not change discovery defaults
+and must not be installed in private/isolated mode. DNS can use a configured peer domain
+(`_dnsaddr.<base36-peerid>.<domain>`) and/or explicit dnsaddr roots; `Resolve` handles an
+individual dnsaddr hint. It uses miekg/dns wire encoding with connected, context-bounded
+DNS I/O, TXT character-string concatenation, suffix matching at every recursion hop,
+cycle/deduplication checks, and UDP-to-TCP fallback on truncation. DNS servers are literal
+IP:port values; absent configuration uses `/etc/resolv.conf`. No lookup server is selected
+implicitly. Defaults per lookup: 3 s, 8 KiB per DNS message, 128 records total, depth 8,
+16 queries, 32 results and 1024 bytes per multiaddr. DNS names are limited to 180 bytes
+before the peer-label/query prefix. Result TTL is the minimum along the dnsaddr chain,
+capped at five minutes. DNS answers are address claims, not authorization or DNSSEC proofs.
+
+The HTTP source calls `GET /routing/v1/peers/{peer-id}` through `httpsrc`. It accepts
+IPIP-417 `application/json` (`{"Peers":[{"Schema":"peer","ID":"…","Addrs":["…"]}]}`)
+and `application/x-ndjson` peer objects, ignores unknown schemas/fields, treats legacy
+404 as an empty result, and rejects conflicting destination suffixes. Defaults: 64 KiB,
+32 peer objects, 32 addresses, 1024 bytes/address, JSON depth 16 and a 3 s overall/stall
+bound. HTTP address freshness is at most 30 s, shortened by Cache-Control. Results are
+unsigned hints; libp2p dialing authenticates the requested PeerId. The server returns
+200 with an empty list when absent, omits unsupported protocol claims, supports GET/
+OPTIONS CORS and JSON/NDJSON negotiation, and advertises bounded cache freshness.
+IPIP-484 transport/protocol filtering, provider routing and IPNS endpoints are not part
+of this service.
+
+`relay.Config.Lookup` optionally creates a `LookupService`. Its config supplies a
+`lookup.DirectoryConfig` (required peer domain, optional admission callback, default
+1024 retained peers, 16 concurrent verifications, one-hour retention) and optional
+`HTTPListen`/`DNSListen` strings. DNS binds UDP and TCP to the same port. Empty strings
+open no listeners; `LookupService.Directory` is also an `http.Handler` and `dns.Handler`
+for owner-managed frontends. HTTPListen is plaintext: public deployment requires an
+HTTPS frontend. DNS is authoritative only for its peer TXT namespace and never recurses.
+UDP responses are capped at 1232 bytes (512 without EDNS), with TCP fallback; TXT strings
+are split at 255 bytes. The service exposes listener addresses and asynchronous errors,
+and closes with the relay. No CLI or production hostname/listener is implicitly enabled.
+
+Publication is the Nu extension **`PUT /nu/lookup/v1/peers/{peer-id}`**, with an
+`application/octet-stream` body containing the unmodified RFC 0002 signed libp2p peer
+record envelope. Limit: 8 KiB, 32 addresses, 1024 bytes/address. The directory verifies
+the domain-separated signature, payload type, signer/record/path identity and address
+suffixes, then requires a strictly increasing sequence for a resident identity. Empty
+address lists withdraw the previous addresses. Responses: 200 accepted, 409 old/equal
+sequence, 403 admission refusal, 413 oversized body, 422 malformed/invalid record,
+429 capacity/concurrency limit. It performs no outbound work on submitted addresses.
+Records and high-water marks are memory-only; TTL expiry hides records and expired
+entries can be pruned for capacity. Anti-replay across pruning/restart is not claimed.
+TLS and final libp2p authentication remain required; a signed address is not evidence
+that its IP is reachable or belongs to the signer. Public operators still need admission,
+rate/abuse policy and TLS/DNS deployment configuration.
+
+`NewPublisher` takes the key, current-address callback, persistently increasing
+`NextSequence`, configured HTTPS base URL/client and optional per-call host allowlist.
+`Publish` is a change hook; `Run` publishes initially, on owner-provided notifications
+(e.g. `Host.WatchChanges`) and every 30 minutes by default. The interval must be shorter
+than server retention. Failures return to the owner for retry/backoff. `RelayOnly` filters
+to terminal relay-circuit addresses **before signing**; direct addresses and plain dnsaddr
+indirections are omitted, including when the result is empty. This cannot erase old
+public/DNS caches or direct addresses published through another source. `httpsrc.Put`
+is capped at 8 KiB and rejects redirects/resume, while sharing Fetch's HTTPS/IP/host,
+time and response-size guards. The lookup server's public metadata is not a control API.
+
 ### v0 lookup, cache and mDNS
 
 `p2p/lookup.Resolver` streams results while all sources run in parallel. The default

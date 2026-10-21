@@ -17,7 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
-func pair(t *testing.T) (*host.Host, libhost.Host) {
+func endpoints(t *testing.T) (*host.Host, libhost.Host) {
 	t.Helper()
 	upstream, err := libp2p.New(libp2p.NoTransports, libp2p.Transport(libquic.NewTransport), libp2p.ListenAddrStrings("/ip4/127.0.0.1/udp/0/quic-v1"), libp2p.DisableRelay())
 	if err != nil {
@@ -33,6 +33,10 @@ func pair(t *testing.T) (*host.Host, libhost.Host) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = nu.Close() })
+	return nu, upstream
+}
+func connectPair(t *testing.T, nu *host.Host, upstream libhost.Host) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	addr, err := wire.ParseMultiaddr(upstream.Addrs()[0].String()+"/p2p/"+upstream.ID().String(), 1024)
@@ -42,6 +46,11 @@ func pair(t *testing.T) (*host.Host, libhost.Host) {
 	if _, err := nu.Dial(ctx, addr); err != nil {
 		t.Fatal(err)
 	}
+}
+func pair(t *testing.T) (*host.Host, libhost.Host) {
+	t.Helper()
+	nu, upstream := endpoints(t)
+	connectPair(t, nu, upstream)
 	return nu, upstream
 }
 func TestMultistreamSelect(t *testing.T) {

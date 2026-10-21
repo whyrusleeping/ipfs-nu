@@ -32,11 +32,13 @@ func (h *Host) Handle(protocol string, maxConcurrent int, handler Handler) error
 		return ErrLimit
 	}
 	h.handlers[protocol] = &protocolHandler{handle: handler, slots: make(chan struct{}, maxConcurrent)}
+	h.signalChangedLocked()
 	return nil
 }
 func (h *Host) RemoveHandler(protocol string) {
 	h.mu.Lock()
 	delete(h.handlers, protocol)
+	h.signalChangedLocked()
 	h.mu.Unlock()
 }
 func (h *Host) Protocols() []string {
@@ -81,10 +83,11 @@ func (h *Host) OpenStream(ctx context.Context, peer wire.PeerID, protocol string
 	if err != nil {
 		return nil, err
 	}
-	_ = s.SetDeadline(time.Now().Add(5 * time.Second))
-	if d, ok := ctx.Deadline(); ok {
-		_ = s.SetDeadline(d)
+	deadline := time.Now().Add(5 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
 	}
+	_ = s.SetDeadline(deadline)
 	stop := context.AfterFunc(ctx, func() { s.Reset() })
 	err = s.Confirm()
 	if !stop() {

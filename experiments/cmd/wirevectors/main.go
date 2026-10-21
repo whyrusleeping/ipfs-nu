@@ -5,16 +5,21 @@ package main
 import (
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/record"
+	idpb "github.com/libp2p/go-libp2p/p2p/protocol/identify/pb"
 	ma "github.com/multiformats/go-multiaddr"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
+	identify := flag.Bool("identify", false, "emit identify protobuf vector")
+	flag.Parse()
 	b, err := os.ReadFile("../p2p/wire/testdata/vectors/keys.json")
 	check(err)
 	var keys struct{ Ed25519Private string }
@@ -34,7 +39,17 @@ func main() {
 	check(err)
 	envelope, err := env.Marshal()
 	check(err)
-	out, err := json.MarshalIndent(map[string]string{"peerID": id.String(), "base32": peer.ToCid(id).String(), "record": hex.EncodeToString(payload), "envelope": hex.EncodeToString(envelope)}, "", "  ")
+	data := map[string]string{"peerID": id.String(), "base32": peer.ToCid(id).String(), "record": hex.EncodeToString(payload), "envelope": hex.EncodeToString(envelope)}
+	if *identify {
+		public, err := crypto.MarshalPublicKey(k.GetPublic())
+		check(err)
+		version, agent := "ipfs/0.1.0", "vector/1"
+		message := &idpb.Identify{PublicKey: public, ListenAddrs: [][]byte{addr.Bytes()}, Protocols: []string{"/ipfs/id/1.0.0", "/ipfs/ping/1.0.0"}, ObservedAddr: addr.Bytes(), ProtocolVersion: &version, AgentVersion: &agent, SignedPeerRecord: envelope}
+		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+		check(err)
+		data = map[string]string{"identify": hex.EncodeToString(b)}
+	}
+	out, err := json.MarshalIndent(data, "", "  ")
 	check(err)
 	fmt.Println(string(out))
 }

@@ -130,6 +130,45 @@ Application message helpers use minimal multiformats uvarint length then exact
 message bytes, with a caller-supplied maximum checked before allocation. They do
 not read ahead, so protocol payload starts immediately after the negotiation.
 
+### Identify, push, ping and address observations
+
+The core protocol service registers `/ipfs/id/1.0.0`, `/ipfs/id/push/1.0.0`, and
+`/ipfs/ping/1.0.0`. On each new connection it requests identify; local protocol
+changes automatically push the current full snapshot to connected peers advertising
+push support. Connection/protocol notifications coalesce and the background worker
+processes peers serially. Explicit Identify/Push/Ping requests share a 32-request
+limit; each inbound core handler also has a 32-stream limit. Deadlines default to
+5 s. Instantiate one core service per host and close it before closing the host.
+
+Identify protobuf fields are public key (1), repeated binary listen multiaddrs (2),
+repeated protocol strings (3), observed multiaddr (4), protocol version (5), agent
+version (6), and signed peer-record envelope (8). Responses/pushes send one
+length-prefixed protobuf of at most 4 KiB; an oversized local snapshot is an error,
+not silent truncation. Receivers merge up to ten length-prefixed fragments (8 KiB
+per fragment, 64 KiB aggregate) through clean EOF, accepting protobuf unknown fields.
+Limits after merging are 128 addresses, 1024 bytes per address/string, and 1024
+protocols. Strings must be UTF-8 and protocol names must be valid multistream IDs.
+Public keys and signed peer records, when present, must match the authenticated
+connection's PeerId. Signed peer records are separately verified, limited to 8 KiB,
+and only replace cached certified addresses for strictly increasing sequences;
+unsigned listen addresses remain explicitly separate. Malformed input resets the
+stream and is not cached. Defaults advertise protocol version `ipfs/0.1.0`, an
+agent derived from the product-name constant, and actual bound socket addresses.
+
+The peer-info cache holds at most 256 peers, evicting the oldest update. Address
+observations are untrusted claims keyed by the observer's actual connection IP/port,
+not its advertised address or PeerId alone. Retain only the newest observation per
+endpoint, including local socket address and timestamp, capped at 128 endpoints
+(oldest evicted). They are not automatically promoted to advertised addresses or
+reachability evidence; AutoNAT/NAT profiling consumes them later. The v0 cache is
+in-memory and has no retention/TTL or persistence contract yet.
+
+Ping sends 32 random bytes and requires an exact echo; RTT excludes protocol
+negotiation. Servers echo successive 32-byte frames, with a 5 s idle/request deadline
+and a 30 s stream lifetime. EOF closes cleanly; partial frames, incorrect echoes
+and timeouts reset the stream. Ping, identify and push failures do not close an
+otherwise authenticated connection.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

@@ -73,6 +73,8 @@ type Host struct {
 	acceptReady   chan struct{}
 	manualStreams bool
 	handlers      map[string]*protocolHandler
+	watchers      map[uint64]chan struct{}
+	nextWatcher   uint64
 	mu            sync.Mutex
 	closed        bool
 	peers         map[wire.PeerID][]*Conn
@@ -334,6 +336,7 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		list = nil
 	}
 	h.peers[c.peer] = append(list, c)
+	h.signalChangedLocked()
 	h.wg.Add(1)
 	go func() { defer h.wg.Done(); <-qc.Context().Done(); h.removeConnection(c) }()
 	if !h.manualStreams {

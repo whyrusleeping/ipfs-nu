@@ -12,6 +12,7 @@ require (
 	github.com/multiformats/go-multibase v0.3.0
 	github.com/quic-go/quic-go v0.64.1
 	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.49.0
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.61.0
 )
@@ -34,7 +35,6 @@ require (
 	gitlab.com/yawning/tuplehash v0.0.0-20230713102510-df83abbf9a02 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

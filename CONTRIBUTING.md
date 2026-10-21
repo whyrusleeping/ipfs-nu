@@ -97,9 +97,11 @@ link from `n.Link(cid, providers...)`); inject faults with `Node.Stop/Start/Kill
 operations. See `nutest/nutest_test.go` for the restart-mid-transfer, partition/heal and
 corrupt-provider examples and `nutest/scenario_test.go` for the add → share → get journey.
 
-NAT and isolated-egress scenarios use the netns lab behind the `natlab` build tag; they need
-root and run in dedicated CI jobs. Wire interop with other libp2p implementations lives in
-the separate `experiments/` module (a go-libp2p smoke test per protocol before v0) and 0011.
+NAT and isolated-egress scenarios use [the netns lab](p2p/natlab/README.md) behind the
+`natlab` build tag. They run rootless with user+network namespaces where enabled, with a
+root fallback in the dedicated on-demand CI job. Wire interop with other libp2p
+implementations lives in the separate `experiments/` module (a go-libp2p smoke test per
+protocol before v0) and 0011.
 
 ## Commits
 

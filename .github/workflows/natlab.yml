@@ -1,0 +1,36 @@
+name: natlab
+on:
+  workflow_dispatch:
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  natlab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: namespace tools
+        run: sudo apt-get update && sudo apt-get install -y iproute2 nftables util-linux procps
+      - name: build lab tests (never run the Go toolchain as root)
+        run: go test -c -tags natlab -o "$RUNNER_TEMP/natlab.test" ./p2p/natlab
+      - name: isolated scenarios
+        # Root is the portable CI fallback; local go test uses user+net
+        # namespaces automatically. Even root re-execs into a fresh netns.
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" \
+            "$RUNNER_TEMP/natlab.test" -test.v -test.timeout=60s \
+            2>&1 | tee "$RUNNER_TEMP/natlab.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: natlab-results
+          path: |
+            ${{ runner.temp }}/natlab-results.ndjson
+            ${{ runner.temp }}/natlab.log

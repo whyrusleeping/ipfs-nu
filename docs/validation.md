@@ -2,9 +2,33 @@
 
 [Spec overview](../spec.md) · [Product brief](product.md) · [Operations](operations.md) · [Networking](networking.md)
 
-**No results are recorded yet.** Specification figures are hypotheses and sizing targets,
-not measured capabilities. Record reproducible results here (or link reports indexed here),
-including negative results. Synthetic regression tests do not establish field success.
+**No field connectivity or scale results are recorded yet.** Specification figures are
+hypotheses and sizing targets, not measured capabilities. Record reproducible results here
+(or link reports indexed here), including negative results. Synthetic regression tests do
+not establish field success.
+
+## Linux NAT lab smoke (2026-10-21)
+
+Reproduce with `go test -tags natlab -count=1 -v ./p2p/natlab`.
+[Harness API, model limits and deferred scenarios](../p2p/natlab/README.md).
+Local environment: Linux 5.15.0-176-generic, Go 1.26.2 linux/amd64, unprivileged
+user with rootless user+network namespaces; no sudo and no external traffic.
+All three tests passed in about 6 seconds total:
+
+| Check | Observed evidence |
+|---|---|
+| AutoNAT v2 (0012) | Public candidate Reachable at 0.40s; masqueraded candidate Unreachable at 0.72s from scenario startup; candidate was the actual observer-reported NAT endpoint, not an unrouted private address |
+| RFC fixture mapping smoke (0003) | One inside socket to three destinations (two IPs): EIM `5000/5000/5000`; ADM `5000/5000/5001`; random APDM `25240/16403/50461` on one public IP |
+| Filtering | Same endpoint allowed in all three representatives; alternate source port allowed only in EIF/ADF; alternate IP allowed only in EIF, before contacting either alternate destination |
+| Changes and blocked paths | Hairpin off timed out and on succeeded; conntrack/pinhole flush, WAN address rebinding, private interface down/up plus route restoration succeeded; all-forwarded-UDP block timed out |
+
+Random allocations vary per run. Fixture reservations are static and bounded;
+these checks do not prove a dynamic NAT allocator, precise mapping lifetimes,
+file-transfer continuity, traversal success rates or the full topology/matrix.
+`NU_NATLAB_RESULTS=/absolute/path.ndjson` writes machine-readable pair outcomes;
+first-byte/direct durations are absent until a consumer measures them. The
+on-demand `natlab` workflow uses root as the stock-runner fallback; remote CI
+execution is not part of this local evidence.
 
 ## Early experiments
 

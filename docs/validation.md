@@ -113,6 +113,44 @@ transfer bytes, regional capacity and abuse reserves. Account for idle nodes and
 not just successful direct demonstrations. Publish service support/quotas separately from
 protocol capabilities; no unresolved funding assumption may hide inside “zero configuration.”
 
+## v0 two-machine demo (0028)
+
+**Status: not yet performed on two real machines.** The same steps ran on one machine with
+two `$NU_PATH`s (A's daemon on UDP 4171, B on an ephemeral port): `get` of a 2.9 MB tree
+took 0.2 s; the daemonless `share` → `get` path and `doctor --peer` also passed. Record
+the real-LAN run (and a routed one) below when done.
+
+Needs: two machines that can reach each other directly over UDP (same LAN, or routed with no
+NAT between them); the `nu` binary on both (`go build -o nu ./cmd/nu`). Default repo is
+`~/.nu`; set `NU_PATH` to use another directory. Everything is 0-config: the first command
+initializes the repo.
+
+Machine A (the holder):
+
+1. `nu daemon` — prints the peer id and the swarm addresses (one per interface). Leave it
+   running. Expect `swarm /ip4/<A's LAN IP>/udp/4171/quic-v1` among them; if the only
+   addresses are wrong interfaces, set `swarm.listen` with `nu config set` and restart.
+2. In another terminal: `nu add -r <dir>` — expect `added <cid> <name>` and a
+   `share: nu://<cid>?peer=<id>&addr=/ip4/<A's IP>/udp/4171/quic-v1…` line. Copy the link.
+   (`nu share <cid>` prints it again at any time.)
+3. `nu status` — expect `network: serving, 0 peers connected` (the count rises while B fetches).
+
+Machine B (the recipient, no daemon, no `nu init`):
+
+4. `nu doctor --peer '<link>'` — expect `ok peer: reached <A's id>, round trip <n>ms`. A
+   `fail peer: no answer …` means UDP 4171 is blocked on A (firewall) or the address is
+   not reachable from B; the action line says what to try.
+5. `nu get '<link>' -o <out>` — expect `fetching` then `wrote <cid> to <out> (<n> files, <size>)`;
+   `diff -r` against A's directory is empty. Repeat with a single file (`nu add <file>` on A).
+6. `nu cat <cid>/<path>` and `nu ls <cid>` on B now answer from B's own store.
+7. Browse: `nu daemon` on B, then open `http://<cid>.localhost:8171/` (or
+   `http://127.0.0.1:8171/tree/<cid>/`) — expect the directory (an `index.html` renders as a site).
+
+Also try the daemonless holder: stop A's daemon, run `nu share <cid>` on A (it serves in the
+foreground and says content is available only while a holder is online), repeat step 5 on
+B from a fresh `NU_PATH`, then Ctrl-C the share. Record: OS/arch of both machines, link type
+(Wi-Fi/Ethernet/routed), sizes, wall time of step 5 and anything confusing in the output.
+
 ## Release evidence
 
 Index results for [milestone](../spec.md#milestones) exits, the [operational acceptance

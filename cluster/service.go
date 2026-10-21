@@ -84,7 +84,8 @@ type Service struct {
 	ownSeq   int64             // report sequence: the greatest seq assigned
 	sentSeq  int64             // ownSeq at the previous heartbeat (the next delta's base)
 	sentOnce bool
-	evidence chan struct{} // closed and replaced when received reports change
+	evidence chan struct{}            // closed and replaced when received reports change
+	learned  map[wire.PeerID][]string // member addresses relayed by other members' heartbeats
 }
 
 // Gate is the connection policy of c for this node (self): in private and isolated mode
@@ -138,7 +139,7 @@ func StartService(cfg ServiceConfig) (*Service, error) {
 	}
 	s := &Service{cfg: cfg, c: cfg.Cluster, h: cfg.Host, self: cfg.Host.ID(), log: cfg.Logger.With("cluster", cfg.Cluster.ID.String()),
 		kick: make(chan struct{}, 1), peers: map[wire.PeerID]*PeerStatus{}, pulling: map[string]bool{}, changed: make(chan struct{}),
-		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{})}
+		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{}), learned: map[wire.PeerID][]string{}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	private := s.c.Mode() == ModePrivate || s.c.Mode() == ModeIsolated
 	if private {
@@ -260,6 +261,7 @@ func (s *Service) addrsOf(id wire.PeerID) []wire.Multiaddr {
 	if p := s.peers[id]; p != nil && p.Heartbeat != nil {
 		texts = append(texts, p.Heartbeat.Addrs...)
 	}
+	texts = append(texts, s.learned[id]...)
 	s.mu.Unlock()
 	for _, b := range s.c.Boot() {
 		if b.Peer == id {
@@ -397,6 +399,7 @@ func (s *Service) heartbeat() {
 	if s.cfg.Reports != nil {
 		hb.Reports = s.reportDelta(s.cfg.Reports())
 	}
+	hb.Peers = s.relayAddrs()
 	if s.cfg.HoldingsMarks != nil {
 		hb.Holdings = s.cfg.HoldingsMarks()
 	}
@@ -636,12 +639,18 @@ func (s *Service) serve(st *host.Stream) {
 			if d := req.HB.Reports; d != nil {
 				pull = s.applyReportsLocked(p, d, now)
 			}
+			for _, pa := range req.HB.Peers {
+				if id, err := wire.PeerIDFromBytes(pa.Peer); err == nil && id != s.self && len(pa.Addrs) <= 16 {
+					s.learned[id] = pa.Addrs
+				}
+			}
 		}
 		s.mu.Unlock()
 		reply(response{}, nil)
 		if pull {
 			s.spawn(func() { s.pullReports(peer) })
 		}
+
 	case OpReports:
 		body, err := s.serveReports()
 		if err != nil {
@@ -755,4 +764,26 @@ func (s *Service) admit(joiner wire.PeerID, invite string, proof []byte, addrs [
 		return StatusOK, ""
 	}
 	return StatusNotFound, "no connected member holding an admin key accepted the invite"
+}
+
+// relayAddrs lists the heartbeat addresses (at most 4 each) of connected members (at most
+// 32), so members
+// that are not connected to each other, such as two pre-authorized members whose records
+// carry no addresses, can dial each other. Gating still admits only members, and the TLS
+// handshake authenticates the PeerId.
+func (s *Service) relayAddrs() []PeerAddrs {
+	v := s.c.View()
+	var out []PeerAddrs
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, p := range s.peers {
+		if len(out) == 32 || p.Heartbeat == nil || len(p.Heartbeat.Addrs) == 0 || !v.IsMember(id) {
+			continue
+		}
+		if _, ok := s.h.Connection(id); ok {
+			out = append(out, PeerAddrs{Peer: id.Bytes(), Addrs: p.Heartbeat.Addrs[:min(len(p.Heartbeat.Addrs), 4)]})
+		}
+	}
+	slices.SortFunc(out, func(a, b PeerAddrs) int { return cmpStr(string(a.Peer), string(b.Peer)) })
+	return out
 }

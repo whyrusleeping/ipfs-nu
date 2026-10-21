@@ -92,7 +92,15 @@ type Heartbeat struct {
 	// Reports carries the member's completion reports as a delta (docs/cluster.md
 	// "Status").
 	Reports *ReportDelta `drisl:"reports,omitempty"`
-	Sig     []byte       `drisl:"sig,omitempty"`
+	// Peers relays connected members' advertised addresses.
+	Peers []PeerAddrs `drisl:"peers,omitempty"`
+	Sig   []byte      `drisl:"sig,omitempty"`
+}
+
+// PeerAddrs is a member's advertised addresses as relayed by another member.
+type PeerAddrs struct {
+	Peer  []byte   `drisl:"peer"`
+	Addrs []string `drisl:"addrs"`
 }
 
 // HoldingsMark is a member's holdings-log position for one collection.

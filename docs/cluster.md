@@ -75,7 +75,7 @@ io.ipfs.nu.cluster.member/<peerId>    { roles, capacity, store_limit, tags?: {zo
 io.ipfs.nu.cluster.invite/<id>        { proofKey, roles, tags?, capacity?, expires, hlc }
 io.ipfs.nu.cluster.dataset/<name>     { source, policy, writers?: [<did>], collection?, note?, hlc }
 io.ipfs.nu.cluster.head/<name>        { target: "<cid>", kind, size?, note?, hlc }
-io.ipfs.nu.cluster.drop/<name>        { … }                                  # union collections, D22
+io.ipfs.nu.cluster.drop/<name>        { paths: [<item path>], hlc }          # union collections, D22
 io.ipfs.nu.cluster.history/<name>     { tree: <version-tree cid>, hlc }      # see Version history
 io.ipfs.nu.cluster.config/self        { defaults, repair, clock, hlc }
 any key → { deleted: true, hlc }       # tombstone
@@ -128,8 +128,9 @@ concurrent snapshots subject to explicit retention and content availability.
 | `key` (`<did:key>`) | `role` (`admin`, `writer`), `revoked?` `{after: <commit link>, rev: <TID>}` |
 | `member` (`<PeerId base58>`) | `roles` ([`storage`\|`client`]), `capacity` (int), `store_limit?`, `tags?` (string map), `addrs?` (≤ 16 multiaddrs), `label?`, `state` |
 | `invite` (`<id>`, 16 base32 chars) | `proofKey` (32 bytes, [below](#invites-and-join)), `roles`, `tags?`, `capacity?`, `expires` (datetime) |
-| `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas}` plus the policy fields above), `writers?` ([did]), `note?` |
+| `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas}` plus the policy fields above), `writers?` ([did]), `collection?` (`{facets?: {<name>: {ptr, type}}, merge?: "union"\|"lww", expire?: {facet, after}}`, [D22](collections.md#items-and-facets)), `note?` |
 | `head` (`<name>`) | `target` (CID string), `kind` (`tree`, `file`, `blob`), `size?`, `note?` |
+| `drop` (`<name>`, admins) | `paths` (at most 256 item paths; the union head leaves out everything at or below them, [D22](collections.md#union-heads)) |
 | `config` (`self`) | `clock?` (`{max_future_ms?, warn_skew_ms?}`) |
 
 - **Authorization:** root writes any record but `genesis` after the first; admins write `key`
@@ -505,6 +506,11 @@ request a non-member or non-admin may not make). Requests naming another cluster
 - `heartbeat {hb: {peer, seq, time (Unix ms), free, used, addrs?, sig}}` answers `{status}`; `sig` is the
   member's node-key signature over `"nu.cluster.heartbeat.v1\0" ‖ DRISL(hb without sig)`.
   Members send one to every connected member each interval (30 s).
+- `holdings {dataset, epoch?, since_seq?, snapshot?, after?, limit?}` answers `{status}`
+  followed by one uvarint-framed DRISL `{epoch, entries: [{seq, path, entry?, state, src?,
+  bytes?}], seq, more?, after?, resync?}` of at most 10,000 entries and 8 MiB: a member's
+  collection holdings log ([D22](collections.md#holdings-reports-and-index)). Heartbeats
+  carry `holdings: [{dataset, epoch, seq}]`, each collection's log position.
 - `join {invite, proof, addrs?}` and, between members, `admit {invite, proof, peer, addrs?}`
   answer `{status}` once the member record is committed.
 

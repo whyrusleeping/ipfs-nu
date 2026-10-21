@@ -103,6 +103,9 @@ type Options struct {
 	Have []cid.CID
 	// Progress, if set, is called (serialized) whenever progress changes.
 	Progress func(Progress)
+	// Catalog fetches only a collection catalog (the nu-catalog walk profile: header,
+	// container directories and item metadata records, not item contents), layer 1 only.
+	Catalog bool
 }
 
 // Result summarizes a fetch.
@@ -330,7 +333,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		frontier = append(frontier, root)
 	}
 	r.update(func(p *Progress) { p.ObjectsTotal++; p.BytesTotal += int64(size) })
-	if len(frontier) > 0 {
+	if len(frontier) > 0 && !r.opts.Catalog {
 		r.stage(StageStructure)
 		r.treeSync(ctx, root)
 	}
@@ -351,7 +354,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 			if err != nil {
 				return err
 			}
-			kids, err := children(c, data)
+			kids, err := r.children(c, data)
 			if err != nil {
 				return fmt.Errorf("fetch: walking %s: %w", c, err)
 			}
@@ -393,6 +396,18 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	errSmall := make(chan error, 1)
 	go func() { errSmall <- parallel(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
 	return errors.Join(parallel(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
+}
+
+func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {
+	if !r.opts.Catalog {
+		return children(c, data)
+	}
+	links, err := tree.CatalogLinks(c, data)
+	out := make([]blobRef, len(links))
+	for i, l := range links {
+		out[i] = blobRef{c: l}
+	}
+	return out, err
 }
 
 // children returns the nu-tree links of a structure node with sizes for blob links.

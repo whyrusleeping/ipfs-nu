@@ -12,6 +12,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/collection"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
@@ -55,6 +56,9 @@ type clusterState struct {
 	net   *cluster.Cluster
 	svc   *cluster.Service
 	sw    ClusterNet
+	coll  *collection.Manager
+	// svcPtr mirrors svc for readers that must not take mu.
+	svcPtr atomic.Pointer[cluster.Service]
 	// gated mirrors net for the connection gate, which must not take mu (the host
 	// rechecks connections while cluster operations hold it).
 	gated atomic.Pointer[cluster.Cluster]
@@ -158,12 +162,22 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 	if cs.svc != nil || cs.sw == nil {
 		return nil
 	}
+	if cs.coll != nil { // opened without networking (a query before attach): reopen with it
+		_ = cs.coll.Close()
+		cs.coll = nil
+	}
+	m, err := n.collectionsLocked(c)
+	if err != nil {
+		return err
+	}
 	svc, err := cluster.StartService(cluster.ServiceConfig{Cluster: c, Host: cs.sw.Host(), Key: n.Key, Connect: cs.sw.Connect, Addrs: cs.sw.Addrs,
-		Usage: n.usage, Interval: ClusterInterval})
+		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks})
 	if err != nil {
 		return err
 	}
 	cs.svc = svc
+	cs.svcPtr.Store(svc)
+	m.Start()
 	return nil
 }
 
@@ -179,11 +193,15 @@ func (n *Local) DetachNetwork() { n.closeClusters() }
 func (n *Local) closeClusters() {
 	cs := &n.clusters
 	cs.mu.Lock()
-	svc := cs.svc
-	cs.svc, cs.sw = nil, nil
+	svc, coll := cs.svc, cs.coll
+	cs.svc, cs.sw, cs.coll = nil, nil, nil
+	cs.svcPtr.Store(nil)
 	cs.mu.Unlock()
 	if svc != nil {
 		_ = svc.Close()
+	}
+	if coll != nil {
+		_ = coll.Close()
 	}
 }
 
@@ -603,15 +621,19 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 				WithAction("dataset names are unique per daemon; pick another name")
 		}
 	}
+	coll, err := collectionPolicy(req)
+	if err != nil {
+		return nil, err
+	}
 	replicas := req.Replicas
-	if replicas == 0 {
+	if replicas == 0 && coll == nil {
 		replicas = 2
 		if scope == ScopeLocal {
 			replicas = 1
 		}
 	}
 	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: cluster.Source{Local: true},
-		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Note: req.Note}})
+		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Collection: coll, Note: req.Note}})
 	if err != nil {
 		if errors.Is(err, cluster.ErrNoKey) {
 			return nil, writeErr(err)
@@ -661,6 +683,15 @@ func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	}
 	if d.Value != nil {
 		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
+		if cp := d.Value.Collection; cp != nil {
+			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
+			for k, f := range cp.Facets {
+				out.Collection.Facets[k] = apiv0.FacetDecl{Ptr: f.Ptr, Type: f.Type}
+			}
+			if cp.Expire != nil {
+				out.Collection.Expire = cp.Expire.Facet + "=" + cp.Expire.After
+			}
+		}
 	}
 	for did, h := range v.Heads[name] {
 		if h.Deleted {

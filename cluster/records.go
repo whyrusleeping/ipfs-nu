@@ -139,11 +139,60 @@ type Dataset struct {
 	Source  Source   `drisl:"source"`
 	Policy  Policy   `drisl:"policy"`
 	Writers []string `drisl:"writers,omitempty"`
-	Note    string   `drisl:"note,omitempty"`
-	HLC     string   `drisl:"hlc"`
+	// Collection makes the dataset a collection (D22).
+	Collection *CollectionPolicy `drisl:"collection,omitempty"`
+	Note       string            `drisl:"note,omitempty"`
+	HLC        string            `drisl:"hlc"`
 }
 
 func (Dataset) DRISLType() string { return NSDataset }
+
+// Merge modes of a collection's head.
+const (
+	MergeUnion = "union"
+	MergeLWW   = "lww"
+)
+
+// CollectionPolicy is a dataset's `collection` field: facets declared over item
+// metadata, the head merge mode (default union) and an optional expiry rule.
+type CollectionPolicy struct {
+	Facets map[string]Facet `drisl:"facets,omitempty"`
+	Merge  string           `drisl:"merge,omitempty"`
+	Expire *Expire          `drisl:"expire,omitempty"`
+}
+
+// MergeMode returns the effective merge mode.
+func (c *CollectionPolicy) MergeMode() string {
+	if c.Merge == "" {
+		return MergeUnion
+	}
+	return c.Merge
+}
+
+// Facet declares a typed value extracted from item metadata by JSON Pointer.
+type Facet struct {
+	Ptr  string `drisl:"ptr" json:"ptr" toml:"ptr"`
+	Type string `drisl:"type" json:"type" toml:"type"`
+}
+
+// Expire makes every writer prune items whose time facet is older than After (a
+// duration such as "400d") from its head.
+type Expire struct {
+	Facet string `drisl:"facet" json:"facet"`
+	After string `drisl:"after" json:"after"`
+}
+
+// Drop removes items from a union collection: the merged head leaves out every path at or
+// below one of Paths.
+type Drop struct {
+	Paths []string `drisl:"paths"`
+	HLC   string   `drisl:"hlc"`
+}
+
+func (Drop) DRISLType() string { return NSDrop }
+
+// MaxDropPaths bounds a drop record.
+const MaxDropPaths = 256
 
 // Source is where a dataset's target comes from; only local datasets exist so far.
 type Source struct {
@@ -417,6 +466,23 @@ func decodeValue(r *Record, v any) error {
 		if d.Policy.Replicas < 0 || len(d.Writers) > 256 || len(d.Note) > 1024 {
 			return errors.New("policy, writers or note out of range")
 		}
+		if c := d.Collection; c != nil {
+			if c.Merge != "" && c.Merge != MergeUnion && c.Merge != MergeLWW {
+				return fmt.Errorf("unknown merge mode %q", c.Merge)
+			}
+			if len(c.Facets) > 32 {
+				return errors.New("more than 32 facets")
+			}
+			for name, f := range c.Facets {
+				if len(name) == 0 || len(name) > 64 || len(f.Ptr) > 256 || (f.Ptr != "" && f.Ptr[0] != '/') ||
+					!oneOf(f.Type, "time", "number", "string", "bbox") {
+					return fmt.Errorf("bad facet %q", name)
+				}
+			}
+			if e := c.Expire; e != nil && (c.Facets[e.Facet].Type != "time" || e.After == "") {
+				return errors.New("expire must name a time facet and a duration")
+			}
+		}
 		for _, w := range d.Writers {
 			if _, err := parseP256(w); err != nil {
 				return fmt.Errorf("writer %q: %v", w, err)
@@ -441,11 +507,38 @@ func decodeValue(r *Record, v any) error {
 			return err
 		}
 		r.Value = &c
-	case NSHistory, NSDrop:
-		// Schemas belong to version history (D20) and collections (D22); only the
-		// envelope ($type, hlc) is checked here.
+	case NSDrop:
+		var d Drop
+		if err := drisl.Assign(v, &d); err != nil {
+			return err
+		}
+		if len(d.Paths) > MaxDropPaths {
+			return fmt.Errorf("more than %d drop paths", MaxDropPaths)
+		}
+		for _, p := range d.Paths {
+			if !validItemPath(p) {
+				return fmt.Errorf("bad drop path %q", p)
+			}
+		}
+		r.Value = &d
+	case NSHistory:
+		// The schema belongs to version history (D20); only the envelope ($type, hlc) is
+		// checked here.
 	}
 	return nil
+}
+
+// validItemPath reports whether p is a slash-separated path of valid tree entry names.
+func validItemPath(p string) bool {
+	if p == "" || len(p) > 1024 {
+		return false
+	}
+	for _, s := range strings.Split(p, "/") {
+		if s == "" || s == "." || s == ".." || strings.ContainsRune(s, 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // ParseRev parses a commit rev (TID).

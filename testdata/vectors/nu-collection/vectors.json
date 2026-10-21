@@ -1,0 +1,445 @@
+{
+  "note": "D22 collection vectors (docs/collections.md): facet extraction over the JSON form of metadata, predicate outcomes, union-merged catalog roots",
+  "facets": {
+    "bbox": {
+      "ptr": "/stac/bbox",
+      "type": "bbox"
+    },
+    "cloud": {
+      "ptr": "/stac/properties/eo:cloud_cover",
+      "type": "number"
+    },
+    "link": {
+      "ptr": "/preview/$link",
+      "type": "string"
+    },
+    "odd": {
+      "ptr": "/a~1b/~0c",
+      "type": "string"
+    },
+    "platform": {
+      "ptr": "/stac/properties/platform",
+      "type": "string"
+    },
+    "sensed": {
+      "ptr": "/stac/properties/datetime",
+      "type": "time"
+    }
+  },
+  "facet_cases": [
+    {
+      "name": "stac",
+      "meta": "{\"stac\":{\"bbox\":[5.9,45.8,10.5,47.8],\"properties\":{\"datetime\":\"2026-10-19T10:30:00.123456Z\",\"eo:cloud_cover\":12.5,\"platform\":\"sentinel-2b\"}},\"preview\":{\"$link\":\"bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku\"},\"a/b\":{\"~c\":\"escaped\"}}",
+      "expect": {
+        "bbox": [
+          5.9,
+          45.8,
+          10.5,
+          47.8
+        ],
+        "cloud": 12.5,
+        "link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+        "odd": "escaped",
+        "platform": "sentinel-2b",
+        "sensed": "2026-10-19T10:30:00.123Z"
+      }
+    },
+    {
+      "name": "integer-time-3d-bbox",
+      "meta": "{\"stac\":{\"bbox\":[170,-10,0,-170,10,100],\"properties\":{\"datetime\":1760869800000,\"eo:cloud_cover\":3,\"platform\":\"landsat-9\"}}}",
+      "expect": {
+        "bbox": [
+          170,
+          -10,
+          -170,
+          10
+        ],
+        "cloud": 3,
+        "platform": "landsat-9",
+        "sensed": "2025-10-19T10:30:00.000Z"
+      }
+    },
+    {
+      "name": "ill-typed",
+      "meta": "{\"stac\":{\"bbox\":[5.9,95,10.5,47.8],\"properties\":{\"datetime\":\"19 Oct 2026\",\"eo:cloud_cover\":\"low\",\"platform\":7}}}",
+      "expect": {}
+    },
+    {
+      "name": "float-time-swapped-lat",
+      "meta": "{\"stac\":{\"bbox\":[0,10,1,5],\"properties\":{\"datetime\":1760869800000.5}}}",
+      "expect": {}
+    },
+    {
+      "name": "missing",
+      "meta": "{\"other\":true}",
+      "expect": {}
+    }
+  ],
+  "predicates": [
+    {
+      "name": "eq",
+      "type": "string",
+      "value": "sentinel-2b",
+      "pred": {
+        "eq": "sentinel-2b"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "eq-mismatch",
+      "type": "string",
+      "value": "sentinel-2a",
+      "pred": {
+        "eq": "sentinel-2b"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "in",
+      "type": "string",
+      "value": "sentinel-2a",
+      "pred": {
+        "in": [
+          "sentinel-2a",
+          "sentinel-2b"
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "max-inclusive",
+      "type": "number",
+      "value": 30,
+      "pred": {
+        "max": 30
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "max-exceeded",
+      "type": "number",
+      "value": 30.5,
+      "pred": {
+        "max": 30
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "min-max",
+      "type": "number",
+      "value": 5,
+      "pred": {
+        "max": 10,
+        "min": 0
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "time-min-rfc3339",
+      "type": "time",
+      "value": "2026-10-19T00:00:00Z",
+      "pred": {
+        "min": "2026-10-19T00:00:00Z"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "time-max-ms",
+      "type": "time",
+      "value": "2026-10-19T00:00:00.001Z",
+      "pred": {
+        "max": 1760832000000
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "within-inside",
+      "type": "time",
+      "value": "2026-10-18T12:00:00Z",
+      "pred": {
+        "within": "48h"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "within-edge",
+      "type": "time",
+      "value": "2026-10-18T12:00:00Z",
+      "pred": {
+        "within": "2d"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "within-outside",
+      "type": "time",
+      "value": "2026-10-18T11:59:59.999Z",
+      "pred": {
+        "within": "2d"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "within-future",
+      "type": "time",
+      "value": "2026-10-21T00:00:00Z",
+      "pred": {
+        "within": "6h"
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "bbox-overlap",
+      "type": "bbox",
+      "value": [
+        10,
+        47,
+        12,
+        49
+      ],
+      "pred": {
+        "intersects": [
+          5.9,
+          45.8,
+          10.5,
+          47.8
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "bbox-touch",
+      "type": "bbox",
+      "value": [
+        10.5,
+        40,
+        12,
+        45.8
+      ],
+      "pred": {
+        "intersects": [
+          5.9,
+          45.8,
+          10.5,
+          47.8
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "bbox-disjoint",
+      "type": "bbox",
+      "value": [
+        -10,
+        40,
+        0,
+        45
+      ],
+      "pred": {
+        "intersects": [
+          5.9,
+          45.8,
+          10.5,
+          47.8
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "bbox-antimeridian",
+      "type": "bbox",
+      "value": [
+        175,
+        -5,
+        -175,
+        5
+      ],
+      "pred": {
+        "intersects": [
+          -178,
+          0,
+          -170,
+          1
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": true
+    },
+    {
+      "name": "bbox-antimeridian-miss",
+      "type": "bbox",
+      "value": [
+        175,
+        -5,
+        -175,
+        5
+      ],
+      "pred": {
+        "intersects": [
+          0,
+          0,
+          10,
+          1
+        ]
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    },
+    {
+      "name": "absent",
+      "type": "number",
+      "value": null,
+      "pred": {
+        "max": 30
+      },
+      "now": "2026-10-20T12:00:00Z",
+      "expect": false
+    }
+  ],
+  "merges": [
+    {
+      "name": "two-writers-overlap",
+      "writers": [
+        {
+          "did": "did:key:writer-a",
+          "items": {
+            "2026/10/19/s2a": {
+              "kind": "file",
+              "cid": "bafkr4idx4azp66tkbeg7mytkkb6orvh3lvok6slredqj76d3vdnaroieyy",
+              "size": 3,
+              "meta": "bafyreidbf5hctfh63walaf23lkvbk3usgp4n2jsl7tibsk7veympqicvz4"
+            },
+            "2026/10/19/s2b": {
+              "kind": "file",
+              "cid": "bafkr4ihst335a3vjb2dztvhvcur65yykftedbjdxcnzybd64kdlw2bodty",
+              "size": 3,
+              "meta": "bafyreigcf34c56jt6vadkukucxu563ygbuja5vnd3x3fdismfbuo2ojvxa"
+            }
+          }
+        },
+        {
+          "did": "did:key:writer-b",
+          "items": {
+            "2026/10/19/s2b": {
+              "kind": "file",
+              "cid": "bafkr4ihst335a3vjb2dztvhvcur65yykftedbjdxcnzybd64kdlw2bodty",
+              "size": 3,
+              "meta": "bafyreigcf34c56jt6vadkukucxu563ygbuja5vnd3x3fdismfbuo2ojvxa"
+            },
+            "2026/10/20/s2c": {
+              "kind": "file",
+              "cid": "bafkr4iekwappceabfftb3nkrkpqhb6xatgw4qubguxz7aflysuzq2nbaai",
+              "size": 3,
+              "meta": "bafyreiesrifpss7toce7grxa3e6e7hbc4dnxw6nq4xegmzk2vdio5ehyda"
+            }
+          }
+        }
+      ],
+      "root": "bafyreidpp76f5aclyjz3t4fj7pykwyvs56fpbl2gxn5xlesucnko2i7uuq",
+      "size": 9,
+      "blocks": 3
+    },
+    {
+      "name": "conflict-earlier-writer-wins",
+      "writers": [
+        {
+          "did": "did:key:writer-a",
+          "items": {
+            "2026/x": {
+              "kind": "file",
+              "cid": "bafkr4iaksvjodmm6ocbkyzdtdxu5agbdzhm3bkmjdxtkskaqjkbqhz5sma",
+              "size": 3,
+              "meta": "bafyreiabma56ccug6ejkrk4532htauht4gclo4ghojbcqx3d5pfzl5wu3u"
+            }
+          }
+        },
+        {
+          "did": "did:key:writer-b",
+          "items": {
+            "2026/x": {
+              "kind": "file",
+              "cid": "bafkr4ieo6rdvja2ppy3ggzrxodtmtxgxixfm2i2rotprapfs5irfdjlaui",
+              "size": 3,
+              "meta": "bafyreicm65p5eaymwt4pmjjqycm3ghaykw7p2ozw5yt4y3zqwai7g7f3ri"
+            },
+            "2026/y": {
+              "kind": "file",
+              "cid": "bafkr4iaicevj4m2m44yefnjryjlgrt24wevb5ycauqzgv7vmazkgcb42ay",
+              "size": 1,
+              "meta": "bafyreib636x3blyclm4usvzurkbknbgk2kdkv73smbapoqs6zjkfevvfjm"
+            }
+          }
+        }
+      ],
+      "root": "bafyreiaqmini2dp6q4vopxacwqkzrrb3oq4iwuf54rqnh7r27uczgf23qm",
+      "size": 4,
+      "blocks": 2
+    },
+    {
+      "name": "structure-and-drop",
+      "writers": [
+        {
+          "did": "did:key:writer-a",
+          "items": {
+            "2026/x": {
+              "kind": "file",
+              "cid": "bafkr4ib247mal5tytjsaflfxblkas2ufuvv7nacov4s4asj2y2lvjdjqwu",
+              "size": 1,
+              "meta": "bafyreidgfn6tf7giaghqxj2bcvkjuyzms67ewe2eo3orbnbinohmjtbu6y"
+            },
+            "readme": {
+              "kind": "file",
+              "cid": "bafkr4ickj4bhspgz6ae4zi34c2cdupewgqlm32cjx7narqwgaj3hvwuc7u",
+              "size": 6
+            }
+          }
+        },
+        {
+          "did": "did:key:writer-b",
+          "items": {
+            "2026/x/inner": {
+              "kind": "file",
+              "cid": "bafkr4iepfg5kmgtsix6fte7lcrx6c6cy7bogyz3jaqxzd4c27yulfcc564",
+              "size": 5,
+              "meta": "bafyreieb46ymqqgogp4gwiif27mz62vx7vtnshdhfo4fne74pn4z7l76ju"
+            },
+            "2026/y": {
+              "kind": "file",
+              "cid": "bafkr4iaicevj4m2m44yefnjryjlgrt24wevb5ycauqzgv7vmazkgcb42ay",
+              "size": 1,
+              "meta": "bafyreib636x3blyclm4usvzurkbknbgk2kdkv73smbapoqs6zjkfevvfjm"
+            }
+          }
+        }
+      ],
+      "drop": [
+        "2026/y"
+      ],
+      "root": "bafyreifqzwazkr7e6bel76i64zhurspa6khozm2b3ahmttj53jnw5gjjbm",
+      "size": 7,
+      "blocks": 0
+    },
+    {
+      "name": "empty",
+      "writers": [],
+      "root": "bafyreib47qoy3wxasj2dlstlfmphwpeyaeytgsmi2o7nzgagogw4jsbn7y",
+      "size": 0,
+      "blocks": 1
+    }
+  ]
+}

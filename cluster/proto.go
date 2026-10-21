@@ -32,6 +32,7 @@ const (
 	OpHeartbeat = "heartbeat"
 	OpJoin      = "join"
 	OpAdmit     = "admit"
+	OpHoldings  = "holdings"
 )
 
 // Response statuses (those of /nu/bytes/1, plus forbidden).
@@ -62,6 +63,13 @@ type request struct {
 	Proof   []byte     `drisl:"proof,omitempty"`
 	Peer    []byte     `drisl:"peer,omitempty"`
 	Addrs   []string   `drisl:"addrs,omitempty"`
+	// holdings
+	Dataset  string `drisl:"dataset,omitempty"`
+	Epoch    string `drisl:"epoch,omitempty"`
+	SinceSeq int64  `drisl:"since_seq,omitempty"`
+	Snapshot bool   `drisl:"snapshot,omitempty"`
+	After    string `drisl:"after,omitempty"`
+	Limit    int64  `drisl:"limit,omitempty"`
 }
 
 type response struct {
@@ -78,8 +86,56 @@ type Heartbeat struct {
 	Free  int64    `drisl:"free"`
 	Used  int64    `drisl:"used"`
 	Addrs []string `drisl:"addrs,omitempty"`
-	Sig   []byte   `drisl:"sig,omitempty"`
+	// Holdings carries the latest holdings-log position per collection (D22).
+	Holdings []HoldingsMark `drisl:"holdings,omitempty"`
+	Sig      []byte         `drisl:"sig,omitempty"`
 }
+
+// HoldingsMark is a member's holdings-log position for one collection.
+type HoldingsMark struct {
+	Dataset string `drisl:"dataset" json:"dataset"`
+	Epoch   string `drisl:"epoch" json:"epoch"`
+	Seq     int64  `drisl:"seq" json:"seq"`
+}
+
+// HoldingsRequest asks a member for its item holdings of a collection: the log changes
+// after (Epoch, Since), or with Snapshot a page of current holdings after path After.
+type HoldingsRequest struct {
+	Dataset  string
+	Epoch    string
+	Since    int64
+	Snapshot bool
+	After    string
+	Limit    int
+}
+
+// HoldingsEntry is one holdings-log transition (or, in a snapshot, one current holding).
+type HoldingsEntry struct {
+	Seq   int64   `drisl:"seq"`
+	Path  string  `drisl:"path"`
+	Entry cid.CID `drisl:"entry,omitempty"`
+	State string  `drisl:"state"`
+	Src   string  `drisl:"src,omitempty"`
+	Bytes int64   `drisl:"bytes,omitempty"`
+}
+
+// HoldingsPage answers a HoldingsRequest. Resync means the cursor is older than the log
+// or from another epoch: the client must fetch a snapshot. A snapshot's pages carry, in
+// Seq, the log position the snapshot started at; the client follows the log from there.
+type HoldingsPage struct {
+	Epoch   string          `drisl:"epoch"`
+	Entries []HoldingsEntry `drisl:"entries"`
+	Seq     int64           `drisl:"seq"`
+	More    bool            `drisl:"more,omitempty"`
+	After   string          `drisl:"after,omitempty"`
+	Resync  bool            `drisl:"resync,omitempty"`
+}
+
+// MaxHoldingsPage bounds the entries of one holdings page and MaxHoldingsBody its bytes.
+const (
+	MaxHoldingsPage = 10_000
+	MaxHoldingsBody = 8 << 20
+)
 
 func (hb Heartbeat) message() ([]byte, error) {
 	hb.Sig = nil

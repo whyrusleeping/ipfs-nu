@@ -121,6 +121,13 @@ func printClusterInfo(w io.Writer, label string, c *apiv0.ClusterInfo) {
 
 func printDataset(w io.Writer, d *apiv0.Dataset) {
 	fmt.Fprintf(w, "%s (%s cluster) replicas %d, record by %s\n", d.Name, d.Cluster, d.Replicas, d.Signer)
+	if c := d.Collection; c != nil {
+		fmt.Fprintf(w, "  collection: merge %s, %d facet(s)", c.Merge, len(c.Facets))
+		if c.Expire != "" {
+			fmt.Fprintf(w, ", expire %s", c.Expire)
+		}
+		fmt.Fprintln(w)
+	}
 	if d.Head != nil {
 		fmt.Fprintf(w, "  head %s (%s) by %s\n", d.Head.Target, d.Head.Kind, d.Head.Signer)
 	}
@@ -148,7 +155,7 @@ func datasetCommands(scope string) []*command {
 	return []*command{
 		{
 			name:    "create",
-			args:    "<name> [--replicas k] [--writer did]... [--note text]",
+			args:    "<name> [--replicas k] [--writer did]... [--note text] [--collection --facets facets.toml [--expire facet=400d] [--merge union|lww]]",
 			summary: "create a dataset record (metadata only; content arrives with `add`/heads)",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
@@ -156,17 +163,29 @@ func datasetCommands(scope string) []*command {
 				note := fs.String("note", "", "free-form note")
 				var writers []string
 				fs.Func("writer", "did:key allowed to write heads (repeatable)", func(s string) error { writers = append(writers, s); return nil })
+				coll := fs.Bool("collection", false, "a collection: items with metadata facets, member-selected holdings, union heads (replicas default 0)")
+				facetFile := fs.String("facets", "", "facet declarations file (TOML or JSON): name = {ptr, type}")
+				expire := fs.String("expire", "", "writers prune items whose time facet is older: <facet>=<duration>, e.g. sensed=400d")
+				merge := fs.String("merge", "", "collection head merge: union (default) or lww")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
 				if fs.NArg() != 1 {
 					return usagef("dataset create needs one name")
 				}
+				var facets map[string]apiv0.FacetDecl
+				if *facetFile != "" {
+					var err error
+					if facets, err = readFacets(*facetFile); err != nil {
+						return usagef("%v", err)
+					}
+				}
 				c, err := get(e, ctx)
 				if err != nil {
 					return err
 				}
-				d, err := c.DatasetCreate(ctx, scope, apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note})
+				d, err := c.DatasetCreate(ctx, scope, apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note,
+					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge})
 				if err != nil {
 					return err
 				}

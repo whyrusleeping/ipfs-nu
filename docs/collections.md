@@ -76,16 +76,18 @@ must confirm these figures before they become supported limits.
 
 Admins decide membership and guaranteed placement. Operators decide what else their nodes
 keep. Each storage member, and each [follower](#following-collections), may hold items chosen
-by rules its operator configures locally. Rules are node configuration, not signed cluster
-state, and an admin cannot override them.
+by rules its operator configures locally. Rules are node state, not signed cluster
+state, and an admin cannot override them. The operator sets them per collection with
+`nu cluster collection rules <ds> --set rules.toml` (or `PUT …/rules`); the node keeps
+them in its collection database.
 
 ```toml
-[[collection.sentinel-2-l2a.rule]]        # alpine scenes, mostly clear, for 48 h
+[[rule]]        # alpine scenes, mostly clear, for 48 h
 bbox   = { intersects = [5.9, 45.8, 10.5, 47.8] }
 cloud  = { max = 30 }
 sensed = { within = "48h" }
 
-[[collection.sentinel-2-l2a.rule]]        # spare capacity for under-replicated scenes
+[[rule]]        # spare capacity for under-replicated scenes
 rescue = { below = 2, max_bytes = "100GiB" }
 ```
 
@@ -119,7 +121,7 @@ rescue = { below = 2, max_bytes = "100GiB" }
   [holdings index](#holdings-reports-and-index), either local or on a configured index
   member. Rescue is best effort: stale counts cause temporary over- or under-replication.
 - **External deciders:** arbitrary policy code runs outside the daemon and uses the API. It
-  follows an item change stream with a cursor (`GET /v1/collections/<ds>/items?since=`) and
+  follows an item change stream with a cursor (`GET /api/v0/cluster/collections/<ds>/items?since=`) and
   calls `hold`/`release` per item, which sets or clears pin source `collection-manual`. Nu
   runs no user code.
 - Selected items are fetched first from the members whose writer heads contain the item
@@ -287,20 +289,111 @@ handle and then push; running user code in the daemon; spatial indexing beyond b
 intersection; verifying metadata against item bytes beyond supplied checksums; holdings
 reports from non-members; and byzantine holders.
 
+### Encodings and semantics (preview, 0057)
+
+These decisions are the preview contract; vectors for facets, predicates and merged
+roots are in `testdata/vectors/nu-collection/vectors.json`.
+
+- **Collection policy:** the dataset record's `collection` field is `{facets?: {<name>:
+  {ptr, type}}, merge?: "union" | "lww", expire?: {facet, after}}`. It is authoritative for
+  members; writers copy the facets into their tree headers' `collection` map so a head is
+  self-describing. Collections default to `replicas: 0`. At most 32 facets, named
+  `[a-z][a-z0-9_:.-]{0,63}` and not a rule keyword (`name`, `hold`, `path`, `max_bytes`,
+  `files`, `rescue`, `note`).
+- **Facets:** `ptr` is an RFC 6901 pointer (at most 256 bytes) over the metadata record's
+  atproto-style JSON form, so `/x/$link` reads a link as its CID string and `/x/$bytes`
+  bytes as unpadded base64. `time` is an RFC 3339 string with a time zone (fractions beyond
+  milliseconds truncated) or integer Unix milliseconds, stored as integer milliseconds;
+  floats are ill-typed. `number` is an integer or float, compared as a float64 (integers
+  beyond 2^53 round). `string` is compared byte-exact. `bbox` is `[west, south, east,
+  north]`, or the 3D `[west, south, min-z, east, north, max-z]` reduced to 2D, with
+  longitudes in [-180, 180], latitudes in [-90, 90] and south <= north; anything else
+  leaves the facet absent.
+- **Predicates:** `eq` and `in` compare strings; `min`/`max` are inclusive and take numbers,
+  or for times an RFC 3339 string or integer milliseconds; `within` holds when the time is
+  at or after `now - within` (future times stay inside); `intersects` holds when the closed
+  boxes overlap, either side may cross the antimeridian, and touching edges intersect.
+  Durations are `<integer><unit>…` with units `ms s m h d w`; byte counts are integers or
+  strings with `B`, `K`/`KiB` … `P`/`PiB` (powers of 1024) or `KB` … `PB` (powers of
+  1000). A rule's `path` limits it to items at or below that path. Rules are validated
+  against the facets when set; a predicate that does not fit its facet's type is an error.
+  `files` (partial items) is rejected until it is implemented.
+- **Holding precedence:** a manual hold, then items this node wrote (an item in its own
+  writer head is always held: the writer is the first source), then the first matching
+  rule. A rescue rule's matches are held only by the rescue pass.
+- **Catalog:** the `nu-catalog` walk profile is the nu-tree profile except that an entry
+  with `meta` contributes only its metadata record, and plain files and symlinks outside
+  items are not followed. Members pin each merged writer head and the merged header with
+  it and fetch catalogs with it (layer 1 only).
+- **Union merge:** leaves are items and plain files or symlinks outside items. Each leaf
+  path is decided on its own: walking the writers in rank order (the dataset's `writers`
+  in list order, then other authorized signers in DID order; revoked keys contribute
+  nothing), the first writer with anything at the path decides; a leaf there is merged,
+  while a directory at the path or a leaf at a prefix of it merges nothing there. Later
+  writers' different leaves at the path are `entry` conflicts; their leaves the decider
+  blocks are `structure` conflicts. Paths at or below a `drop` path are left out. Merged
+  directories carry no metadata and their size is the sum of their entries. Because each
+  outcome depends only on the writer trees, the incremental merge (re-deciding only the
+  changed leaves, their prefixes and the leaves below them) equals a merge from scratch.
+  The merged header is `{v: 1, root, files: 0, bytes, collection: {facets}}`; `files` is 0
+  in collection headers (item counts come from the catalog). `merge: lww` merges only the
+  LWW head.
+- **Drop:** `drop/<name>` is admin-written `{paths: [<item path>], hlc}` with at most 256
+  paths, replaced as a whole by LWW. Admins should prune paths once writers have removed
+  the items.
+- **Conflicts:** listed by `nu cluster collection conflicts <ds>` and per item by `where`;
+  the losing entry stays pinned (`collection-conflict`) until the conflict disappears. A
+  conflict is resolved by the losing writer replacing or removing its entry (0059's
+  `replace`), or by an admin drop; there is no separate resolve command.
+- **Writer heads:** a writer node queues item changes durably in its collection database
+  and writes them into its head, `{target: <tree header>, kind: "tree", size}`, at most
+  once per `head.min_interval` (10 s). It signs with a held key listed in the dataset's
+  writers (in list order), else an admin key, and pins its own head whole. `expire` makes
+  it prune paths whose time facet (as the merged view extracted it) is older than
+  `now - after` on every head write and pass.
+- **Item stream:** each catalog change gets the next sequence number of the collection on
+  this node; the stream returns, after a cursor, each changed path once with its latest
+  state and marks removals. Its cursor is opaque and bound to the node's collection
+  database epoch (`resync` otherwise).
+- **Holdings log:** per collection on each member, `{seq, path, entry, state, src, bytes}`
+  with `state` `fetching`, `complete` or `released` (`partial` is reserved) and `src`
+  `select`, `rescue`, `manual` or `writer`; bounded to 1M transitions; positions are
+  `(epoch, seq)`, where the epoch names the member's collection database. The `holdings`
+  request ([`/nu/cluster/1`](cluster.md#nucluster1)) answers the transitions after a
+  cursor, `resync` for a cursor from another epoch, past the head or older than the log,
+  and a snapshot paged by path whose pages carry the log position it started at.
+- **Holdings index:** runs when `cluster.index = true` or any local rule rescues, following
+  every member's log (this node's directly) whenever its heartbeat reports a later
+  position, and keeping `(member, item) → (entry, state, src)` in the collection database.
+  A holder counts as a copy while it reports `complete` and its last heartbeat arrived
+  within three heartbeat intervals; complete holders with older heartbeats are `unknown`.
+- **Rescue damping:** a rescue rule acquires matched items with fewer than `below` fresh
+  copies, rarest first, until its budget is used. It releases a rescued item once the
+  item has `below + 1` fresh copies, but only on the fresh rescue holder whose
+  `SHA-256("nu.rescue\0" ‖ peer ‖ "\0" ‖ path)` is greatest, so rescuers acting on the same
+  counts step back one at a time. Acquisitions are not coordinated: concurrent rescuers can
+  overshoot, which the release rule trims.
+- **Release sweep:** released items lose their pin; a store GC (one-hour grace for
+  in-progress writes) runs `gc.release_delay` (1 min) after the first release. An
+  incremental sweep is hardening work.
+- **Fetch sources:** catalogs and items are fetched from connected members (in private
+  mode, every reachable member); the ordered source list above (writers, then holders,
+  then placement owners) is later work.
+
 ## Details still to specify
 
-- Facet encodings (time precision, bbox normalisation), predicate semantics and vectors.
-- `drop` record encoding, union-head history (which entries a writer appends for merged
-  versions) and conflict resolution commands.
 - Item API upload framing, batch format, push-log retention, credential scoping and
-  per-producer rate limits.
-- Holdings log encoding, limits, snapshot paging and index storage at 10M items × tens of
-  members.
-- Rescue convergence and oscillation damping when several rescue members act on the same
-  stale counts.
-- Catalog growth and expiry defaults. Completeness marks and atomic switches for a held
-  view that is complete for the catalog plus selected items (whole or partial), shared
-  with `--select` follows and D19 scopes.
+  per-producer rate limits (0059; the writer queue above is its durable accept queue).
+- Partial items (`files`), per-file copy counts and `partial` holdings.
+- Union-head history (which entries a writer appends for merged versions); collections
+  run with `history` off.
+- A remote holdings index (rescue on a member that does not run the index itself), and
+  index storage and query cost at 10M items × tens of members: the preview scans the
+  catalog for queries and status. Measured catalog bytes per item, index cost and
+  re-evaluation cost are hardening evidence (0068).
+- Catalog growth and expiry defaults (no expiry by default). Completeness marks and atomic
+  switches for a held view that is complete for the catalog plus selected items (whole or
+  partial), shared with `--select` follows and D19 scopes.
 
 ## References
 

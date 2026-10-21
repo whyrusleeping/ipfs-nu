@@ -104,9 +104,17 @@ POST   /api/v0/cluster/invites  {role?, tags?, capacity?, peer?, expires?} → C
 POST   /api/v0/cluster/join     {token}                          → ClusterInfo
 DELETE /api/v0/cluster/members/{peer}      → MetadataState
 GET    /api/v0/cluster/datasets            [Dataset]
-POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?} → Dataset
+POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?, collection?, facets?, merge?, expire?} → Dataset
 GET    /api/v0/cluster/datasets/{name}     Dataset
 GET|POST /api/v0/datasets, GET /api/v0/datasets/{name}   the same, on the local cluster
+GET    /api/v0/cluster/collections/{name}                CollectionStatus
+GET    /api/v0/cluster/collections/{name}/items          ?since=|cursor=&limit=&prefix=&holder=&held=&unheld=&rarest=&match= → Page[CollectionItem]
+GET    /api/v0/cluster/collections/{name}/items/{path…}  CollectionItem (holders, copies, conflicts)
+POST   /api/v0/cluster/collections/{name}/hold|release   {path} → CollectionItem
+GET    /api/v0/cluster/collections/{name}/rules          CollectionRules (with current impact)
+PUT    /api/v0/cluster/collections/{name}/rules?dry_run= {rules: [rule…]} → CollectionRules
+GET    /api/v0/cluster/collections/{name}/conflicts      [CollectionConflict]
+GET    /api/v0/cluster/metrics                           Prometheus text: collection aggregates
 ```
 
 `add` and `get` pass absolute local paths: API and daemon run as the same user on
@@ -206,6 +214,33 @@ the result of `GET /datasets/{name}/wait?condition=…&target=…&timeout=…` a
 than `ready` as not ready. Writing without a suitable key is `forbidden`; a second cluster
 or a dataset name already used in either cluster is `conflict`. In private and isolated
 mode the daemon disables mDNS and gates its host to members from start-up.
+
+## Collections (0057)
+
+`node.CollectionNode` (`node.Local`, `client.Client`) carries the collection queries of
+[D22](collections.md); the types in `api/apiv0/collection.go` are the preview contract that
+the item push API (0059) and dashboards build on. State lives in
+`$NU_PATH/cluster/net/collections.db`. `nu cluster dataset create <ds> --collection
+--facets facets.toml [--expire sensed=400d] [--merge lww]` creates one (`replicas`
+defaults to 0). `nu cluster collection status|items|where|rules|hold|release|conflicts
+<ds> …` and `nu cluster where <ds>/<item>` query it; `items` takes `--since <cursor>|0`
+(the item change stream), `--rarest`, `--holder <peer>`, `--unheld`, `--held`,
+`--prefix` and `--facet name.op=value` (ops `eq`, `in` (comma list), `min`, `max`,
+`within`, `intersects` (w,s,e,n)); `rules --set rules.toml|rules.json [--dry-run]`
+replaces this node's rules (TOML `[[rule]]` tables or a JSON list of flat rule objects).
+
+- **Item stream:** `items?since=0` starts at the beginning; every page carries
+  `next_cursor` (the stream position, also when empty), so a consumer polls with it. Each
+  changed path appears once with its latest state (`removed: true` when it left the
+  catalog); a cursor from another database epoch answers `resync: true`. Without `since`,
+  `items` lists current items in path order (or rarest first) with ordinary paging.
+- **Copies** (`copies`, `unknown`) and `rarest`/`unheld` need the holdings index on the
+  answering node (`cluster.index = true`, or any rescue rule); without it `rarest` and
+  `unheld` are `unavailable` and `copies` is omitted.
+- **Metrics:** `nu_collection_items`, `_bytes`, `_conflicts`, `_local_items{state}`,
+  `_local_bytes`, `_shortfall_bytes`, `_holdings_log_seq`, and with the index
+  `_unheld_items`, `_copies_items{copies}`, `_member_items{peer}`, all labelled
+  `collection`.
 
 ## Loopback protections
 

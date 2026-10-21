@@ -104,6 +104,7 @@ func Open(dir string, opts Options) (*Store, error) {
 	}
 	s := &Store{dir: dir, db: db, opts: opts, now: time.Now, limits: opts.Limits.withDefaults(), profiles: map[string]LinksFunc{
 		"nu-tree":      tree.Links,
+		"nu-catalog":   tree.CatalogLinks,
 		"atrepo":       atrepo.Links,
 		"atrepo+blobs": atrepo.LinksWithBlobs,
 	}}

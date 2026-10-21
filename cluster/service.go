@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -33,6 +34,10 @@ type ServiceConfig struct {
 	Usage    func() (free, used int64)
 	Interval time.Duration // 0: DefaultInterval
 	Logger   *slog.Logger
+	// Holdings serves `holdings` requests (collections, D22); nil answers not found.
+	Holdings func(peer wire.PeerID, req HoldingsRequest) (*HoldingsPage, error)
+	// HoldingsMarks reports this node's holdings-log positions for heartbeats.
+	HoldingsMarks func() []HoldingsMark
 }
 
 // PeerStatus is what this node knows about another member.
@@ -370,6 +375,9 @@ func (s *Service) heartbeat() {
 	s.seq++
 	hb := Heartbeat{Peer: s.self.Bytes(), Seq: s.seq, Time: s.c.Now().UnixMilli(), Free: free, Used: used}
 	s.mu.Unlock()
+	if s.cfg.HoldingsMarks != nil {
+		hb.Holdings = s.cfg.HoldingsMarks()
+	}
 	if s.cfg.Addrs != nil {
 		for _, a := range s.cfg.Addrs() {
 			if len(hb.Addrs) < 16 {
@@ -446,6 +454,29 @@ func (s *Service) WaitAcked(ctx context.Context, did, rev string, n int) []wire.
 		case <-ch:
 		}
 	}
+}
+
+// Holdings asks a member for its item holdings of a collection.
+func (s *Service) Holdings(ctx context.Context, peer wire.PeerID, req HoldingsRequest) (*HoldingsPage, error) {
+	if req.Limit <= 0 || req.Limit > MaxHoldingsPage {
+		req.Limit = MaxHoldingsPage
+	}
+	var page HoldingsPage
+	_, err := call(ctx, s.h, peer, &request{Op: OpHoldings, Cluster: s.c.ID, Dataset: req.Dataset, Epoch: req.Epoch, SinceSeq: req.Since,
+		Snapshot: req.Snapshot, After: req.After, Limit: int64(req.Limit)}, func(r io.Reader) error {
+		b, err := wire.ReadMessage(bufio.NewReader(r), MaxHoldingsBody)
+		if err != nil {
+			return err
+		}
+		return (drisl.DecOptions{MaxSize: MaxHoldingsBody, MaxDepth: 8}).Unmarshal(b, &page)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(page.Entries) > MaxHoldingsPage {
+		return nil, errors.New("cluster: holdings page too long")
+	}
+	return &page, nil
 }
 
 // Join performs the secret-invite join exchange with the token's boot peers. A
@@ -582,6 +613,30 @@ func (s *Service) serve(st *host.Stream) {
 		}
 		s.mu.Unlock()
 		reply(response{}, nil)
+	case OpHoldings:
+		if s.cfg.Holdings == nil {
+			refuse(StatusNotFound, "this member keeps no holdings logs")
+			return
+		}
+		page, err := s.cfg.Holdings(peer, HoldingsRequest{Dataset: req.Dataset, Epoch: req.Epoch, Since: req.SinceSeq, Snapshot: req.Snapshot, After: req.After, Limit: int(req.Limit)})
+		if err != nil {
+			refuse(StatusNotFound, "%v", err)
+			return
+		}
+		body, err := drisl.Marshal(page)
+		if err == nil && len(body) > MaxHoldingsBody {
+			err = errors.New("holdings page too large")
+		}
+		if err != nil {
+			refuse(StatusInternal, "%v", err)
+			return
+		}
+		var framed bytes.Buffer
+		if err := wire.WriteMessage(&framed, body, MaxHoldingsBody); err != nil {
+			refuse(StatusInternal, "%v", err)
+			return
+		}
+		reply(response{}, framed.Bytes())
 	case OpJoin, OpAdmit:
 		joiner := peer
 		if req.Op == OpAdmit {

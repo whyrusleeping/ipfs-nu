@@ -451,6 +451,7 @@ func (i *Invite) setHLC(h string)  { i.HLC = h }
 func (d *Dataset) setHLC(h string) { d.HLC = h }
 func (h *Head) setHLC(s string)    { h.HLC = s }
 func (c *Config) setHLC(h string)  { c.HLC = h }
+func (d *Drop) setHLC(h string)    { d.HLC = h }
 
 // Written is the outcome of a local write.
 type Written struct {

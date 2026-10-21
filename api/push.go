@@ -35,11 +35,11 @@ func init() { Routes = append(Routes, pushRoutes...) }
 
 func (s *Server) pushHandlers() map[Route]handlerFunc {
 	return map[Route]handlerFunc{
-		{"POST", "/cluster/collections/{name}/items"}:            s.collectionPush,
-		{"POST", "/cluster/collections/{name}/items:batch"}:      s.collectionPushBatch,
+		{"POST", "/cluster/collections/{name}/items"}:             s.collectionPush,
+		{"POST", "/cluster/collections/{name}/items:batch"}:       s.collectionPushBatch,
 		{"DELETE", "/cluster/collections/{name}/items/{path...}"}: s.collectionRemove,
-		{"GET", "/cluster/collections/{name}/pushes"}:            s.collectionPushes,
-		{"POST", "/cluster/collections/{name}/uploads"}:          s.collectionUpload,
+		{"GET", "/cluster/collections/{name}/pushes"}:             s.collectionPushes,
+		{"POST", "/cluster/collections/{name}/uploads"}:           s.collectionUpload,
 	}
 }
 

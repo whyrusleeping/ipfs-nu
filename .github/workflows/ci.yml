@@ -21,6 +21,8 @@ jobs:
           go-version: stable
       - name: dependency guard
         run: ./scripts/depguard.sh
+      - name: gofmt
+        run: test -z "$(gofmt -l $(git ls-files '*.go'))" || { gofmt -l $(git ls-files '*.go'); exit 1; }
       - name: vet
         run: go vet ./...
       - name: staticcheck

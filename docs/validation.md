@@ -100,6 +100,15 @@ forwarding, UPnP IPv6FirewallControl, real suspend/resume and consumer-router fi
 validation remain deferred. Host/AutoNAT/relay/identify/path hooks need owner-side wiring;
 the measured reaction invokes registered test hooks, not a production daemon's recovery.
 
+**Netmon natlab flake follow-up:** the original test failed 4/20 isolated repetitions
+without other packages running (`Stage:3`, expected `Rebind`). It waited until all `ip`
+commands finished before reading a 32-entry, intentionally drop-oldest diagnostics queue;
+link/IPv6/route notification bursts could evict the beginning of a reaction. Namespace
+names and addresses were not shared across these runs. The test now records actual hook
+executions in a single complete receipt and still enforces the 1 s bound; production
+queue policy is unchanged. The full tagged `./p2p/... ./cluster/...` set passed three
+uncached repetitions after this correction, with the real miniupnpd binary enabled.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

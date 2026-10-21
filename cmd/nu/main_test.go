@@ -45,7 +45,7 @@ type syncBuf struct {
 }
 
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
-func (s *syncBuf) String() string            { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
 // waitFor polls cond until it holds or the timeout expires.
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -304,8 +304,25 @@ func TestAddSiteAndBrowse(t *testing.T) {
 		t.Fatalf("status: exit %d: %s", code, out.String())
 	}
 	out.Reset()
-	if code := run([]string{"--nu-path", root, "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), " B, 1 pins") {
+	if code := run([]string{"--nu-path", root, "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), " B, 1 pins") ||
+		!strings.Contains(out.String(), "network:    serving, 0 peers connected") {
 		t.Fatalf("status text: exit %d: %s", code, out.String())
+	}
+	// doctor reaches the daemon through a share link's address and reports the round trip;
+	// an unreachable address is a plain-language failure.
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "share", cid}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("share via daemon: exit %d: %s", code, errb.String())
+	}
+	daemonLink := strings.TrimSpace(out.String())
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "doctor", "--peer", daemonLink}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), "ok   peer: reached "+key.Public().PeerID().Base36()) {
+		t.Fatalf("doctor --peer: exit %d: %s %s", code, out.String(), errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"--nu-path", root, "doctor", "--peer", "/ip4/127.0.0.1/udp/1/quic-v1/p2p/" + key.Public().PeerID().String()}, &out, &errb); code != apiv0.ExitFailed || !strings.Contains(out.String(), "fail peer: ") {
+		t.Fatalf("doctor --peer unreachable: exit %d: %s %s", code, out.String(), errb.String())
 	}
 	dest2 := filepath.Join(t.TempDir(), "copy2")
 	out.Reset()

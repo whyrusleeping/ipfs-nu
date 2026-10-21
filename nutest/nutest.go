@@ -51,7 +51,8 @@ const Timeout = 10 * time.Second
 type Options struct {
 	// Seed drives node keys and RandBytes (default 1).
 	Seed int64
-	// API also serves each node's local API and gateway (through node/daemon).
+	// API also serves each node's local API and gateway (through node/daemon), as a
+	// daemon does; without it a node is what a daemonless command runs in-process.
 	API bool
 	// Fetch tunes every node's fetcher (smaller chunks make mid-transfer faults easy).
 	Fetch fetch.Config
@@ -77,9 +78,6 @@ func New(t testing.TB, n int, opts ...Options) *Network {
 		o.Seed = 1
 	}
 	nw := &Network{T: t, Opts: o, rng: rand.New(rand.NewSource(o.Seed))}
-	for i := range n {
-		nw.Nodes = append(nw.Nodes, nw.newNode(i))
-	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			nw.Dump()
@@ -88,10 +86,21 @@ func New(t testing.TB, n int, opts ...Options) *Network {
 			nd.Stop()
 		}
 	})
-	for _, nd := range nw.Nodes {
-		nd.Start()
+	for range n {
+		nw.NewNode(o.API)
 	}
 	return nw
+}
+
+// NewNode adds and starts one more node, with or without the local API and gateway
+// (a node without them is what a daemonless command runs: a fresh repo, no daemon).
+func (nw *Network) NewNode(api bool) *Node {
+	nw.T.Helper()
+	nd := nw.newNode(len(nw.Nodes))
+	nd.api = api
+	nw.Nodes = append(nw.Nodes, nd)
+	nd.Start()
+	return nd
 }
 
 // RandBytes returns deterministic pseudo-random content.
@@ -169,6 +178,7 @@ type Node struct {
 	Swarm  *swarm.Swarm
 	Daemon *daemon.Daemon
 
+	api     bool
 	mu      sync.Mutex
 	denied  map[wire.PeerID]bool
 	corrupt atomic.Bool
@@ -239,7 +249,7 @@ func (nd *Node) Start() {
 		c.AllowPeer = nd.allow
 		c.Logger = slog.New(slog.DiscardHandler)
 	}
-	if nd.nw.Opts.API {
+	if nd.api {
 		d, err := daemon.Start(context.Background(), daemon.Options{Repo: nd.Repo, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0",
 			Swarm: configure, Logger: slog.New(slog.DiscardHandler)})
 		if err != nil {

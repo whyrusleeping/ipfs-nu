@@ -33,7 +33,8 @@ import (
 	"github.com/whyrusleeping/nu/store"
 )
 
-// Config configures a Swarm. Key and Store are required.
+// Config configures a Swarm. Key is required; without a Store the swarm neither serves
+// nor fetches content (a connectivity probe).
 type Config struct {
 	Key   *wire.NodeKey
 	Store *store.Store
@@ -78,8 +79,8 @@ type Swarm struct {
 // Start binds the host and starts the services. The returned Swarm is independent of
 // ctx once started; ctx bounds Start itself.
 func Start(ctx context.Context, cfg Config) (*Swarm, error) {
-	if cfg.Key == nil || cfg.Store == nil {
-		return nil, errors.New("swarm: Key and Store are required")
+	if cfg.Key == nil {
+		return nil, errors.New("swarm: Key is required")
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -144,14 +145,16 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.server = proto.NewServer(cfg.Store, proto.ServerConfig{})
-	if err := s.server.Register(s.host); err != nil {
-		return nil, err
+	if cfg.Store != nil {
+		s.server = proto.NewServer(cfg.Store, proto.ServerConfig{})
+		if err := s.server.Register(s.host); err != nil {
+			return nil, err
+		}
+		fc := cfg.Fetch
+		fc.Store = cfg.Store
+		fc.Providers = connected{s}
+		s.fetcher = fetch.New(fc)
 	}
-	fc := cfg.Fetch
-	fc.Store = cfg.Store
-	fc.Providers = connected{s}
-	s.fetcher = fetch.New(fc)
 	ok = true
 	log.Info("swarm started", "peer", s.host.ID().Base36(), "addrs", s.host.Addrs())
 	return s, nil
@@ -235,6 +238,9 @@ func (s *Swarm) Ping(ctx context.Context, id wire.PeerID) (time.Duration, error)
 // Fetch implements node.Fetcher: hinted providers are tried together with connected
 // peers; everything is verified before it is stored.
 func (s *Swarm) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, progress func(done, total int64)) error {
+	if s.fetcher == nil {
+		return apiv0.Errorf(apiv0.CodeFailed, "this node has no store to fetch into")
+	}
 	var lh []lookup.Hint
 	for _, p := range hints {
 		if p.Peer == s.host.ID() {

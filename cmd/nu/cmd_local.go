@@ -2,17 +2,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/daemon"
+	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/node/swarm"
+	"github.com/whyrusleeping/nu/p2p/lookup"
+	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
 var cmdVersion = &command{
@@ -297,15 +305,20 @@ type check struct {
 
 var cmdDoctor = &command{
 	name:    "doctor",
-	summary: "check the local setup and say what to do about problems",
+	args:    "[--peer <link|/multiaddr/p2p/id>]",
+	summary: "check the local setup and connectivity and say what to do about problems",
 	run: func(ctx context.Context, e *env, args []string) error {
-		if err := parseFlags(e.flags(), args); err != nil {
+		fs := e.flags()
+		peer := fs.String("peer", "", "also try to reach this peer (a share link with its address, or a multiaddr ending in /p2p/<id>)")
+		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
 		var checks []check
 		add := func(name, status, detail, action string) {
 			checks = append(checks, check{Name: name, Status: status, Detail: detail, Action: action})
 		}
+		var network *apiv0.NetworkStatus
+		var cfg *repo.Config
 		r, err := e.openRepo()
 		if err != nil {
 			add("repo", "fail", err.Error(), toAPIError(err).Action)
@@ -318,10 +331,10 @@ var cmdDoctor = &command{
 				os.Remove(f.Name())
 				add("repo writable", "ok", "", "")
 			}
-			if cfg, err := r.Config(); err != nil {
+			if cfg, err = r.Config(); err != nil {
 				add("config", "fail", err.Error(), "fix the TOML syntax in "+r.Path(repo.ConfigFile))
 			} else {
-				add("config", "ok", "api "+cfg.API.Listen+", gateway "+cfg.Gateway.Listen, "")
+				add("config", "ok", "api "+cfg.API.Listen+", gateway "+cfg.Gateway.Listen+", swarm "+strings.Join(cfg.Swarm.Listen, " "), "")
 			}
 			if pid, _ := r.LockHolder(); pid > 0 {
 				add("daemon lock", "ok", fmt.Sprintf("held by pid %d", pid), "")
@@ -336,9 +349,18 @@ var cmdDoctor = &command{
 				add("daemon", "fail", ae.Message, "the address file is stale or the daemon is unhealthy; restart it with `"+nu.Name+" daemon`")
 			} else {
 				add("daemon", "ok", fmt.Sprintf("version %s, pid %d, api %s, gateway %s", st.Version, st.Daemon.PID, st.Daemon.API, st.Daemon.Gateway), "")
+				network = st.Network
+			}
+			if network == nil {
+				if n, release, err := e.local(r, false); err == nil {
+					if st, err := n.Status(ctx); err == nil {
+						network = st.Network
+					}
+					release()
+				}
 			}
 		}
-		add("network", "warn", "connectivity checks are not available in this build", "")
+		checks = append(checks, networkChecks(ctx, cfg, network, *peer)...)
 		failed := false
 		for _, c := range checks {
 			if c.Status == "fail" {
@@ -365,4 +387,111 @@ var cmdDoctor = &command{
 		}
 		return nil
 	},
+}
+
+// networkChecks are the connectivity heuristics: addresses to advertise, the swarm UDP
+// port, and optionally reaching one peer.
+func networkChecks(ctx context.Context, cfg *repo.Config, network *apiv0.NetworkStatus, peer string) []check {
+	var checks []check
+	add := func(name, status, detail, action string) {
+		checks = append(checks, check{Name: name, Status: status, Detail: detail, Action: action})
+	}
+	switch {
+	case network == nil:
+		add("addresses", "warn", "unknown (no daemon answered and the repo could not be read in-process)", "")
+	case len(network.Addrs) == 0:
+		add("addresses", "fail", "no address to advertise: no usable network interface, or swarm.listen is empty",
+			"connect to a network, or set swarm.listen to /ip4/0.0.0.0/udp/"+strconv.Itoa(repo.DefaultSwarmPort)+"/quic-v1")
+	default:
+		add("addresses", "ok", strings.Join(network.Addrs, " "), "")
+	}
+	if network != nil && network.Serving {
+		add("swarm", "ok", fmt.Sprintf("serving, %d peers connected", network.Peers), "")
+	} else if cfg != nil {
+		// No host runs: the configured UDP ports must be bindable for the daemon or a
+		// one-shot command to serve.
+		for _, l := range cfg.Swarm.Listen {
+			parts := strings.Split(l, "/")
+			if len(parts) != 6 || parts[3] != "udp" {
+				continue
+			}
+			network := "udp4"
+			if parts[1] == "ip6" {
+				network = "udp6"
+			}
+			pc, err := net.ListenPacket(network, net.JoinHostPort(parts[2], parts[4]))
+			if err != nil {
+				add("swarm port", "warn", fmt.Sprintf("cannot bind %s: %v", l, err),
+					"another program (or daemon) holds the port; one-shot commands use an ephemeral port, the daemon needs it free or a different swarm.listen")
+				continue
+			}
+			pc.Close()
+			add("swarm port", "ok", l+" can be bound (no daemon is serving right now)", "start `"+nu.Name+" daemon` to share continuously")
+		}
+	}
+	if peer == "" {
+		return checks
+	}
+	// A throwaway host (own key, ephemeral port, no store) dials the peer and pings it.
+	id, addrs, err := peerTarget(peer)
+	if err != nil {
+		add("peer", "fail", err.Error(), "give a share link that carries addr= hints, or /ip4/<ip>/udp/<port>/quic-v1/p2p/<peer id>")
+		return checks
+	}
+	key, err := wire.GenerateNodeKey()
+	if err != nil {
+		add("peer", "fail", err.Error(), "")
+		return checks
+	}
+	listen := []string{"/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"}
+	sw, err := swarm.Start(ctx, swarm.Config{Key: key, Listen: listen, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		add("peer", "fail", "cannot open a UDP socket: "+err.Error(), "UDP sockets are needed for QUIC; check local firewall rules")
+		return checks
+	}
+	defer sw.Close()
+	pctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	if err := sw.Connect(pctx, id, addrs); err != nil {
+		detail := "cannot reach " + id.Base36() + ": " + err.Error()
+		action := "make sure the holder is online (`" + nu.Name + " daemon` or `" + nu.Name + " share` running) and on a network this machine can reach"
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "timeout") {
+			detail = "no answer from " + id.Base36() + " within the timeout (UDP may be blocked by a firewall, or the peer is offline)"
+			action = "allow UDP to the peer's port (default " + strconv.Itoa(repo.DefaultSwarmPort) + ") in the firewalls on both ends, and check that the holder is running"
+		}
+		add("peer", "fail", detail, action)
+		return checks
+	}
+	rtt, err := sw.Ping(pctx, id)
+	if err != nil {
+		add("peer", "warn", "connected to "+id.Base36()+" but ping failed: "+err.Error(), "the peer may be an older build; transfers may still work")
+		return checks
+	}
+	add("peer", "ok", fmt.Sprintf("reached %s, round trip %s", id.Base36(), rtt.Round(time.Millisecond)), "")
+	return checks
+}
+
+// peerTarget extracts a peer and its addresses from a share link or a /p2p multiaddr.
+func peerTarget(s string) (wire.PeerID, []wire.Multiaddr, error) {
+	if link.IsLink(s) {
+		l, err := link.Parse(s)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, p := range l.Providers {
+			if len(p.Addrs) > 0 {
+				return p.Peer, p.Addrs, nil
+			}
+		}
+		return "", nil, errors.New("the link names no address for its providers")
+	}
+	a, err := wire.ParseMultiaddr(s, link.MaxAddrLen)
+	if err != nil {
+		return "", nil, fmt.Errorf("%q is not a multiaddr", s)
+	}
+	id, err := lookup.AddressPeer(a)
+	if err != nil {
+		return "", nil, errors.New("the multiaddr must end in /p2p/<peer id>")
+	}
+	return id, []wire.Multiaddr{a}, nil
 }

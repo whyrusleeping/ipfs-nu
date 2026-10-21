@@ -158,14 +158,30 @@ func (e *env) flags() *flag.FlagSet {
 	return fs
 }
 
+// parseFlags parses flags that may appear before or after positional arguments
+// (`nu get <link> -o out` and `nu get -o out <link>` both work); fs.Args() returns the
+// positional arguments in order. A literal `--` ends flag parsing.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return err
+			}
+			return usagef("%v", err)
 		}
-		return usagef("%v", err)
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if len(args) > len(rest) && args[len(args)-len(rest)-1] == "--" {
+			positional = append(positional, rest...)
+			break
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
 	}
-	return nil
+	return fs.Parse(append([]string{"--"}, positional...))
 }
 
 // fail prints an error in the command's output mode and returns the exit code.

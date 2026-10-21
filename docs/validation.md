@@ -235,6 +235,84 @@ Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
 Use disposable deployments and bounded experiments. Live routing/network tests require
 operator-appropriate rate limits; do not turn verification into unsolicited load or scanning.
 
+### Q2: Amino provider keys and citizenship (bounded live results; incomplete swarm run)
+
+Harness: `experiments/amino/amino_live_test.go` (separate Go module; go-libp2p v0.50.0,
+kad-dht v0.42.2). Live command:
+`cd experiments && NU_AMINO=1 GOLOG_LOG_LEVEL=error go test -run '^TestLiveAminoProviderKeys$' -count=1 -v ./amino`.
+Without `NU_AMINO=1` the test skips. **The first harness version was faulty:** it only called
+`Bootstrap` (asynchronous) and returned/cancelled its setup context before establishing
+connections. It reported zero routing peers and is discarded. The corrected harness explicitly
+connects to the default fixed TCP bootstrapper mars (`/ip4/104.131.131.82/tcp/4001`), configures
+that bootstrap peer, calls `Bootstrap`, and waits for a non-empty routing table before each
+operation. Logs confirm the connection and table size; operation contexts remain alive for the
+full `Provide`/`FindProvidersAsync` call. The host is client mode with default `/ipfs/kad/1.0.0`
+protocol prefix and default transports.
+
+Test pairs use fresh provider and query identities. `Provide(cid, true)` is followed by
+`FindProvidersAsync` from the second client. The key cases are SHA2-256 control, random-data
+BLAKE3, and exact follow-swarm recipe
+`BLAKE3("nu.follow\\0did:plc:ewvi7nxzyoun6zhxrhs64oiz\\0amino-spike-dataset")`. On 2026-10-21,
+the corrected initial run used a 45 s operation deadline and yielded:
+
+| Key | Round | CID | Provider/query routing-table peers | Provide | Independent lookup | Outcome |
+|---|---:|---|---:|---:|---:|---|
+| SHA-256 control | 1 | random (not returned) | 1 / 2 | timed out at 45 s | not run | inconclusive |
+| SHA-256 control | 2 | `bafkreifdjtdprv5frv7l7kvyosssf23sboxfby7gwxzmnlk35z2ajvkxjm` | 1 / 2 | 26.679 s | 18.322 s | provider found (1 record) |
+| Random BLAKE3 | 1 | `bafkr4ic3dqouvmpwrqgermguvfr2o2yawqglm73bssoucwghpppp2vyopu` | 1 / 2 | 22.745 s | 22.256 s | provider found (1 record) |
+| Random BLAKE3 | 2 | `bafkr4icwv24ndb3go2lnphftjkywib2fkz2vvd2k2xyhge5a2fxuffg2oa` | 1 / 1 | 22.040 s | 22.960 s | provider found (1 record) |
+| Deterministic swarm BLAKE3 | 1 | `bafkr4ie4nrxp5ca6g4zhxq7faiflql3tvztv6zpwohutv6bvewhvrdmjjq` | 2 / 2 | timed out at 45 s | not run | inconclusive |
+| Deterministic swarm BLAKE3 | 2 | same CID | 2 / 1 | timed out at 45 s | not run | inconclusive |
+
+An additional rerun of the exact same swarm CID with 90 s operation deadlines timed out during
+`Provide` in both rounds (90.78 s and 90.77 s); no GET was possible. A later pattern-matched
+probe with the same 90 s limit also timed out for another random BLAKE3 CID
+(`bafkr4ihow4rcw2eej3qsww27nqiqz5u7ku3yv6uvwfklwxiw6hy6jp5wze`, 90.80 s) and the same swarm
+CID (90.79 s); neither reached GET. A separate earlier single SHA-256 probe completed, but
+its verbose logs did not preserve timing, so it is not included in the table. Across recorded
+attempts, random BLAKE3 succeeded twice and timed out once; the SHA control succeeded once and
+timed out once; the deterministic swarm CID timed out five times (two 45 s and three 90 s).
+This is positive evidence that deployed Amino provider paths accept and return some random
+0x1e BLAKE3 keys; it is not evidence for the exact deterministic swarm CID. Per-run routing
+tables were small (1–2 entries at operation start); this was a bounded client lookup, not a
+fleet-level success or closest-peer-storage measurement. High and variable latency plus
+key-dependent timeouts limit those conclusions.
+
+`Provide`/`FindProvidersAsync` do not expose the peer set that accepted provider writes, so the
+fraction of closest peers storing each record is **not measured**. A GET returned exactly one
+provider for each successful key; this does not prove one write versus multiple writes or locate
+record replicas. Server implementations/versions were not identified from bootstrap peers.
+DHT debug output during the failed probes showed stale/referral peers with no `/ipfs/kad/1.0.0`
+protocol, refused TCP security negotiation, and inaccessible loopback addresses; the lookup
+continued through these referrals until its context expired. This explains the operation
+failures better than a BLAKE3-specific rejection, but does not prove why each key's lookup
+converges slowly. UDP receive-buffer warning remained (208 KiB available vs 7168 KiB requested),
+while the successful Amino TCP path shows it did not prevent all requests.
+
+HTTPS spot-checks to `delegated-ipfs.dev/routing/v1/providers/{cid}` returned HTTP 200 with
+`{"Providers":[]}` for one unannounced BLAKE3 and one SHA-256 CID; `cid.contact` returned 404 for
+the BLAKE3 URL. No BLAKE3 key was publicly announced via delegated routing. These observations
+do not establish index/filter policy.
+
+Source-level observation: upstream go-libp2p-kad-dht v0.42.2 `IpfsDHT.Provide` forwards
+`cid.Hash()` (the CID's original multihash bytes) through the classic `/ipfs/kad/1.0.0` lookup/
+put path; it does not second-hash the provider key or check for SHA-256 there. The successful
+independent BLAKE3 GET is the operational evidence; no server-side namespace/hash validation
+inspection was possible. Provider records carry peer ID plus `FilteredAddrs()`, not a Bitswap
+capability declaration. Default `Provide(..., true)` uses classic closest-peer traversal;
+optimistic provide is opt-in in this client. Provider sweeping is a local reprovide mechanism
+and no TTL/republication behavior was measured.
+
+**Recommendation:** use Amino directly for ordinary BLAKE3 blob CIDs; two independent fresh
+clients retrieved both announced random BLAKE3 keys, with no routing-only SHA-256 derivation,
+content alias or separate DHT protocol indicated. This is a bounded positive result, not a
+promise for every peer/service. The exact deterministic follow-swarm key remains unverified
+because its lookups timed out; keep swarm discovery as experimental/measure again rather than
+claiming support or rejection. Preserve hint/LAN/private lookup independence. A NATed client
+can participate without server mode, but announce only content it serves and addresses usable
+by callers. Amino records do not advertise a Nu transfer protocol, so Bitswap-only peers cannot
+fetch `/nu/bytes/1`. Publicly reachable server mode is the separate routing-service role.
+
 ## Pilot workloads
 
 Recruit archive/mirror teams with smaller Internet Archive/Wikipedia-shaped workflows.

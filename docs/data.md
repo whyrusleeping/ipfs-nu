@@ -327,13 +327,18 @@ indexers ([D21](dasl.md#fisl)), yield URLs that are fetched statelessly and veri
 CID. Private and isolated clusters do not query public indexers.
 
 Announce pinned blob, file-node and tree-root CIDs through Amino and, if configured, delegated
-routing; never announce interior directory shards. Tree roots and file nodes use standard
-SHA-256 keys; only BLAKE3 blob keys depend on Q2. Follow pins default to announcing only
-the swarm key and current root (`follow.provide`, D19). A wrapped standalone file announces both
-wrapper and blob; providing scales with files/roots rather than transfer chunks. Amino
-acceptance of BLAKE3 keys and protocol citizenship with non-Bitswap providers need an early
-bounded experiment. See [validation](validation.md). Hint/LAN/explicit-member retrieval does
-not depend on Amino; a routing fallback is not a second content model.
+routing; never announce interior directory shards. Amino provider keys use each CID's native
+multihash bytes: SHA-256 keys for structure and BLAKE3 (0x1e) keys for blobs. A bounded live
+check retrieved random BLAKE3 blob providers from an independent Amino client; do not derive a
+SHA-256 routing alias or use a separate DHT protocol. It did not verify the deterministic
+follow-swarm key, so DHT-based swarm discovery is best-effort/unverified; do not rely on it in
+place of link hints, publisher context or LAN/member discovery. Follow pins default to
+announcing only the swarm key and current root (`follow.provide`, D19). A wrapped standalone
+file announces both wrapper and blob; providing scales with files/roots rather than transfer
+chunks. Provider records do not say which transfer protocol the provider serves. See
+[validation](validation.md#q2-amino-provider-keys-and-citizenship-bounded-live-results-incomplete-swarm-run).
+Hint/LAN/explicit-member retrieval does not depend on Amino; a routing fallback is not a second
+content model.
 
 ## D17. Store and replication
 

@@ -312,8 +312,12 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
 
 ## Open decisions and verification
 
-- **Amino BLAKE3 keys (Q2):** early acceptance/citizenship experiment; delegated routing or a
-  Nu Kademlia protocol ID if needed. Hint/local retrieval is independent of the outcome.
+- **Amino BLAKE3 keys (Q2):** use native CID multihashes for Amino provider keys, including
+  ordinary BLAKE3 blob CIDs; do not derive a SHA-256 routing alias or add a Nu DHT protocol.
+  The opt-in live check retrieved random BLAKE3 blob providers from independent Amino clients,
+  but the deterministic follow-swarm key timed out without a result. Treat swarm-key DHT
+  discovery as unverified/best-effort until that exact key succeeds; hint/local retrieval is
+  independent. See [validation](docs/validation.md#q2-amino-provider-keys-and-citizenship-bounded-live-results-incomplete-swarm-run).
 - **Public infrastructure:** operators, funding, admission/abuse/quotas, regional deployment
   and domain control before default-service promises; account-free sharing remains a goal.
   A share-link HTTPS gateway (streaming from an online sharer, download-only on a sandbox

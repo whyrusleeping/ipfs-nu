@@ -105,6 +105,54 @@ the measured reaction invokes registered test hooks, not a production daemon's r
 Use disposable deployments and bounded experiments. Live routing/network tests require
 operator-appropriate rate limits; do not turn verification into unsolicited load or scanning.
 
+### Q2: Amino provider keys and citizenship (inconclusive live measurement)
+
+Harness: `experiments/amino/amino_live_test.go` (separate Go module; go-libp2p v0.50.0
+selected directly, kad-dht v0.42.2). Run with
+`cd experiments && NU_AMINO=1 go test -run '^TestLiveAminoProviderKeys$' -count=1 -v ./amino`.
+Without `NU_AMINO=1` the test skips. It creates separate fresh client-mode hosts for each
+provider/query pair and tries a SHA2-256 control, a random-data BLAKE3 multihash, and the
+exact BLAKE3 swarm-key recipe `BLAKE3("nu.follow\\0did:plc:ewvi7nxzyoun6zhxrhs64oiz\\0amino-spike-dataset")`;
+two random rounds per type. `Provide` broadcasts and a distinct host calls
+`FindProvidersAsync`; test logs include CID, peer IDs, routing-table sizes, durations and
+returned providers. Six pairs were attempted on 2026-10-21. All 12 host routing tables stayed
+at zero peers after 35 s, and all six `Provide` calls returned `failed to find any peer in
+table`; therefore there are **no** meaningful success, latency, closest-peer-storage or
+BLAKE3-vs-SHA measurements. This is consistent with this machine's public-DHT connectivity
+failure, not evidence of BLAKE3 rejection or acceptance. UDP receive buffers also could not
+be raised to libp2p's requested size; not itself a conclusive cause.
+
+HTTPS spot-checks to `delegated-ipfs.dev/routing/v1/providers/{cid}` returned HTTP 200 with
+`{"Providers":[]}` for one BLAKE3 CID and one SHA-256 CID (both were unannounced random test
+keys); `cid.contact` returned 404 for the BLAKE3 URL. These empty results only establish the
+queried endpoints' response shape and do not establish indexing/filter policy or discoverability.
+No BLAKE3 key was publicly announced by this experiment.
+
+Source-level observation, not a server acceptance result: upstream go-libp2p-kad-dht v0.42.2
+`IpfsDHT.Provide` forwards `cid.Hash()` (the CID's original multihash bytes) to provider
+storage and the classic `/ipfs/kad/1.0.0` lookup/put path; it does not apply a second hash to
+the provider key or check that the multihash code is SHA-256 there. Provider records carry
+peer ID plus `FilteredAddrs()`, not a Bitswap capability declaration. DHT key routing has its
+own internal key conversion; this source inspection cannot establish what deployed servers
+accept/store. The newer optimistic provide path is an opt-in optimization in this client
+version; default `Provide(..., true)` uses classic closest-peer traversal. Provider sweeping
+is a local reprovide mechanism, not a BLAKE3 compatibility signal. It must be tested against
+the selected deployment/version before adopting timing defaults.
+
+**Interim recommendation:** do not settle Q2 from this run. Keep existing CID/multihash
+identity unchanged (no cross-hash aliases); do not add a SHA-256-derived routing key or a
+separate DHT protocol based on these observations. Repeat against reachable Amino peers with
+at least one known versioned server, then verify ordinary and swarm BLAKE3 keys end-to-end.
+Until then keep hints/LAN/explicit-member lookup independent, and treat delegated routing as
+an optional, separately measured fallback. A client-mode, outbound-only DHT node is suitable
+for NATed nodes; only provide when the node can actually serve Nu's `/nu/bytes/1` data and
+has publishable reachable addresses (direct/relay as appropriate). Amino records do not
+advertise a Nu transfer protocol; a Bitswap-only client may connect yet cannot fetch Nu bytes.
+No live evidence here establishes whether announcing such a non-Bitswap provider violates
+operator policy or how often deployed servers expire/republish provider records. Publicly
+reachable server mode is the separate routing-service role, not a prerequisite for client
+lookup/announcement.
+
 ## Pilot workloads
 
 Recruit archive/mirror teams with smaller Internet Archive/Wikipedia-shaped workflows.

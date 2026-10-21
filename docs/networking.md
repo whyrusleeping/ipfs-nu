@@ -324,14 +324,52 @@ over relayed or direct packet paths:
    probing again. The goal is to preserve the inner connection and active transfers.
 6. **Retry:** restart probing on address changes, new observations/mappings and backoff timers.
 
-The wrapper must preserve quic-go's OOB, GSO, ECN and batched-receive capabilities. Keeping
-path changes below QUIC gives up per-path congestion control; a reliable relay stream also
-introduces head-of-line blocking. Datagram relaying is described below. QUIC multipath/QNT
-are not part of the stock-stack design; revisit multipath if quic-go supports it upstream.
-Run an early bounded stock-quic-go spike for path changes, relay reattachment, MTU/congestion
-and RTT/loss discontinuities before building the public session stack on this assumption.
-The user-facing requirement is resumable progress; preserving the inner connection is an
-additional measured goal, not a reason to block hinted/routed first-share or archival slices.
+Use stock quic-go with the following constraints for the first implementation of 0015:
+
+- **Stable inner packet budget:** set `InitialPacketSize = 1200` and
+  `DisablePathMTUDiscovery = true` on inner connections, on both peers. Every eligible
+  direct path must carry a 1200-byte UDP payload; circuit framing must carry the same
+  complete datagram without truncation. Hidden path changes do not reset quic-go's MTU
+  estimate. Do not discover a larger inner MTU on one path and silently move that
+  connection to a smaller one. A larger adaptive budget needs a separately validated
+  design, not a quic-go fork or an assumption that loss will reduce the packet size.
+- **One congestion history:** stable virtual addresses hide path changes from QUIC.
+  RTT, congestion window and loss recovery carry over; stock quic-go exposes no reset
+  for a hidden route switch. Expect transient loss, underutilization and retransmission
+  bursts when RTT/capacity change. Do not advertise per-path congestion control or
+  simultaneous multipath. Reliable relay streams additionally introduce head-of-line
+  blocking and nested congestion control; they are a correctness fallback, not a bulk
+  performance guarantee.
+- **Bounded packet adapter:** relay reads/writes run independently of the inner QUIC
+  event loop. Use a bounded per-peer relay transmit queue (initial cap: 64 datagrams),
+  drop packets rather than block QUIC or accumulate an unbounded reliable-stream
+  backlog, and cancel/join old writers on reattachment. A failed relay is a lost packet
+  path, not closure of the shared PacketConn. Bound receive queues and framing lengths
+  before allocating. A new circuit and new outer QUIC connections can replace the old
+  relay path without replacing the inner connection, provided recovery beats its idle
+  timeout. Otherwise reconnect and resume verified requests; do not replay stream bytes.
+- **Correctness before socket offloads:** the initial inner adapter may use plain
+  PacketConn I/O with GSO/ECN disabled. An optimized wrapper must implement its own
+  `ReadBatch` as well as quic-go's `OOBCapablePacketConn`: forwarding only `SyscallConn`
+  and `ReadMsgUDP` lets x/net bypass the wrapper's receive routing via the underlying
+  fd. Split GSO super-packets into individual datagrams before relay framing; never
+  forward UDP segmentation, physical source-address or ECN metadata blindly through
+  a circuit. Offloads must preserve these semantics on both relay and direct paths
+  before enabling them. The conservative inner mode does not require disabling
+  optimizations on ordinary direct/outer relay QUIC connections.
+
+Virtual peer addresses are local routing keys, not advertised candidates. Disco packets
+retain physical source/destination addresses. Shared-socket routing must distinguish inner
+connection IDs from outer relay connections; do not rewrite every QUIC packet's address to
+one virtual peer. Bind the inner TLS identity to the expected peer, and specify and test
+the shared-socket dispatcher, authenticated circuit reattachment and probe/destination
+binding before shipping 0015. The stock-stack feasibility evidence and its limits are in
+[validation](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).
+
+QUIC multipath/QNT are not part of this design. The user-facing requirement is resumable
+progress; preservation of the inner connection is conditional on the surviving packet
+budget and recovery deadline, not a reason to block hinted/routed first-share or archival
+slices.
 
 ## D11c. NAT traversal and relay optimization
 
@@ -422,7 +460,12 @@ gates for first sharing or trusted archival.
 ### 5. Relay optimization
 
 - Offer a negotiated Nu-only datagram relay extension carrying inner QUIC packets as outer
-  QUIC DATAGRAMs. Retain standard circuit streams as fallback.
+  QUIC DATAGRAMs. Enable a leg only when its current DATAGRAM payload budget can carry
+  the complete 1200-byte inner packet plus extension overhead. A 1200-byte outer QUIC
+  packet cannot do this; do not silently truncate or fragment, or assume DATAGRAM support
+  alone is sufficient. Recheck the budget on outer path changes. Retain standard circuit
+  streams as fallback; outer fragmentation/reassembly would require a separate bounded
+  protocol.
 - Select relays by pair latency, RTT(A→relay) + RTT(relay→B), rather than home-relay latency
   alone.
 - Public Nu nodes can offer peer relaying for their owner's devices or an allow-list.
@@ -451,8 +494,10 @@ Target at least the published DCUtR baselines: 82.9% for port-restricted cone an
 
 Watch interface/route changes, sleep/wake and VPN toggles. Rebind sockets, recheck addresses
 with AutoNAT v2, refresh mappings, renew relay reservations, send identify push and restart
-probing. Nu-path aims to preserve the inner QUIC connection through relay fallback; standard
-sessions resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
+probing. Nu-path keeps the logical PacketConn and virtual addresses alive while replacing
+physical sockets and relay circuits. Preserve the inner QUIC connection only when recovery
+beats its idle timeout and meets D11's packet budget; standard sessions, and expired inner
+connections, resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
 than importing the full module.
 
 `p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
@@ -575,11 +620,13 @@ in [validation](validation.md#linux-nat-lab-smoke-2026-10-21).
 
 Production HTTPS-compatible fallback wire/security rules, relay admission/economics,
 endpoint support and the authenticated destination/probe contract remain to specify.
-Stock-quic-go behavior must be proven for relay-path reattachment after network loss,
-MTU/congestion behavior during hidden path changes, datagram size limits, and socket/OOB
-handling. Direct-first session setup, pair-aware relay reservation, replay-resistant probing
-and destination authorization need precise protocol rules. These are not settled by the
-choice of magicsock; no particular fix is selected here.
+The conservative stock-quic-go path is constrained by D11; production shared-socket
+inner/outer connection-ID routing, socket replacement, correct GSO splitting/batched
+receive/ECN metadata, and capacity-collapse/long reliable-relay performance still need
+validation. Adaptive inner MTU is not part of the initial design. Direct-first session
+setup, bounded qpath framing, authenticated relay reattachment, pair-aware relay reservation,
+replay-resistant probing and destination authorization need precise protocol rules. The
+bounded spike establishes feasibility, not these security contracts or field success.
 
 ## References
 

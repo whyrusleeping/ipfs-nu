@@ -89,12 +89,98 @@ PEER forwarding, UPnP IPv6FirewallControl, real suspend/resume and consumer-rout
 validation remain deferred. Host/AutoNAT/relay/identify/path hooks need owner-side wiring;
 the measured reaction invokes registered test hooks, not a production daemon's recovery.
 
+## Stock-quic-go Nu-path spike (0038, 2026-10-21)
+
+**Decision: GO for 0015 with D11's conservative adjustments; NO-GO for transparent
+arbitrary-MTU path switching or offload preservation by simple socket forwarding.**
+Stock quic-go can keep one inner connection and active stream across reliable relay,
+direct and replacement relay paths without a fork. Hidden path changes do not give it
+new per-path MTU/congestion state. This is feasibility evidence, not a shipped Nu-path.
+
+[Disposable harness, reproduction commands and exact boundaries](../experiments/nupath/README.md).
+Base revision `c729540` plus the 0038 spike; quic-go **v0.64.1**, Go **1.26.2**, Linux
+**5.15.0-176-generic**, linux/amd64, AMD EPYC 9684X (192 logical CPUs visible; shared
+machine, no pinned cores). No Internet traffic. Inner QUIC uses libp2p TLS/ALPN;
+outer transport is the real Nu circuit-v2 implementation. `/nu/qpath/1` is negotiated
+by multistream; packet framing is disposable, not a finalized protocol. A single
+continuous deterministic stream is SHA-256 checked at EOF, with **no application
+resume, inner redial or stream replacement**. Fixed-budget runs send at most 1200-byte
+inner packets. The writer is deliberately paced at one 32 KiB record per millisecond;
+these timings are not maximum throughput benchmarks.
+
+Three non-race repetitions, `cd experiments && go test -count=3 -v ./nupath`:
+
+| Active stream phase | Median (range), n=3 | Evidence |
+|---|---|---|
+| First 4 MiB over circuit stream, including inner setup | 251 ms (248–260 ms) | Initial reliable relay path works |
+| Next 8 MiB direct | 443 ms (442–444 ms) | Same virtual address and inner connection |
+| Next 1 MiB after changing to 60 ms RTT / every 50th packet dropped in each direction | 3.08 s (2.55–3.18 s) | Inner smoothed RTT became 60.7–61.5 ms; congestion window fell from 120–134 kB to 9.3–10.8 kB, not a clean per-path reset |
+| 250 ms all-path outage, discard old circuit/outer connections, reconnect/reserve/reattach, then 4 MiB | 787 ms (732–830 ms) | Same inner stream finishes and hashes correctly; final RTT 421–477 µs, congestion window only 10.8–13.1 kB |
+| Complete 17.0–17.1 MiB stream | 4.59 s (4.10–4.65 s) | No request-resume mechanism is hiding an inner disconnect |
+
+Resources in those runs: 68.0–69.2 MB total Go allocation delta, final live heap delta
+−0.03–3.93 MB (GC-sensitive, **not peak heap**), 54 additional live goroutines including
+three outer hosts/relay and both inner transports. Packet-queue high water was 96–109
+of 256 slots; the separate relay transmit queue caps at 64. A blocked-writer check
+submitted 1024 packets in 1.2–2.4 ms, dropped 959 and never exceeded 64 queued datagrams;
+close released/joined the blocked worker. An additional standalone `TestPaths` run,
+compiled first and measured with `/usr/bin/time`, took 4.63 s wall, 1.21 s user CPU,
+0.81 s system CPU and **34,384 KiB max RSS**. These are one-pair harness costs, not
+production per-peer sizing or relay-capacity projections. The machine's UDP receive
+buffer cap was 416 KiB despite quic-go requesting 7168 KiB; the warning was retained.
+
+Important negative/boundary results (three repetitions):
+
+- **MTU:** after DPLPMTUD reached 1441-byte packets, silently lowering the UDP-payload
+  ceiling to 1200 bytes produced only 0–14,113 bytes of progress in 600 ms and 56–74
+  oversize drops. Restoring the ceiling recovered the same stream. Explicit
+  `InitialPacketSize=1200`, `DisablePathMTUDiscovery=true` instead transferred
+  11.37–11.59 MB in that interval, with zero oversize drops. This is a synthetic
+  payload blackhole, not an interface-MTU/ICMP measurement. Stock `mtu_discoverer.go`
+  only raises the current size until a QUIC-visible migration resets it; no public
+  reset exists for hidden path switches. Stock `Conn.AddPath`/`Path.Switch` concerns
+  client-initiated migration between Transports, not a route hidden behind one
+  virtual address; that alternative architecture was not exercised.
+- **Outage bound:** all-packet loss expired the inner connection after 2.000–2.001 s,
+  matching the test idle timeout. Product request-resume is still necessary and was
+  **not** tested/implemented by this spike.
+- **Outer DATAGRAM budget:** a 1200-byte outer packet budget rejected a 1200-byte
+  payload (`DatagramTooLargeError`, maximum 1163 bytes); a 1400-byte budget delivered
+  it on loopback. Nu extension headers consume additional payload. DATAGRAM support
+  alone is insufficient to replace circuit framing; require enough budget on both
+  relay legs or keep the reliable fallback.
+- **OOB trap:** with an OOB-capable wrapper embedding `UDPConn`, stock quic-go/x/net
+  bypassed the overridden `ReadMsgUDP` entirely (zero calls, while three writes used
+  `WriteMsgUDP`). An explicit `ReadBatch` routed reads through the hook (four calls).
+  Full virtual-address OOB/ECN/GSO semantics were not implemented; initial 0015 uses
+  the safe unoptimized inner adapter. Delegating the fd is not an optimization proof.
+
+Three rootless `go test -tags natlab -run '^TestNATPaths$' -count=3 -v ./nupath`
+runs also passed: two separate EIM/APDF NAT fixtures, observer-activated mappings,
+simultaneous probes on the inner QUIC sockets with public-source verification, and a
+public QUIC circuit relay. First relayed 512 KiB took 30–35 ms; next direct 1 MiB took
+62–64 ms. A real nft direct-pair drop followed by an explicit 100 ms fallback decision
+and 512 KiB took 226–228 ms. Router WAN down/up, new outer QUIC connections and a new
+circuit completed the same inner stream: 2,752,512 bytes in 556–594 ms excluding lab
+setup. These demonstrate network isolation/NAT forwarding, not automatic detection,
+consumer-router traversal rates or NAT discovery. Race runs of `TestPaths` and tagged
+`TestNATPaths` passed, as did vet/staticcheck for the spike (including the natlab tag).
+
+Remaining boundaries: the spike shares disco/inner QUIC on one UDP socket but uses
+**separate inner and outer UDP sockets**. Production CID demultiplexing and physical
+socket replacement remain 0015 work. Probe MAC/replay/destination authorization,
+expected-peer binding on reattachment, finalized qpath framing, adaptive MTU, full
+GSO/ECN/batching, capacity-collapse and long lossy reliable-relay performance remain
+unproven. The bounded congestion tests do not establish fairness under arbitrary path
+changes; reliable framing retains head-of-line blocking. Three local runs support
+medians/ranges, not meaningful p95 estimates or field success claims.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |
 |---|---|
 | Amino BLAKE3 provider and swarm keys (Q2) | Acceptance/retrieval against deployed servers, protocol citizenship with non-Bitswap providers, explicit routing fallback |
-| Stock-quic-go Nu-path | Relay ↔ direct ↔ reattached relay during transfers, RTT/loss/MTU changes and network loss; no fork assumed |
+| Stock-quic-go Nu-path | [0038: constrained GO](#stock-quic-go-nu-path-spike-0038-2026-10-21); fixed 1200-byte inner budget, bounded relay adapter, safe offload baseline; production dispatcher/security and long-path performance remain 0015 work |
 | File/tree format and Bao | Canonical vectors, wrapper/name-kind agreement, fanout/node caps, bao-tree parity and safe path/metadata rules |
 | DASL/atproto conformance | DASL test suite and atproto interop vectors (data model, MST, crypto, firehose) in CI; byte-identical repo CAR round-trips and live `getRepo` verification against indigo/`goat`; SHA-256 vs BLAKE3 ingest/transfer costs for `--hash sha256` guidance |
 | Archive update/retention | Small scattered changes, full large-file rewrites, appends and sharded indexes; actual transfer/headroom/history costs |

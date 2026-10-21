@@ -1,7 +1,7 @@
 ---
 id: "0002"
 title: '0a: libp2p wire primitives: keys, PeerId, multiaddr subset, signed peer records'
-status: todo
+status: in_progress
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

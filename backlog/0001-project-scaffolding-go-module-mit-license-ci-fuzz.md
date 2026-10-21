@@ -1,7 +1,7 @@
 ---
 id: "0001"
 title: 'Project scaffolding: Go module, MIT license, CI, fuzz + Linux/macOS builds'
-status: in_progress
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

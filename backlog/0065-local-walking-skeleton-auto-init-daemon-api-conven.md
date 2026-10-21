@@ -34,3 +34,4 @@ The first end-to-end runnable product, with no networking: everything later plug
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Store-independent groundwork (NU_PATH/config/auto-init, API conventions + operations, client, CLI framework, daemon shell, store seam) started early on branch track/app, since only add/cat/ls/pin/dag need 0009.

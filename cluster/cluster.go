@@ -735,3 +735,17 @@ func (c *Cluster) HoldsKey(role string) bool {
 
 // Now is the cluster's clock.
 func (c *Cluster) Now() time.Time { return c.opts.now() }
+
+// NewKey generates and stores a new P-256 authority key on this node and returns its
+// did:key; an admin then grants it a role with a key record.
+func (c *Cluster) NewKey() (string, error) {
+	k, err := atcrypto.GeneratePrivateKeyP256()
+	if err != nil {
+		return "", err
+	}
+	if err := c.saveKey(k); err != nil {
+		return "", err
+	}
+	pub, _ := k.PublicKey()
+	return pub.DIDKey(), nil
+}

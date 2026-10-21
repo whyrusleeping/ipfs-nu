@@ -271,11 +271,15 @@ func (nd *Node) Start() {
 			t.Fatal(err)
 		}
 		configure(&cfg)
+		cfg.AllowPeer = l.GateSwarm(cfg.AllowPeer)
 		sw, err := swarm.Start(context.Background(), cfg)
 		if err != nil {
 			t.Fatalf("start %s swarm: %v", nd.Name, err)
 		}
 		l.Fetcher, l.Net = sw, sw
+		if err := l.AttachNetwork(sw); err != nil {
+			t.Fatalf("start %s cluster: %v", nd.Name, err)
+		}
 		nd.Local, nd.Swarm = l, sw
 	}
 	// Serve /nu/bytes/1 through a stream wrapper so Corrupt can flip bytes.
@@ -305,6 +309,7 @@ func (nd *Node) Stop() {
 	} else {
 		nd.Local.Ops.CancelAll()
 		nd.Local.Wait()
+		nd.Local.DetachNetwork()
 		_ = nd.Swarm.Close()
 		_ = nd.Local.Close()
 		_ = nd.lock.Release()

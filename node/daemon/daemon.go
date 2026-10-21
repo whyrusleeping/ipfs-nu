@@ -114,12 +114,22 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		if opts.Swarm != nil {
 			opts.Swarm(&scfg)
 		}
+		// Cluster gating applies from the moment the host listens; private and isolated
+		// clusters run no LAN discovery.
+		scfg.AllowPeer = n.GateSwarm(scfg.AllowPeer)
+		if n.PrivateNetwork() {
+			scfg.MDNS = false
+		}
 		d.Swarm, err = swarm.Start(ctx, scfg)
 		if err != nil {
 			d.Close()
 			return nil, err
 		}
 		n.Fetcher, n.Net = d.Swarm, d.Swarm
+		if err := n.AttachNetwork(d.Swarm); err != nil {
+			d.Close()
+			return nil, err
+		}
 	}
 
 	d.apiLn, err = net.Listen("tcp", apiAddr)
@@ -222,6 +232,7 @@ func (d *Daemon) Close() error {
 		d.Node.Wait()
 	}
 	if d.Swarm != nil {
+		d.Node.DetachNetwork()
 		keep(d.Swarm.Close())
 	}
 	if d.Node != nil {

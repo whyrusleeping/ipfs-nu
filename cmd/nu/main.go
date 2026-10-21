@@ -330,6 +330,10 @@ func (e *env) local(r *repo.Repo, network bool) (*node.Local, func(), error) {
 	if e.verbose {
 		cfg.Logger = slog.New(slog.NewTextHandler(e.stderr, nil))
 	}
+	cfg.AllowPeer = n.GateSwarm(cfg.AllowPeer)
+	if n.PrivateNetwork() {
+		cfg.MDNS = false
+	}
 	sw, err := swarm.Start(context.Background(), cfg)
 	if err != nil {
 		n.Close()
@@ -337,7 +341,20 @@ func (e *env) local(r *repo.Repo, network bool) (*node.Local, func(), error) {
 		return nil, nil, err
 	}
 	n.Fetcher, n.Net = sw, sw
-	return n, func() { n.Ops.CancelAll(); n.Wait(); sw.Close(); n.Close(); lock.Release() }, nil
+	if err := n.AttachNetwork(sw); err != nil {
+		sw.Close()
+		n.Close()
+		lock.Release()
+		return nil, nil, err
+	}
+	return n, func() {
+		n.Ops.CancelAll()
+		n.Wait()
+		n.DetachNetwork()
+		sw.Close()
+		n.Close()
+		lock.Release()
+	}, nil
 }
 
 // emit writes v as JSON in --json mode, else calls text.

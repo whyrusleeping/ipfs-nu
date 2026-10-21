@@ -35,3 +35,4 @@ The first end-to-end runnable product, with no networking: everything later plug
 
 ## Work log
 - 2026-10-21: Store-independent groundwork (NU_PATH/config/auto-init, API conventions + operations, client, CLI framework, daemon shell, store seam) started early on branch track/app, since only add/cat/ls/pin/dag need 0009.
+- 2026-10-21: Done on track/app (merged). Evidence: cmd/nu TestAddSiteAndBrowse (fresh NU_PATH, daemonless add -r, gateway <cid>.localhost index.html + /tree listing), TestCLIFollowsOperationAndExitCodes (--json, exit codes, actions), node/daemon e2e (API-started add, wait, NDJSON events, cat), node TestAddCat64MiB (48 MiB heap bound, progress) + TestAddCatMultiGB (NU_SLOW), TestAddCatLsDagPins. Manually checked with the built binary. CI macOS run pending a GitHub remote. Decisions in docs/api.md (no MASL content-type, dag put unpinned, import cache keyed by path/hash/size/mtime/inode).

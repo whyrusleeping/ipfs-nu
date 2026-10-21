@@ -137,12 +137,35 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
 
 ### `/nu/bytes/1`
 
-- Request: `{mh, ranges?}`, keyed by multihash (the codec does not affect the bytes).
-  For BLAKE3, `ranges` are expressed in 16 KiB chunk groups. Whole-object-verified objects
-  (≤ 8 MiB) are sent whole.
-- Response: Bao slice data and proofs for BLAKE3, verified as they arrive, or plain bytes for
-  SHA-256, verified at the end ([D21](dasl.md#cids-and-hash-profiles)). There is no blob-size
-  cap; D1's structured-block cap still applies to Nu-produced nodes.
+- Request: `{mh, ranges?}`. `mh` is the 34-byte binary multihash (SHA-256 or BLAKE3); the
+  codec does not affect the bytes. `ranges` (BLAKE3 only, at most 64) is a list of
+  `[start, end]` half-open 16 KiB chunk-group ranges ([D2](#d2-blobs)), non-empty, sorted
+  and disjoint. Without `ranges` the request is for the whole object.
+- Response header: `{status, error?, size?}`; `size` is the object's byte length and is
+  present when `status` is 0. Then the body, then FIN:
+  - SHA-256: exactly `size` plain bytes, verified at the end
+    ([D21](dasl.md#cids-and-hash-profiles)).
+  - BLAKE3: one standard Bao slice (D2) per requested range, in request order, each with its
+    own 8-byte size header; without `ranges`, the slice of the whole blob. Verified group by
+    group as it arrives.
+- A server serves what its store holds: complete objects, and for partial BLAKE3 blobs the
+  groups it has verified and synced. If any requested range is not wholly held, or a partial
+  blob is requested whole, it answers status 2 without a body. Ranges outside the blob get
+  status 3.
+- Whole-object-verified objects (SHA-256 of any codec, BLAKE3 DRISL, and BLAKE3 blobs of at
+  most one group) are fetched whole in one request: the client refuses a `size` over 8 MiB
+  before reading the body, buffers it, and stores or serves it only after the hash matches.
+  Larger BLAKE3 blobs have no size cap and are fetched by ranges into a partial blob, which
+  keeps every verified group and serves it onward. D1's structured-block cap still applies
+  to Nu-produced nodes.
+- Statuses: 0 ok; 1 not found (no part of the object held); 2 not held (partial blob
+  without every requested group; ask `/nu/have/1`); 3 bad request (malformed, invalid
+  ranges, over a limit); 4 busy (concurrency limit; retry later or elsewhere); 5 internal
+  error. Other values are refusals. Refusals have no body; `error` is human-readable text.
+- A peer is **corrupt** if data fails verification, a header is malformed, oversized or
+  lacks `size`, `size` differs from a size the client knows, a whole object exceeds 8 MiB,
+  or bytes follow the expected body. The client discards unverified data and demotes the
+  peer. Refusals, resets, truncation and timeouts say nothing about a peer's honesty.
 - A minimal client can fetch every Nu object with this protocol and walk DRISL links itself.
 - The fetcher divides large BLAKE3 blobs across peers and re-requests outstanding ranges from
   multiple peers during the endgame. Serving reads blob data and its outboard.
@@ -176,24 +199,47 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
 
 ### `/nu/have/1`
 
-Request `{cids[], blob range queries}`; return a presence bitmap, `{codec, size}` for held
-CIDs and held ranges for partial BLAKE3 blobs. Encode ranges as a list, or a bitmap when
-fragmented.
+Request: `{want: [{mh, range?}, …]}` with 1 to 256 items. `range` (BLAKE3 only) is the
+`[start, end]` chunk-group window to report for a partial blob, by default from group 0; an
+`mh` may repeat with different windows.
+
+The response is a single DRISL message with no body: `{status, error?, have?, info?}`.
+`have` is a bitmap of ⌈n/8⌉ bytes for n items: bit i is bit `i mod 8` (least significant
+first) of byte `i / 8`, set if item i is held completely or partially; padding bits are 0.
+`info` has one entry per set bit, in item order:
+
+```text
+{ codec, size, complete?: true, window?: [start, end], ranges?: [[start, end]…], bits?: bytes }
+```
+
+`codec` is the codec the object was stored under and `size` its byte length. Complete
+objects set `complete` only. A partial BLAKE3 blob reports its held groups within `window`,
+the requested window clamped to the blob and to 32768 groups: at most 32 held ranges as
+`ranges` (absolute, sorted, disjoint), otherwise `bits`, a bitmap over the window (bit j is
+group `start + j`, same bit order). With neither, nothing in the window is held. Statuses
+and refusals are as for `/nu/bytes/1`.
 Send only to candidate peers (name context, providers or hints), not to every connected peer.
 
 ### Framing and limits
 
 ```text
 → multistream-select: /nu/bytes/1
-→ <uvarint len> DRISL {hash, ranges: [[0,64]]}
-← <uvarint len> DRISL {status: 0, size: …, meta?}
-← body: Bao slice or ordered DRISL node stream; FIN
+→ <uvarint len> DRISL {mh, ranges: [[0, 64]]}
+← <uvarint len> DRISL {status: 0, size: …}
+← body: Bao slices or ordered DRISL node stream; FIN
 ```
 
-Use optimistic multistream-select and one stream per request. Reset cancels; QUIC per-stream
-flow control supplies backpressure. Requests and response headers are DRISL maps. Ignore
-unknown keys; breaking changes require a new protocol ID. Bound request size, response
-budget and concurrent requests per peer and protocol.
+Use optimistic multistream-select and one stream per request: the client sends the
+proposal and the request together, then half-closes. Requests and response headers are DRISL
+maps with minimal uvarint length prefixes. Ignore unknown keys; breaking changes require a
+new protocol ID. Either side cancels with a reset; QUIC per-stream flow control supplies
+backpressure. A server that fails mid-body resets the stream.
+
+Fixed limits: requests ≤ 16 KiB, `/nu/bytes/1` headers ≤ 4 KiB, `/nu/have/1` responses
+≤ 2 MiB. Larger messages are protocol violations (servers answer status 3). Servers bound
+concurrent requests per protocol (default 64) and per peer and protocol (default 16) with
+status 4, read the request within 10 s and reset a response the peer has not read for 30 s;
+these defaults are local policy. Vectors are in `testdata/vectors/nu-proto/`.
 
 Convenience HTTP/HTTPS gateway reads, listings/downloads and `Range` arrive in the sharing
 track; ordinary browsers trust the serving gateway/TLS. The gateway also answers RASL
@@ -288,8 +334,8 @@ not depend on Amino; a routing fallback is not a second content model.
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes extraction rules (filenames, case, symlinks on export), Bao
-multi-range framing, and tree proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
+precision work includes extraction rules (filenames, case, symlinks on export) and tree
+proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Logical size,
 unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches
 and export compatibility remain to specify. Benchmarks must validate

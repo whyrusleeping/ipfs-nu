@@ -69,6 +69,34 @@ func (s *Store) Partial(m cid.Multihash, size uint64) (*Partial, error) {
 	return p, nil
 }
 
+// OpenPartial opens an existing partial blob read-only, for serving the groups it held when
+// it was last flushed. It never creates one: ErrNotFound if there is none, ErrComplete if the
+// blob has been completed.
+func (s *Store) OpenPartial(m cid.Multihash) (*Partial, error) {
+	p := &Partial{s: s, MH: m}
+	var size int64
+	err := s.db.QueryRow(`SELECT size, groups FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size, &p.groups)
+	if errors.Is(err, sql.ErrNoRows) {
+		if info, ok, err := s.Has(cid.New(cid.Raw, m)); err == nil && ok && info.Complete {
+			return nil, ErrComplete
+		}
+		return nil, fmt.Errorf("%w: partial blob %s", ErrNotFound, m)
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Size = uint64(size)
+	path := s.partialPath(m)
+	if p.f, err = os.Open(path); err != nil {
+		return nil, err
+	}
+	if p.ob, err = os.Open(path + ".obao"); err != nil {
+		p.f.Close()
+		return nil, err
+	}
+	return p, nil
+}
+
 // Sink returns the blob.Sink for blob.DecodeSlice; it may be used from several goroutines
 // for disjoint ranges.
 func (p *Partial) Sink() blob.Sink {

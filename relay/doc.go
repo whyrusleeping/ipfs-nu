@@ -1,2 +1,3 @@
-// Package relay implements the circuit relay HOP server and the dnsaddr/routing server.
+// Package relay assembles a standalone QUIC circuit relay with identify and
+// AutoNAT services. Circuit protocol machinery lives in p2p/proto/circuit.
 package relay

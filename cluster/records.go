@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -144,9 +146,16 @@ type Dataset struct {
 	Collection *CollectionPolicy `drisl:"collection,omitempty"`
 	Note       string            `drisl:"note,omitempty"`
 	HLC        string            `drisl:"hlc"`
+
+	policyHash string // set when decoded from a record
 }
 
 func (Dataset) DRISLType() string { return NSDataset }
+
+// PolicyHash is the hex SHA-256 of the DRISL encoding of the record's `policy` map as
+// signed (unknown fields included), the `policy` binding of completion reports (E3).
+// It is empty for a Dataset that was not decoded from a record.
+func (d *Dataset) PolicyHash() string { return d.policyHash }
 
 // Merge modes of a collection's head.
 const (
@@ -224,11 +233,18 @@ type IngestLimits struct {
 // MaxIngestHosts bounds an ingest host list.
 const MaxIngestHosts = 256
 
-// Policy is a dataset's replication policy (placement is a later task; only replicas is
-// recorded).
+// Policy is a dataset's replication policy (docs/cluster.md "Placement"): Replicas copies
+// per blob (All: every eligible member), on storage members whose tags match Where (tag →
+// allowed values; every listed tag must match), on distinct values of the Spread tag.
 type Policy struct {
-	Replicas int64 `drisl:"replicas"`
+	Replicas int64               `drisl:"replicas"`
+	All      bool                `drisl:"all,omitempty"`
+	Where    map[string][]string `drisl:"where,omitempty"`
+	Spread   string              `drisl:"spread,omitempty"`
 }
+
+// MaxWhere bounds a policy's tag filter (tags and values per tag).
+const MaxWhere = 16
 
 // Head is a dataset's current target as written by one signer.
 type Head struct {
@@ -504,6 +520,21 @@ func decodeValue(r *Record, v any) error {
 		if d.Policy.Replicas < 0 || len(d.Writers) > 256 || len(d.Note) > 1024 {
 			return errors.New("policy, writers or note out of range")
 		}
+		if len(d.Policy.Where) > MaxWhere || len(d.Policy.Spread) > 64 {
+			return errors.New("policy where or spread out of range")
+		}
+		for k, vals := range d.Policy.Where {
+			if k == "" || len(k) > 64 || len(vals) == 0 || len(vals) > MaxWhere {
+				return fmt.Errorf("bad where tag %q", k)
+			}
+		}
+		pm, _ := v.(map[string]any)
+		pb, err := drisl.Marshal(pm["policy"])
+		if err != nil {
+			return fmt.Errorf("policy: %v", err)
+		}
+		sum := sha256.Sum256(pb)
+		d.policyHash = hex.EncodeToString(sum[:])
 		if c := d.Collection; c != nil {
 			if c.Merge != "" && c.Merge != MergeUnion && c.Merge != MergeLWW {
 				return fmt.Errorf("unknown merge mode %q", c.Merge)

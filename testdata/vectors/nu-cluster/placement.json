@@ -1,0 +1,182 @@
+{
+  "members": [
+    {
+      "peer": "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+      "capacity": 0,
+      "tags": {
+        "zone": "eu-1"
+      },
+      "state": "active"
+    },
+    {
+      "peer": "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+      "capacity": 4398046511104,
+      "tags": {
+        "zone": "eu-1"
+      },
+      "state": "active"
+    },
+    {
+      "peer": "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr",
+      "capacity": 1099511627776,
+      "tags": {
+        "zone": "eu-2"
+      },
+      "state": "active"
+    },
+    {
+      "peer": "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+      "capacity": 2199023255552,
+      "state": "active"
+    },
+    {
+      "peer": "12D3KooWAcwzQbKqSAJHDuRsRruiXPoa13SoqydqCmLupcMhUpb5",
+      "capacity": 1099511627776,
+      "tags": {
+        "zone": "eu-3"
+      },
+      "state": "draining"
+    }
+  ],
+  "epoch": "22ef4b43a929ca3e4fbc3a5a72e2a843f075c1c0fafc78eb796520a00bdb1523",
+  "blobs": [
+    {
+      "multihash": "bdyqjp2eervo3tkmxnn234yuqpdi2gaf6xtj72hqif2h5i376ddwva2a",
+      "scores": [
+        "704924587093.88892",
+        "565815736614153.5",
+        "2363261838325.0747",
+        "111385385415468.66"
+      ],
+      "ranked": [
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ],
+      "owners_k2": [
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    },
+    {
+      "multihash": "bdyqgtmslxlceih4nuvb4e25tramuvij5s37klbxu6m4jbfd3lz3k25y",
+      "scores": [
+        "3122628596976.4688",
+        "1088841293391.6302",
+        "5302416578463.5684",
+        "262154050145377.91"
+      ],
+      "ranked": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb"
+      ],
+      "owners_k2": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    },
+    {
+      "multihash": "bdyqca5cpjnybdomq6v4jxnvpylcfij46p7naruvxnv4euzvvi2rel6a",
+      "scores": [
+        "297587126852.76849",
+        "654646338025.60083",
+        "5916709324863.917",
+        "1182798382394.1714"
+      ],
+      "ranked": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ],
+      "owners_k2": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    },
+    {
+      "multihash": "bdyqi4rlewx4ci2lx3tuxdnay3xpvvdyav7vtvjlwbjyxixfz23jnaji",
+      "scores": [
+        "1518550726625.291",
+        "3336064137555.8096",
+        "1475481811228.9824",
+        "9817116949864.3516"
+      ],
+      "ranked": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5"
+      ],
+      "owners_k2": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    },
+    {
+      "multihash": "bdyqgu6jqjh6ldcf7zaogme2i6gserteymbpvbr7tbemm5sr6bmbll2q",
+      "scores": [
+        "915208406130.24902",
+        "1289563071728.4526",
+        "6529365645937.8604",
+        "7875932609739.3545"
+      ],
+      "ranked": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ],
+      "owners_k2": [
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    },
+    {
+      "multihash": "bciqfedg3ky57qcyzhkvwvllcpanjmr6hlw7xm5ebc4uzy7nmbltdvby",
+      "scores": [
+        "188757717670.02682",
+        "964558546003.79419",
+        "10157275046172.576",
+        "434189936275.36121"
+      ],
+      "ranked": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ],
+      "owners_k2": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb"
+      ],
+      "owners_k2_spread_zone": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
+      ]
+    }
+  ]
+}

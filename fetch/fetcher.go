@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -106,6 +107,12 @@ type Options struct {
 	// Catalog fetches only a collection catalog (the nu-catalog walk profile: header,
 	// container directories and item metadata records, not item contents), layer 1 only.
 	Catalog bool
+	// Want, if set, selects the blobs to fetch (cluster placement: the blobs this member
+	// owns). Structure is always fetched; /nu/tree/1 then inlines no blobs.
+	Want func(c cid.CID) bool
+	// Rank, if set, orders the sources of an object: the peers it returns are tried
+	// first, in that order, then the other candidates (D15 placement order).
+	Rank func(c cid.CID) []wire.PeerID
 }
 
 // Result summarizes a fetch.
@@ -295,9 +302,12 @@ func (r *run) whole(ctx context.Context, c cid.CID) error {
 	}
 	peers := r.sw.live()
 	start := int(r.next.Add(1))
+	if len(peers) > 0 {
+		peers = slices.Concat(peers[start%len(peers):], peers[:start%len(peers)])
+	}
+	peers = r.ranked(c, peers)
 	var errs []error
-	for i := range peers {
-		p := peers[(start+i)%len(peers)]
+	for _, p := range peers {
 		if !r.sw.usable(p) {
 			continue
 		}
@@ -316,6 +326,54 @@ func (r *run) whole(ctx context.Context, c cid.CID) error {
 	return fmt.Errorf("%w: %s: %w", ErrNoProvider, c, errors.Join(errs...))
 }
 
+func (r *run) wanted(c cid.CID) bool { return r.opts.Want == nil || r.opts.Want(c) }
+
+// ranked moves the peers Rank prefers for c to the front, in Rank's order.
+func (r *run) ranked(c cid.CID, peers []*peer) []*peer {
+	if r.opts.Rank == nil || len(peers) < 2 {
+		return peers
+	}
+	pos := map[wire.PeerID]int{}
+	for i, id := range r.opts.Rank(c) {
+		if _, ok := pos[id]; !ok {
+			pos[id] = i
+		}
+	}
+	out := slices.Clone(peers)
+	slices.SortStableFunc(out, func(a, b *peer) int {
+		ia, oka := pos[a.ID()]
+		ib, okb := pos[b.ID()]
+		switch {
+		case oka && okb:
+			return ia - ib
+		case oka:
+			return -1
+		case okb:
+			return 1
+		}
+		return 0
+	})
+	return out
+}
+
+// Link is a link of a structure node; Size is the blob size its entry declares (0 for
+// structure links and unknown sizes).
+type Link struct {
+	CID  cid.CID
+	Size uint64
+}
+
+// Links returns the nu-tree links of a structure node in walk order, with declared blob
+// sizes.
+func Links(c cid.CID, data []byte) ([]Link, error) {
+	refs, err := children(c, data)
+	out := make([]Link, len(refs))
+	for i, r := range refs {
+		out[i] = Link{CID: r.c, Size: r.size}
+	}
+	return out, err
+}
+
 // blobRef is a blob reached by the walk, with its size from an authenticated parent.
 type blobRef struct {
 	c    cid.CID
@@ -328,7 +386,9 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	var blobs []blobRef
 	var frontier []cid.CID
 	if root.Codec() == cid.Raw {
-		blobs = append(blobs, blobRef{root, size})
+		if r.wanted(root) {
+			blobs = append(blobs, blobRef{root, size})
+		}
 	} else {
 		frontier = append(frontier, root)
 	}
@@ -365,7 +425,9 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 				seen[k.c.Multihash()] = true
 				r.update(func(p *Progress) { p.ObjectsTotal++; p.BytesTotal += int64(k.size) })
 				if k.c.Codec() == cid.Raw {
-					blobs = append(blobs, k)
+					if r.wanted(k.c) {
+						blobs = append(blobs, k)
+					}
 				} else {
 					next = append(next, k.c)
 				}

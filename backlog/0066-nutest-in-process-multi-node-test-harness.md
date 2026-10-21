@@ -29,3 +29,4 @@ spec_refs:
 
 ## Work log
 - 2026-10-21: Done on track/app (a1c4eb3, merged d121658). nutest: N real nodes, explicit peering, Stop/Start/Restart/Kill, Partition/Heal via gaters, Corrupt provider, Eventually, deterministic seeds. Evidence: TestRestartMidTransfer (3 nodes start in ~30 ms), TestPartitionHeal, TestCorruptProvider; -race -count=5 clean; CONTRIBUTING.md paragraph added.
+- 2026-10-21: Flake fix (fb75bb3): nutest.New now calls t.TempDir() before registering node cleanup, so temp dirs outlive running nodes.

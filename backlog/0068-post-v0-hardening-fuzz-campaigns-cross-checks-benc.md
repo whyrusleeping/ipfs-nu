@@ -1,7 +1,7 @@
 ---
 id: "0068"
 title: 'Post-v0 hardening: fuzz campaigns, cross-checks, benchmarks and scale tests deferred from v0'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"

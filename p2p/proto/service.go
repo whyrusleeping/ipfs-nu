@@ -118,7 +118,11 @@ func (s *Service) ownMessage(c *host.Conn) (IdentifyMessage, error) {
 	if err != nil {
 		return IdentifyMessage{}, err
 	}
-	return IdentifyMessage{PublicKey: s.host.PublicKey().Marshal(), ListenAddrs: addrs, Protocols: s.host.Protocols(), ObservedAddr: &observed, ProtocolVersion: s.config.ProtocolVersion, AgentVersion: s.config.AgentVersion, SignedPeerRecord: record}, nil
+	var observedAddress *wire.Multiaddr
+	if !s.host.IsLocalOnlyAddress(c.RemoteAddr()) {
+		observedAddress = &observed
+	}
+	return IdentifyMessage{PublicKey: s.host.PublicKey().Marshal(), ListenAddrs: addrs, Protocols: s.host.Protocols(), ObservedAddr: observedAddress, ProtocolVersion: s.config.ProtocolVersion, AgentVersion: s.config.AgentVersion, SignedPeerRecord: record}, nil
 }
 func (s *Service) writeIdentify(stream *host.Stream) error {
 	m, err := s.ownMessage(stream.Conn())
@@ -282,7 +286,7 @@ func (s *Service) consume(c *host.Conn, m IdentifyMessage) error {
 		m.SignedPeerRecord = old.Message.SignedPeerRecord
 	}
 	s.peers[id] = PeerInfo{Message: cloneMessage(m), Certified: certified, Updated: now}
-	if m.ObservedAddr != nil {
+	if m.ObservedAddr != nil && !s.host.IsLocalOnlyAddress(c.RemoteAddr()) {
 		local, err := host.UDPAddress(c.LocalAddr())
 		if err == nil {
 			endpoint := c.RemoteAddr().String()

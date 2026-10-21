@@ -246,7 +246,10 @@ after Forget, which releases the session slot and can also revoke membership.
 
 Only literal QUIC-v1 direct addresses are dialable in v0. DNS/circuit hints are
 preserved but fail with ErrUnsupportedAddress until their resolver/transport lands.
-No-address cases match ErrNoAddresses. DialError retains per-address reasons
+Explicitly prepared qpath legs may supply local-only virtual literals to these same
+sessions when Host uses a magicsock socket policy; this is not automatic circuit dialing
+or permission to publish/cache virtual hints. Public routing/relay orchestration remains
+0020. No-address cases match ErrNoAddresses. DialError retains per-address reasons
 and lookup errors and unwraps them for errors.Is/As. Certificate PeerId mismatch
 has a typed Expected/Actual error, preserved through QUIC's handshake failure.
 Successful dial addresses enter the optional cache at confidence 1 with seven-day
@@ -316,13 +319,85 @@ over relayed or direct packet paths:
    stable virtual address; A dials it with libp2p TLS and ALPN `libp2p`. Authentication and
    encryption are end-to-end; the relay sees ciphertext.
 3. **Discovery:** peers exchange candidates on `/nu/path/1`. Non-QUIC disco probes use the
-   shared UDP socket (`Transport.WriteTo` / `ReadNonQUICPacket`); authenticate probes with a
-   MAC key derived from the inner QUIC TLS exporter.
+   shared UDP socket (`magicsock.WriteDisco` / `ReadDisco`, without a second socket reader);
+   authenticate probes with a MAC key derived from the inner QUIC TLS exporter.
 4. **Direct path:** after a candidate pair completes a probe round trip, route packets there
    while retaining the virtual address and connection IDs. Keep the relay path warm.
 5. **Fallback:** heartbeat the direct path. On loss or network change, use the relay while
    probing again. The goal is to preserve the inner connection and active transfers.
 6. **Retry:** restart probing on address changes, new observations/mappings and backoff timers.
+
+### Qpath v1 wire framing and admission
+
+`/nu/qpath/1` is a **security-protocol** multistream token on a raw circuit-v2
+CONNECT/STOP stream, not an application stream on an already-secured relayed connection.
+A proposer waits for selection confirmation before sending frames. Unsupported peers
+answer `na`; do not send speculative QUIC payload or automatically select Noise/yamux.
+
+After selection, each direction is an independent sequence of frames:
+
+```
+uint16 big-endian N       // exactly two bytes, excludes this header
+byte[N] QUIC_datagram     // 1 <= N <= 1200; QUIC fixed bit (0x40) must be set
+```
+
+One frame carries exactly one complete inner UDP datagram, including any QUIC coalescing.
+The maximum frame size is 1202 bytes. There is no type byte, preface, zero-length keepalive,
+padding frame, fragmentation/reassembly or application-resume marker. A framing vector
+`00 03 40 01 02` carries three bytes (not a valid encrypted QUIC packet by itself).
+Length/fixed-bit violations, partial header/body or circuit I/O failure terminate **only
+that relay leg**, discard its queued packets and interrupt both workers. EOF between
+frames closes the leg. Never scan for a new frame boundary after a decode error. Validate
+length before allocating; QUIC performs all remaining version, packet and TLS validation.
+Frame lengths and circuit endpoints are visible to the relay, inner TLS/application bytes
+are not. Relay-stream loss can hold up subsequent frames even while the inner sender
+retransmits; bounded queues do not remove this head-of-line limitation.
+
+Circuit metadata is a relay assertion, never end-to-end peer authentication. A local
+virtual address is bound to the expected PeerId; Host checks the actual libp2p TLS identity
+before application admission. Only explicitly admitted circuit setups may allocate peer
+slots. One live relay leg per peer is allowed: a new circuit cannot replace it based on
+asserted metadata. Its owner explicitly closes/joins the old handle before reattachment;
+existing inner QUIC packets must still authenticate under the existing connection keys.
+The orchestrator owns relay/peer admission, setup concurrency, reservation/reconnect policy
+and stale/crossed-attempt handling. This core does not automatically accept public circuits
+or infer permission to serve content from a successful qpath negotiation.
+
+### Shared socket and path-set interface
+
+`p2p/magicsock.Conn` owns one physical UDP socket with one batched receive loop. Unknown
+CIDs and ordinary physical destinations pass through. Incoming inner packets are mapped
+to their virtual peer only by a registered local destination CID **and** a caller-authorized
+direct endpoint. Never classify every packet from a peer IP as inner QUIC: an outer relay
+connection can use the same endpoint. Virtual-address Host sockets explicitly use
+eight-byte local CIDs. The
+synchronous public quic-go event observer tracks initial and encrypted `NEW_CONNECTION_ID`
+issuance, retirement and close; it is a routing dependency, not optional asynchronous
+logging. quic-go upgrades must verify this observer and shared-socket CID rotation.
+
+Virtual addresses are local-only `240.0.0.0/4` (IPv4) or discard-only `100::/64` (IPv6),
+port 1. Never advertise them, put them into shared caches/peer records, or send unknown or
+removed reserved addresses to the OS. They are never reused within a socket's lifetime.
+`AddPeer`/`RemovePeer`, `SetDirectPaths`, `UseDirect`/`UseRelay` and `Paths` provide the
+control-plane seam: path candidates are not authorization. Defaults bound the socket to
+128 peers, 256 queued receive datagrams, 32 direct endpoints and 64 routed CIDs per peer.
+Each peer has at most one relay with a 64-datagram transmit queue and two I/O workers.
+`Relay.Done` signals failure; `Relay.Close` cancels/joins the leg without closing the
+logical PacketConn. The Host socket-policy hooks select the conservative inner config
+while keeping real-address outer/standard connections on their normal config. Existing
+Sessions can dial a local virtual hint after explicit qpath setup; public hint publication,
+relay management and path racing are not implied by that integration.
+
+The socket's disco demux envelope is `01 6e 75 64 01`, followed by a two-byte big-endian
+payload length and exactly 1–1024 opaque payload bytes. The first byte has no QUIC fixed
+bit. Reject malformed/version-mismatched envelopes; cap the independent receive queue at
+32. Receipt never triggers a response, authorizes a destination or selects a path. The
+MAC/nonce/replay/destination/rate contract and payload schema belong to 0017; framing alone
+is **not authenticated disco**. `host.Conn.ExportKeyingMaterial` exposes the authenticated
+inner TLS exporter for that owner. Unknown non-QUIC traffic remains available to quic-go's
+non-QUIC demux. There must not be a competing raw UDP reader.
+
+### Stock-stack constraints
 
 Use stock quic-go with the following constraints for the first implementation of 0015:
 
@@ -358,13 +433,15 @@ Use stock quic-go with the following constraints for the first implementation of
   before enabling them. The conservative inner mode does not require disabling
   optimizations on ordinary direct/outer relay QUIC connections.
 
-Virtual peer addresses are local routing keys, not advertised candidates. Disco packets
-retain physical source/destination addresses. Shared-socket routing must distinguish inner
-connection IDs from outer relay connections; do not rewrite every QUIC packet's address to
-one virtual peer. Bind the inner TLS identity to the expected peer, and specify and test
-the shared-socket dispatcher, authenticated circuit reattachment and probe/destination
-binding before shipping 0015. The stock-stack feasibility evidence and its limits are in
-[validation](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).
+The initial optimized adapter preserves physical/outer OOB, GSO and ECN. Inner direct
+writes retain GSO segmentation but remove stale physical source/interface and ECN metadata;
+inner receives (relay or direct) expose no physical OOB. Inner ECN validation therefore
+falls back rather than pretending reliable-stream packets have meaningful IP marks.
+This is not a per-path ECN implementation. The extra bounded userspace receive/copy queue
+and synchronous CID observer have costs; near-raw throughput must be measured, not assumed.
+See [implementation and ownership](../p2p/magicsock/README.md),
+[core measurements](validation.md#nu-path-packet-core-0015-2026-10-21) and
+[stock-stack feasibility](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).
 
 QUIC multipath/QNT are not part of this design. The user-facing requirement is resumable
 progress; preservation of the inner connection is conditional on the surviving packet
@@ -620,13 +697,14 @@ in [validation](validation.md#linux-nat-lab-smoke-2026-10-21).
 
 Production HTTPS-compatible fallback wire/security rules, relay admission/economics,
 endpoint support and the authenticated destination/probe contract remain to specify.
-The conservative stock-quic-go path is constrained by D11; production shared-socket
-inner/outer connection-ID routing, socket replacement, correct GSO splitting/batched
-receive/ECN metadata, and capacity-collapse/long reliable-relay performance still need
-validation. Adaptive inner MTU is not part of the initial design. Direct-first session
-setup, bounded qpath framing, authenticated relay reattachment, pair-aware relay reservation,
-replay-resistant probing and destination authorization need precise protocol rules. The
-bounded spike establishes feasibility, not these security contracts or field success.
+The conservative stock-quic-go path is constrained by D11. Physical socket replacement,
+multihomed/source-interface offload behavior and capacity-collapse/long reliable-relay
+performance still need validation; the near-raw direct throughput target is not established.
+Adaptive inner MTU is not part of the initial design. Public direct-first setup,
+reattachment admission/crossed-attempt policy, pair-aware relay reservation, authenticated
+replay-resistant probing and destination authorization belong to the owning control-plane
+tasks. Fast shared-socket/NAT-lab tests establish packet-core behavior, not those public
+security contracts, operating capacity or field traversal rates.
 
 ## References
 

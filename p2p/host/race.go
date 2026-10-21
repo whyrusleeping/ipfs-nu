@@ -214,7 +214,7 @@ func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 				winner = r.conn
 				if m.config.Cache != nil {
 					remote, _, _, parseErr := dialAddress(r.address)
-					if parseErr == nil && remote.String() == winner.RemoteAddr().String() {
+					if parseErr == nil && !m.host.IsLocalOnlyAddress(remote) && remote.String() == winner.RemoteAddr().String() {
 						if cacheErr := m.config.Cache.Remember(child, lookup.Hint{Peer: s.peer, Addresses: []wire.Multiaddr{r.address}}, "verified", 1, 7*24*time.Hour); cacheErr != nil {
 							slog.Warn("peer address cache update failed", "peer", s.peer.String(), "err", cacheErr)
 						}

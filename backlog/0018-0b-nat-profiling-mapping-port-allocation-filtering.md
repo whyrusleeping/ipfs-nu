@@ -29,3 +29,4 @@ Continuous "netcheck" (D11c step 1). Produces a compact **NAT profile** that is 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: From 0013: relays answer AutoNAT probes from a fresh alternate port, but not an alternate source IP — define the profiling request semantics here rather than inventing a circuit/AutoNAT extension.

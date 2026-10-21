@@ -26,3 +26,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Implemented on track/http (c944e21; merged 8152d29). p2p/portmap (PCP MAP/PEER, NAT-PMP, UPnP-IGD; renewal, epoch/remap, candidates; adapted from Tailscale v1.104.2 with headers + NOTICE) and p2p/netmon (Linux rtnetlink, darwin polling, sleep/wake inference, ordered D12 reaction pipeline). Evidence: protocol codec tests + fuzz seeds; rootless natlab with fake PCP/NAT-PMP/UPnP servers installing real nft DNAT rules (fresh public sources reach the app; remap on epoch reset); scripted interface change ran all six pipeline hooks in 10.5 ms. Remaining acceptance: real miniupnpd and PCP server daemons in the lab (only fixtures so far). Flake: netmon natlab test failed once when run concurrently with other natlab packages.

@@ -198,10 +198,20 @@ protocol capabilities; no unresolved funding assumption may hide inside “zero 
 
 ## v0 two-machine demo (0028)
 
-**Status: not yet performed on two real machines.** The same steps ran on one machine with
-two `$NU_PATH`s (A's daemon on UDP 4171, B on an ephemeral port): `get` of a 2.9 MB tree
-took 0.2 s; the daemonless `share` → `get` path and `doctor --peer` also passed. Record
-the real-LAN run (and a routed one) below when done.
+**Status: performed on a real LAN, 2026-10-21** (build b0a8c68, linux/amd64, static). Two
+alphac test-cluster machines (Ultra 9 285HX, 10G LAN, `192.168.1.0/24`, no NAT between them;
+other workloads were running): A = alphac-2 `nu daemon` on UDP 4271, `nu add -r site`
+(`index.html` + 50,000,000 random bytes). B = alphac-3 with a brand-new `NU_PATH`, no
+`init`, no config and no daemon:
+
+| Check | Result |
+|---|---|
+| `nu get <link> -o out` (link with `peer=` + `addr=`) | 2 files, 47.7 MiB, 0.17 s wall, 26 MB max RSS; SHA-256 identical |
+| Same with a link holding only CID + `peer=` (fresh repo; A found via mDNS, 0060) | identical bytes |
+| B `nu daemon` gateway, `Host: <cid>.localhost` | `index.html` rendered; 50 MB blob 200; `/tree/<cid>/` listing with "open as site" |
+
+A routed (non-LAN) run is still to do. Earlier, the same steps ran on one machine with two
+`$NU_PATH`s (2.9 MB tree in 0.2 s; daemonless `share` → `get` and `doctor --peer` passed).
 
 Needs: two machines that can reach each other directly over UDP (same LAN, or routed with no
 NAT between them); the `nu` binary on both (`go build -o nu ./cmd/nu`). Default repo is

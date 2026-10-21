@@ -23,3 +23,4 @@ Split from 0016 so private clusters and first sharing do not wait for public loo
 
 ## Work log
 - 2026-10-21: Implemented on track/net (9409def, merged 8ffac44). p2p/lookup: streaming parallel sources, cache with confidence decay + 0600 file persistence, link/member hints, libp2p mDNS (cluster-derived service names, disableable). Evidence: TestMDNSLoopback (passed, not skipped), experiments/TestMDNSInterop vs go-libp2p on a LAN interface, TestCacheHintsRestartParallel, FuzzHints/FuzzMDNS/FuzzCacheFile. Outstanding: the manual two-physical-machine LAN check (instructions in experiments/README.md, tool experiments/cmd/mdns-peer); to be done with the 0028 two-machine demo. Peer cache persistence moves to SQLite later.
+- 2026-10-21: Manual LAN check done on real machines: a link with only CID + peer (no addr=) resolved alphac-2 via mDNS from a fresh repo on alphac-3 and fetched identical bytes (docs/validation.md).

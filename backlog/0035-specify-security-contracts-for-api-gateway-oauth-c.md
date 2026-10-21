@@ -1,7 +1,7 @@
 ---
 id: "0035"
 title: Specify local API, gateway and browser security contract and safe extraction
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"

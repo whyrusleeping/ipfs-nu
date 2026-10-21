@@ -108,20 +108,42 @@ Unstable specs (FISL, Tiles protocols) may change without breaking Nu's own form
 
 ### RASL
 
+Implemented in 0052 (`rasl/`, `gateway/rasl.go`, `fetch.Source`, `node/rasl.go`), against
+the published spec (`rasl://<cid>/?hint=<host>…`).
+
 - The gateway answers `GET`/`HEAD /.well-known/rasl/<cid>` for held DASL/BDASL CIDs, raw or
-  DRISL. Responses are `application/octet-stream` with `x-content-type-options: nosniff`,
-  stateless (no cookies, credentials or content negotiation) and `Range`-capable. A public
-  seed answers only for content it already serves publicly under the
+  DRISL, with the object's bytes as stored. Responses are `application/octet-stream` with
+  `x-content-type-options: nosniff`, `Content-Disposition: attachment`, `ETag: "<cid>"`,
+  immutable caching and `Range`; they are stateless (no cookies, credentials or content
+  negotiation; the query string is ignored) and the only route is the exact
+  `/.well-known/rasl/<cid>` on the bare origin. A public seed answers only for content it
+  already serves publicly under the
   [exposure rules](operations.md#api-gateway-and-public-exposure). It never fetches unheld
-  content on demand, so it cannot act as an open proxy.
-- `nu get rasl://<cid>/?hint=host` tries the hints in parallel over HTTPS, alongside normal Nu
-  discovery. It treats any redirect as a 307 and verifies by CID, within the 8 MiB
-  whole-object limit. Larger BLAKE3 blobs need Nu transfer, or the verified HTTP mapping once
-  it exists ([D14](data.md#framing-and-limits)). The gateway may still *serve* large held
-  blobs over RASL to ordinary clients. Fetching refuses loopback, private and link-local
-  targets (checked again after redirects) unless configured, and bounds sizes.
-- `nu share` emits a `rasl://` link with the public seed as hint when an HTTPS seed serves the
-  object. Only SHA-256 objects are browser-verifiable without a Nu client.
+  content on demand (an unheld CID is `404`), so it cannot act as an open proxy. The
+  loopback gateway sends no CORS header (P5, N29); the public listener (0043) will add
+  `Access-Control-Allow-Origin: *` there so browsers can verify by hash.
+- `nu get|cat|ls rasl://<cid>/?hint=host[&hint=host…]` parses the URL per the spec (the
+  CID is the authority; a `hint` is a DNS name or IP literal, optionally `:port`,
+  lowercased, deduplicated, at most 16; invalid hints are dropped; the path is ignored).
+  The legacy `web+rasl://<cid>;host,host/` form of `@dasl/rasl` 1.x is accepted on input
+  and never produced. The hints become an HTTPS whole-object source ([D15](data.md#d15-content-provider-discovery))
+  that the fetcher asks for every object of the walk, in parallel with Nu peers (the first
+  verified copy wins); without networking the hints are the only source. Per object, all
+  non-demoted hints are requested at once at `https://<hint>/.well-known/rasl/<cid>`, the
+  first usable response takes the body and the others are aborted; if it fails mid-body
+  or on verification, the hints that also answered are retried one at a time, and demoted
+  origins are tried last. Any redirect is followed as a 307 (through `httpsrc`'s
+  per-hop checks). Verification is by CID before anything is stored: SHA-256 objects and
+  DRISL nodes within the 8 MiB whole-object limit, BLAKE3 raw blobs of any size (staged,
+  then stored through the Bao-verifying `PutBlob`). Wrong bytes demote the final origin on
+  the shared `httpsrc` client. Only 404/410 from every hint is `not_found`; other failures
+  are `unavailable` with the per-hint causes. Fetching refuses loopback, private and
+  link-local hints (checked again after redirects) unless `ingest.allow_ips` says
+  otherwise, and an isolated cluster member refuses RASL fetches (no egress).
+- `nu share` will emit a `rasl://` link with the public seed as hint once an HTTPS seed
+  serves the object (0043); only SHA-256 objects are browser-verifiable without a Nu
+  client. Interop with `@dasl/rasl` is by construction (same path, same headers, same
+  first-success race); an automated cross-implementation run is not part of the tests.
 
 ### MASL
 

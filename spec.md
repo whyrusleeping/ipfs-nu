@@ -264,6 +264,7 @@ nutest/                 in-process multi-node test harness (temp stores, loopbac
 atproto/                record fetch, repo snapshot/diff sync, atrepo dataset source (indigo)
 httpsrc/                RASL/FISL HTTPS retrieval and URL import with SSRF guards, shared by
                         fetch/names/ingest
+rasl/                   rasl:// URLs and the hinted-host HTTPS source (fetch.Source) on httpsrc
 relay/                  circuit HOP + dnsaddr/routing server
 bridge/                 later IPFS import: Bitswap, UnixFS; enabled in standard Linux/macOS
                         production distribution, optional/build-tagged for minimal embedders

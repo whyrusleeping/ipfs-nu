@@ -109,12 +109,13 @@ wildcard. `Close` shuts down services then the host. No default public operators
 account identity, content daemon, DNS routing server or implicit admission is
 configured. Production admission/quotas/operators/cost remain 0039.
 
-The coordinator's `nu relay` hook should load the persisted node key, parse listen,
-advertised-address, bounded admitted-peer and resource-limit options, call
-`relay.New`, wait for termination signals, and call `Close`. Surface bind errors,
-invalid wildcard advertisements and exhaustion plainly. No `cmd/nu` edits are
-included here. UDP 443 may require deployment capabilities/privilege; don't run
-the Go toolchain as root.
+`cmd/nu/cmd_relay.go` (`nu relay`) does exactly this: it loads the persisted node key
+under the repo lock, parses listen (`/ip4|ip6/<ip>/udp/<port>/quic-v1` or host:port),
+advertised-address, admitted-peer and limit flags over the `[relay]` config section,
+calls `relay.New`, prints the serving addresses (`--json` for scripts), waits for
+SIGINT/SIGTERM and calls `Close`. Bind errors and wildcard listeners without
+`--advertise` fail plainly. UDP 443 may require deployment capabilities/privilege;
+don't run the Go toolchain as root.
 
 AutoNAT v2 probes already use a fresh source port, distinct from the request
 connection. There is **no standard AutoNAT v2 alternate-source-IP request field**;

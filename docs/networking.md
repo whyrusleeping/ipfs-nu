@@ -282,7 +282,11 @@ preconfigured; development uses project-operated servers.
 `nu relay` is a standard circuit v2 HOP server on QUIC/UDP 443. Admitted Nu peers receive
 full-service circuits without the common 2-minute / 128 KiB limits; other peers receive
 limited circuits. Relays also provide identify and AutoNAT v2 for address observation and
-reachability testing. Operator ownership, funding, admission/abuse/quotas, deployment and
+reachability testing. The command uses the repo's `node.key` under the repo lock (a relay
+and a daemon never share one PeerId at once); `--listen`/`--advertise`/`--admit` and the
+limit flags override the `[relay]` config section, a wildcard listener requires explicit
+advertised addresses, and it exits cleanly on SIGINT/SIGTERM. The dnsaddr/peer-routing
+server (0016) attaches to the same host. Operator ownership, funding, admission/abuse/quotas, deployment and
 service limits are prerequisites for default public service, not deferred polish. Development
 uses bounded admitted deployments. Keep content commands account-free; no identity-based
 relay admission mechanism is selected yet. Model idle reservations/keepalives and relayed

@@ -169,7 +169,9 @@ var configHeader = "# " + nu.Name + " configuration. Keys are dotted TOML paths;
 func (r *Repo) writeConfigStruct(cfg *Config) error {
 	var buf bytes.Buffer
 	buf.WriteString(configHeader)
-	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+	enc := toml.NewEncoder(&buf)
+	enc.Indent = ""
+	if err := enc.Encode(cfg); err != nil {
 		return err
 	}
 	return writeFileAtomic(r.Path(ConfigFile), buf.Bytes())
@@ -178,7 +180,9 @@ func (r *Repo) writeConfigStruct(cfg *Config) error {
 func (r *Repo) writeConfigMap(m map[string]any) error {
 	var buf bytes.Buffer
 	buf.WriteString(configHeader)
-	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+	enc := toml.NewEncoder(&buf)
+	enc.Indent = ""
+	if err := enc.Encode(m); err != nil {
 		return err
 	}
 	return writeFileAtomic(r.Path(ConfigFile), buf.Bytes())

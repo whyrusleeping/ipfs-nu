@@ -80,6 +80,31 @@ nonminimal varints, bad signatures and identity mismatches are errors. Nested pa
 is fixed-depth (envelope → record → AddressInfo). Protobuf uint64 *values* support
 all 64 bits; tags, lengths and multiformats integers use `core/varint`'s 63-bit profile.
 
+### Direct QUIC host
+
+Use one stock quic-go Transport per UDP socket, at most one socket per IP family;
+pass pluggable PacketConns directly through to preserve their OOB capabilities.
+Only QUIC-v1 is enabled; unidirectional streams, 0-RTT and TLS session resumption
+are disabled. The ALPN is `libp2p`, TLS minimum version 1.3. Certificates carry
+OID `1.3.6.1.4.1.53594.1.1` with DER SignedKey (two OCTET STRINGs: key protobuf,
+signature). The host key signs `libp2p-tls-handshake:` concatenated with the exact
+certificate SubjectPublicKeyInfo. Verify one current self-signed certificate,
+reject unknown critical extensions, and on dial require the derived PeerId to
+match the `/p2p` suffix. Certificates are limited to 16 KiB. Generated certificates
+use an unrelated P-256 key and one-year validity (one-hour NotBefore allowance).
+
+The initial dialer accepts literal `/ip4|ip6/.../udp/.../quic-v1/p2p/<id>` only;
+DNS resolution, address racing and hints are session/discovery-layer work.
+Default limits are 128 total pending/established connections, one connection per
+peer, 1024 local streams total, 64 per peer and 64 per connection. All are explicit
+host configuration fields. QUIC receive-window caps are 1 MiB per stream and
+4 MiB per connection; handshake idle timeout is 5 s and connection idle timeout
+60 s (20 s keepalive). Reuse a live connection when dialing a known peer. Resolve
+simultaneous duplicate dials consistently: the lower binary PeerId keeps its
+outgoing connection and the higher keeps that same incoming connection. Closing
+or resetting a stream releases its local resource slot; half-closing writes alone
+does not. Host shutdown closes connections, listeners, transports and owned sockets.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

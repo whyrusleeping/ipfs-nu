@@ -16,4 +16,8 @@
   `/ip4/127.0.0.1/udp/1234/quic-v1`. Reproduce with
   `cd experiments && go run ./cmd/wirevectors`.
 
+- `tls.json`: all four certificate vectors from
+  <https://github.com/libp2p/specs/blob/master/tls/tls.md>, including the invalid
+  identity signature. An empty expected PeerID marks the invalid vector.
+
 The fixed Ed25519 fixture is public test material, never a deployment key.

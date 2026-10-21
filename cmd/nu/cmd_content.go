@@ -196,8 +196,8 @@ var cmdLs = &command{
 
 var cmdGet = &command{
 	name:    "get",
-	args:    "[-o path] [--blobs] <cid-or-link | at://did/collection/rkey | at://did>",
-	summary: "write a CID or share link to disk; print a verified atproto record; snapshot an atproto repository",
+	args:    "[-o path] [--blobs] <cid-or-link | rasl://cid/?hint=host | at://did/collection/rkey | at://did>",
+	summary: "write a CID, share link or rasl:// link to disk; print a verified atproto record; snapshot an atproto repository",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		out := fs.String("o", "", "output path (default: the content's name or CID in the current directory)")

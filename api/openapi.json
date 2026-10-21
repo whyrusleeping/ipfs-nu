@@ -173,7 +173,7 @@
       "id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
       "cursor": {"name": "cursor", "in": "query", "schema": {"type": "string"}, "description": "opaque cursor from next_cursor"},
       "limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 1000}, "description": "page size (default 100)"},
-      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path, a nu:// link, or an at:// URI (ls/cat); other target forms answer not_supported"}
+      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path, a nu:// link, a rasl:// link (hints become HTTPS sources), or an at:// URI (ls/cat); other target forms answer not_supported"}
     },
     "responses": {
       "Error": {"description": "error envelope", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
@@ -232,7 +232,7 @@
       "Pin": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "mode": {"type": "string", "enum": ["recursive", "direct"]}, "source": {"type": "string"}}},
       "PinRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
       "DagPutResult": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}},
-      "GetRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path] or nu:// link"}, "output": {"type": "string", "description": "absolute destination path"}, "dir": {"type": "string", "description": "absolute directory to write into under the content's own name, when output is empty"}}},
+      "GetRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path], nu:// link or rasl:// link"}, "output": {"type": "string", "description": "absolute destination path"}, "dir": {"type": "string", "description": "absolute directory to write into under the content's own name, when output is empty"}}},
       "GetResult": {"type": "object", "required": ["cid", "output", "kind", "files", "dirs", "bytes"], "properties": {"cid": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}, "kind": {"type": "string", "enum": ["file", "dir", "blob"]}, "files": {"type": "integer"}, "dirs": {"type": "integer"}, "bytes": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}}, "fetched": {"type": "boolean"}}},
       "ShareRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path]"}}},
       "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}},

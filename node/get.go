@@ -13,7 +13,6 @@ import (
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/extract"
-	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/target"
 )
@@ -41,10 +40,7 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 	if err != nil {
 		return nil, err
 	}
-	var hints []link.Provider
-	if pt.Link != nil {
-		hints = pt.Link.Providers
-	}
+	h := targetHints(pt)
 	switch {
 	case req.Output == "" && req.Dir == "":
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "get needs an output path or a directory to write into")
@@ -53,15 +49,15 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 			WithAction("the daemon writes the path itself, so it must not depend on the caller's working directory")
 	}
 	return n.start("get", pt.Raw, func(o *op.Operation) (any, error) {
-		return n.get(o, root, pt.Path, hints, req)
+		return n.get(o, root, pt.Path, h, req)
 	}), nil
 }
 
-func (n *Local) get(o *op.Operation, root cid.CID, p string, hints []link.Provider, req apiv0.GetRequest) (*apiv0.GetResult, error) {
+func (n *Local) get(o *op.Operation, root cid.CID, p string, h hints, req apiv0.GetRequest) (*apiv0.GetResult, error) {
 	ctx := o.Context()
 	res := &apiv0.GetResult{CID: root.String(), Path: p}
 	last := time.Now()
-	nd, err := n.ensure(ctx, root, p, hints, func(stage string) {
+	nd, err := n.ensure(ctx, root, p, h, func(stage string) {
 		o.Stage(stage)
 		if stage == "fetching" {
 			res.Fetched = true
@@ -101,15 +97,16 @@ func (n *Local) get(o *op.Operation, root cid.CID, p string, hints []link.Provid
 }
 
 // ensure resolves root/p and makes everything under the resolved node held, fetching
-// through the Fetcher (with the link's hints) when the root, the structure on the way to
-// p, or anything under the resolved node is missing. stage and progress may be nil.
-func (n *Local) ensure(ctx context.Context, root cid.CID, p string, hints []link.Provider, stage func(string), progress func(done, total int64)) (*content.Node, error) {
+// through the Fetcher (with the target's peer and RASL hints) when the root, the
+// structure on the way to p, or anything under the resolved node is missing. stage and
+// progress may be nil.
+func (n *Local) ensure(ctx context.Context, root cid.CID, p string, h hints, stage func(string), progress func(done, total int64)) (*content.Node, error) {
 	if stage == nil {
 		stage = func(string) {}
 	}
 	fetch := func(c cid.CID) error {
 		stage("fetching")
-		return n.Fetcher.Fetch(ctx, c, hints, progress)
+		return n.fetch(ctx, c, h, progress)
 	}
 	stage("resolving")
 	nd, err := n.content.Resolve(root, p)

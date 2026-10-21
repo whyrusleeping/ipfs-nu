@@ -32,3 +32,4 @@ Set up the repository skeleton everything else builds on.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Scaffold committed (da0db55). Verified locally: `go vet`, staticcheck 0.8.2, `go test ./...` and `-race` green in ~1 s; all four targets cross-compile with CGO_ENABLED=0 and Linux binaries are static; `scripts/depguard.sh` rejects a go.mod naming go-libp2p. Fuzz template is `core/varint` (seed corpus runs in `go test`); `nutest/slow.Skip` gates NU_SLOW tests; `.github/workflows/slow.yml` is the on-demand job. The repo has no GitHub remote yet, so the workflows (Linux + macOS runners) have not run on GitHub; the first push will exercise them.

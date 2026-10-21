@@ -1,7 +1,7 @@
 ---
 id: "0059"
 title: Collection item push API and URL import
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-20"
 updated: "2026-10-21"

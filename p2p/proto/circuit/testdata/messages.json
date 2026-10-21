@@ -1,0 +1,7 @@
+[
+  {"Name":"hop-reserve","Hex":"0800","Kind":0},
+  {"Name":"hop-ok","Hex":"08022864","Kind":2,"Status":100},
+  {"Name":"hop-limited","Hex":"08022204087810402864","Kind":2,"Status":100,"Limit":{"Duration":120,"Data":64}},
+  {"Name":"stop-ok","Hex":"08012064","Stop":true,"Kind":1,"Status":100},
+  {"Name":"stop-limit","Hex":"08011a040801102020c901","Stop":true,"Kind":1,"Status":201,"Limit":{"Duration":1,"Data":32}}
+]

@@ -4,6 +4,14 @@ A separate Go module for spikes and interop smoke tests. It may depend on go-lib
 or other reference implementations; the main module never imports it. Run its tests from
 this directory (`cd experiments && go test ./...`); they are not part of the root suite.
 
+## Circuit relay v2 (0013)
+
+`go test -run '^TestCircuitV2$' -v .` checks actual go-libp2p reservation clients
+against Nu's standalone relay and Nu's client against an upstream relay, including
+signed voucher verification in both directions. It also sends a raw Nu
+CONNECT/STOP stream through the upstream relay. This is not evidence for stock
+peers' end-to-end Noise/yamux upgrades (outside 0013) or Nu's future qpath layer.
+
 ## Manual two-machine LAN check (0060/0040)
 
 On each machine, run `go run ./cmd/mdns-peer -key ./test-node.key` once to print

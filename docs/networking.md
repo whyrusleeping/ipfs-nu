@@ -289,6 +289,17 @@ relay admission mechanism is selected yet. Model idle reservations/keepalives an
 bulk traffic, expose exhaustion clearly, and support explicit self/community relays. See
 [validation](validation.md) for cost evidence and [operations](operations.md) for user contracts.
 
+The [circuit-v2 implementation](../p2p/proto/circuit/README.md) exposes raw circuit
+streams for D11, not end-to-end authenticated host connections. HOP/STOP use
+4096-byte bounded delimited protobufs and RFC 0002 reservation envelopes with domain
+`libp2p-relay-rsvp`, codec bytes `03 02`, and canonical relay/peer/expiration payloads.
+Reservations are bound to an existing direct connection; active dialing of supplied
+peer addresses is disabled. Development full-service admission requires **both**
+endpoints on the operator's bounded allow-list; otherwise 120s and 128 KiB per
+direction apply by default. Global/per-peer/per-observed-IP slots still constrain
+admitted traffic. Production operator/admission policy remains 0039; ordinary
+Noise/yamux relayed connections and Nu qpath upgrades are separate work.
+
 ## D11. Nu-path
 
 A magicsock `net.PacketConn` wrapper under quic-go routes one inner libp2p QUIC connection

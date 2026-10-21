@@ -15,7 +15,7 @@ callers also get a fresh user namespace with their UID mapped to root. A parent
 has a 50-second watchdog; each child has a 45-second Go test timeout. Topologies
 use their own shorter context. Missing tools/privileges **fail**, not skip.
 
-All three smoke tests run rootless on the development machine, including bridge
+The smoke tests run rootless on the development machine, including bridge
 creation, nftables NAT/filtering, hairpin, conntrack flush, address changes and
 link cycling. No sudo or host sysctls are used. On machines that disable
 unprivileged user namespaces (including some AppArmor configurations), compile
@@ -131,6 +131,10 @@ measurements against real NAT implementations.
   and random fixture allocation are exercised. This supplies 0003's smoke check.
 * `TestHairpinAndNetworkChanges`: checks hairpin off/on, flush, address rebinding,
   link down/up plus route restoration, and total UDP blocking.
+* `TestCircuitToNATTarget`: a private target reserves on a public relay; an outside
+  client echoes raw circuit bytes to it. Checks scheduled reservation renewal and
+  an actual 1s duration-limit reset. Helpers opt in with `CircuitClient` /
+  `CircuitServer`; these raw echo helpers do not emulate secure peer connections.
 
 Tests emit `Outcome` JSON records. Set `NU_NATLAB_RESULTS=/absolute/path.ndjson`
 to append standalone records (including through isolation re-execs), or capture

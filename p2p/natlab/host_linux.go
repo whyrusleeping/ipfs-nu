@@ -27,10 +27,13 @@ var ErrTimeout = errors.New("natlab: UDP receive timed out")
 // provide tiny UDP endpoint observers; ProbeListen reserves a persistent source
 // socket for mapping smoke tests. All traffic stays in the isolated topology.
 type HostConfig struct {
-	Listen        string
-	AutoNATServer bool
-	Echo          []string
-	ProbeListen   string
+	Listen                       string
+	AutoNATServer                bool
+	Echo                         []string
+	ProbeListen                  string
+	CircuitServer, CircuitClient bool
+	CircuitTTL                   time.Duration
+	CircuitDuration              uint32
 }
 type Node struct {
 	ID      string
@@ -158,6 +161,11 @@ func serveHost(in io.Reader, out io.Writer) error {
 		return err
 	}
 	defer svc.Close()
+	circuits, err := startCircuits(h, key, cfg)
+	if err != nil {
+		return err
+	}
+	defer circuits.close()
 	var probe net.PacketConn
 	if cfg.ProbeListen != "" {
 		probe, err = net.ListenPacket("udp4", cfg.ProbeListen)
@@ -203,6 +211,8 @@ func serveHost(in io.Reader, out io.Writer) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			switch c.Op {
+			case "reserve-circuit", "maintain-circuit", "echo-circuit", "idle-circuit":
+				return circuits.handle(ctx, c, &r)
 			case "dial", "check":
 				a, err := wire.ParseMultiaddr(c.Address, 1024)
 				if err != nil {

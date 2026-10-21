@@ -203,7 +203,7 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
   (10 min) and the store runs it on a shortfall; GC passes `node.GCGrace` so unpinned
   objects of in-progress adds and fetches survive, and never removes pinned content.
 
-## Clusters (0062)
+## Clusters (0062, 0046)
 
 `node.ClusterNode` (implemented by `node.Local` and `client.Client`) carries the cluster
 commands; state lives under `$NU_PATH/cluster/{local,net}` ([D20](cluster.md#state-encoding-and-evaluation)).
@@ -212,16 +212,37 @@ commands; state lives under `$NU_PATH/cluster/{local,net}` ([D20](cluster.md#sta
 cluster. `init`, `invite`, `member rm` and dataset writes work daemonless (in-process,
 offline); `join` needs networking and returns after the first state sync. Every write
 reports `metadata` (`MetadataState`: signer, commit, rev, `acked_by` storage members,
-`required`, `acknowledged`) apart from `content` (`ContentState`: `none` without a head,
-else `not_tracked` until placement/readiness exist); metadata acknowledgment never
-implies stored content. When 0046 lands, `ContentState.state` takes the
-[E-rule](operations.md#e-readiness-evidence) values `syncing`, `held`, `ready`,
-`degraded`, `unknown`, `policy_unsatisfiable`, `paused`, `error` and gains the
-[W3](operations.md#w-exact-target-waits) fields (`target`, `mode`, `epoch`, `policy`,
-`confirmed`, `required`, `missing`, `extra`, `evidence_age`, `unmet`); the same object is
-the result of `GET /datasets/{name}/wait?condition=…&target=…&timeout=…` and of
-`nu dataset wait`. `not_tracked` disappears then; clients must treat any state other
-than `ready` as not ready. Writing without a suitable key is `forbidden`; a second cluster
+`required`, `acknowledged`) apart from `content` (`ContentState`); metadata
+acknowledgment never implies stored content (E10).
+
+- **Content status (0046):** `ContentState.state` is `none` without a head, else one of
+  the [E-rule](operations.md#e-readiness-evidence) values `ready`, `syncing`, `unknown`,
+  `degraded`, `policy_unsatisfiable`, `paused`, `error`; clients must treat any state
+  other than `ready` as not ready. It carries the [W3](operations.md#w-exact-target-waits)
+  fields `target`, `mode`, `epoch`, `policy`, `confirmed: [{peer, seq, age_ms}]`,
+  `required`, `missing: [{peer, reason}]`, `extra`, `evidence_age_ms`, `unmet`, plus
+  `last_ready` (E8), `local` (this node's own sync: target, observed head when staging is
+  full, mode, state, owned/missing counts, pause reason and bytes needed) and `release`
+  (`auto: false`; last ready, last held, staged and candidate versions, all still pinned).
+  Collections report `policy_unsatisfiable` with `replicas: 0` (no guaranteed copies) and
+  `unknown` otherwise until floor placement is run for them.
+- **Head writes:** `POST /datasets/{name}/head` and `/cluster/datasets/{name}/head`
+  (`DatasetUpdateRequest {target, kind?, note?}`, `nu [cluster] dataset update <ds> <cid>`)
+  write the head record; `kind` is detected from held content. The `Dataset` result has
+  `metadata` and `content` as separate results.
+- **Waits:** `GET /datasets/{name}/wait?target=&condition=metadata|held|ready&holder=&acks=&mode=&timeout=`
+  (and `/cluster/datasets/{name}/wait`; `nu [cluster] dataset wait <ds> <cid> [--condition]
+  [--holder]… [--acks] [--timeout]`) answers a satisfied `WaitResult` (the `ContentState`
+  plus `condition`, `satisfied`, `superseded_by`, `metadata`). An unsatisfied wait is the
+  error `timeout` (exit 6) or `failed` (policy unsatisfiable, holder not a member), with
+  the result in `details.result`. A target no head names yet is unmet
+  (`target_not_observed`), not a failure. `archive-ready` is `not_supported` until history.
+- **Policy:** `DatasetCreateRequest` takes `replicas` or `all`, `where` (tag → values) and
+  `spread` (`--replicas k|all --where zone=eu-1|eu-2 --spread zone`). A networked dataset
+  with `replicas` > 1 and no `spread` gets `spread: zone` only when every eligible member
+  is zone-tagged and there are enough zones; otherwise the result carries a warning.
+
+Writing without a suitable key is `forbidden`; a second cluster
 or a dataset name already used in either cluster is `conflict`. In private and isolated
 mode the daemon disables mDNS and gates its host to members from start-up.
 

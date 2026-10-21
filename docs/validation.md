@@ -690,6 +690,30 @@ version, OS, the pasted result block, and anything that needed a hosts-file entr
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | (none yet) | | | | | | | | | | | |
 
+## Placement and readiness (0046)
+
+Fast tests per the v0-era policy (one test per row or a table; scale, rescan cost and
+large-cluster evidence belong to 0050/0068). Commands: `go test ./cluster ./replica
+./cmd/nu`.
+
+| Rule / row | Test | Shows |
+|---|---|---|
+| Placement vectors | `cluster.TestPlacementVectors`, `TestPlacementRules` | scores, ranking, owners with/without spread and the epoch are fixed bytes; draining/client members own nothing; adding a member moves only its share |
+| R1 (E10/W2) | `cluster_test.TestPlacementReadiness` | a head acknowledged by all 3 storage members (`metadata` wait, 3 acks) whose content nobody has: content not ready, `ready` wait times out |
+| E6, placement sync | same | 3 routed private members, `replicas: 2`: each member holds the structure and exactly the blobs it owns; `ready` once every owner's fresh report confirms; `held` wait names holders, non-member holder fails |
+| R3 (E1/W1) | same | a wait on T keeps T after the head moves, ends in timeout with `superseded_by`, while the new head becomes ready on its own |
+| R4, R5, R7, R8, E8 | `cluster.TestReadyMatrix` (fake clock) | other-epoch/policy report → `missing: epoch`; clock past `evidence.fresh` → `unknown`, not degraded; incomplete surplus holder → still ready, not in `extra`; complete non-owners only → not ready, `extra` shown; fresh contradiction after ready → `degraded` |
+| R6 (E5) | `TestPlacementReadiness`, `TestReadyMatrix` | `replicas: 4` on 3 members and `spread: zone` without zones fail a ready wait fast with the shortfall; the team default warns instead of sharing failure domains silently |
+| Heartbeat reports | `cluster.TestReportDelta` | deltas apply in sequence, a missed heartbeat forces a full pull, removals propagate |
+| R15 (S5) | `replica.TestFirstHeldProtection` | never-ready dataset, five head changes with unavailable content: the last fully held view stays pinned, two heads staged, later heads observed only |
+| R17 (S7) | `replica.TestPressurePauses` | store limit during an update: `paused: insufficient_storage` with bytes needed, protected pin and content intact |
+| One-node `k=1` | `cluster_test.TestLocalReady`, `cmd/nu.TestDatasetWaitCLI` | local dataset ready at `required: 1`, epoch `local`; CLI `update`/`wait`, timeout exit 6 with the snapshot |
+| `release.auto=false` | by construction | nothing in 0046 unpins held or ready versions; only never-held staged heads are dropped |
+
+Not yet covered: collection floor placement (`replicas` > 0 on collections), E8 under a
+real partition in nutest (the fake-clock table covers the rule), and the Linux isolated
+lab with placement traffic.
+
 ## Release evidence
 
 Index results for [milestone](../spec.md#milestones) exits, the [operational acceptance

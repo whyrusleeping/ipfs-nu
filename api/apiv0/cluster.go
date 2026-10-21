@@ -143,19 +143,19 @@ type FacetDecl struct {
 // Dataset is a dataset's merged record and heads, with metadata and content status
 // reported separately.
 type Dataset struct {
-	Name     string        `json:"name"`
-	Cluster  string        `json:"cluster"` // "local" or the networked cluster's ID
-	Source   string        `json:"source"`
-	Replicas int64         `json:"replicas"`
-	Writers  []string      `json:"writers,omitempty"`
-	Note     string        `json:"note,omitempty"`
+	Name     string   `json:"name"`
+	Cluster  string   `json:"cluster"` // "local" or the networked cluster's ID
+	Source   string   `json:"source"`
+	Replicas int64    `json:"replicas"`
+	Writers  []string `json:"writers,omitempty"`
+	Note     string   `json:"note,omitempty"`
 	// Collection carries a collection's facets and merge mode.
 	Collection *DatasetCollection `json:"collection,omitempty"`
 	Signer     string             `json:"signer"`
-	Head     *DatasetHead  `json:"head,omitempty"`
-	Heads    []DatasetHead `json:"heads,omitempty"` // per-signer heads (union-head input)
-	Metadata MetadataState `json:"metadata"`
-	Content  ContentState  `json:"content"`
+	Head       *DatasetHead       `json:"head,omitempty"`
+	Heads      []DatasetHead      `json:"heads,omitempty"` // per-signer heads (union-head input)
+	Metadata   MetadataState      `json:"metadata"`
+	Content    ContentState       `json:"content"`
 }
 
 // DatasetHead is a head record by one signer.

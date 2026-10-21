@@ -19,9 +19,9 @@ import (
 const vectorFile = "../testdata/vectors/nu-collection/vectors.json"
 
 type facetCase struct {
-	Name   string          `json:"name"`
-	Meta   string          `json:"meta"`
-	Expect map[string]any  `json:"expect"`
+	Name   string         `json:"name"`
+	Meta   string         `json:"meta"`
+	Expect map[string]any `json:"expect"`
 }
 
 type predCase struct {

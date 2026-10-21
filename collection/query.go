@@ -130,7 +130,7 @@ func (m *Manager) impact(name string, rules []Rule) ([]apiv0.RuleImpact, error) 
 }
 
 // Hold sets a manual hold on an item (pin source collection-manual); Release clears it.
-func (m *Manager) Hold(name, path string) error   { return m.manual(name, path, true) }
+func (m *Manager) Hold(name, path string) error    { return m.manual(name, path, true) }
 func (m *Manager) Release(name, path string) error { return m.manual(name, path, false) }
 
 func (m *Manager) manual(name, path string, on bool) error {

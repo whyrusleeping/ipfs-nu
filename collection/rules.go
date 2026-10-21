@@ -24,11 +24,11 @@ type Pred struct {
 	Intersects *[4]float64 `json:"intersects,omitempty"`
 
 	// compiled bounds
-	minNum, maxNum         float64
-	minMS, maxMS           int64
-	hasMin, hasMax         bool
-	minIsTime, maxIsTime   bool
-	within                 time.Duration
+	minNum, maxNum       float64
+	minMS, maxMS         int64
+	hasMin, hasMax       bool
+	minIsTime, maxIsTime bool
+	within               time.Duration
 }
 
 // Rescue makes a rule hold the items it matches whose fresh complete-holder count is below

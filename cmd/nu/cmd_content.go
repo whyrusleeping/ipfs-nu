@@ -223,20 +223,26 @@ var cmdShare = &command{
 		if err := e.emit(res, func(w io.Writer) { fmt.Fprintln(w, res.Link) }); err != nil {
 			return err
 		}
-		if res.Serving {
+		local, ok := n.(*node.Local)
+		if !ok {
 			return nil // the daemon serves it; nothing to wait for
 		}
-		return e.serveForeground(ctx, n)
+		return e.serveForeground(ctx, local)
 	},
 }
 
-// serveForeground is where a daemonless `share` keeps the in-process node serving until
-// interrupted. Without a libp2p host (this build) there is nothing to serve with, so it
-// explains and returns; when the host arrives it starts here and blocks on ctx.
-func (e *env) serveForeground(ctx context.Context, n node.Node) error {
+// serveForeground keeps a daemonless `share`'s in-process node serving until interrupted.
+func (e *env) serveForeground(ctx context.Context, n *node.Local) error {
+	if n.Net == nil {
+		return apiv0.Errorf(apiv0.CodeUnavailable, "no network in this node").WithAction("run `" + nu.Name + " daemon`")
+	}
 	if !e.json {
-		fmt.Fprintf(e.stderr, "%s: content is available only while a holder is online; this build cannot serve it yet "+
-			"(run `%s daemon` once networking lands, and keep it running while others fetch)\n", nu.Name, nu.Name)
+		fmt.Fprintf(e.stderr, "%s: serving as %s; content is available only while a holder is online. Press Ctrl-C to stop "+
+			"(or run `%s daemon` to keep sharing in the background).\n", nu.Name, n.PeerID().Base36(), nu.Name)
+	}
+	<-ctx.Done()
+	if !e.json {
+		fmt.Fprintf(e.stderr, "%s: stopped sharing\n", nu.Name)
 	}
 	return nil
 }

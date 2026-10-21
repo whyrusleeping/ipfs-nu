@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"github.com/whyrusleeping/nu/client"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/node/swarm"
 )
 
 // The CLI is built only on the client package; this pins the seam.
@@ -54,6 +56,8 @@ type env struct {
 	nuPath         string // --nu-path override
 	apiAddr        string // --api override
 	repo           *repo.Repo
+	network        bool     // start the swarm in an in-process node
+	verbose        bool     // --verbose: log in-process networking to stderr
 	path           []string // command path, for usage
 	cleanup        []func() // run after the command (in-process node, repo lock)
 }
@@ -73,14 +77,24 @@ func (u usageError) Error() string { return u.msg }
 func usagef(format string, args ...any) error { return usageError{fmt.Sprintf(format, args...)} }
 
 func main() {
+	// quic-go logs once when the UDP buffers cannot be enlarged; that is tuning advice,
+	// not a problem to show on every command (`nu doctor` reports it).
+	if os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING") == "" {
+		os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	e := &env{stdout: stdout, stderr: stderr}
-	defer e.close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return runCtx(ctx, args, stdout, stderr)
+}
+
+// runCtx runs one invocation; ctx ending acts like Ctrl-C.
+func runCtx(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	e := &env{stdout: stdout, stderr: stderr}
+	defer e.close()
 
 	gfs := flag.NewFlagSet(nu.Name, flag.ContinueOnError)
 	gfs.SetOutput(io.Discard)
@@ -132,6 +146,7 @@ func (e *env) globalFlags(fs *flag.FlagSet) {
 	fs.BoolVar(&e.json, "json", false, "machine-readable JSON output")
 	fs.StringVar(&e.nuPath, "nu-path", "", "repo directory (default $"+repo.EnvPath+" or ~/"+nu.DefaultDir+")")
 	fs.StringVar(&e.apiAddr, "api", "", "daemon API address (default: the running daemon's)")
+	fs.BoolVar(&e.verbose, "verbose", false, "log in-process networking to stderr")
 }
 
 // flags returns a FlagSet for a leaf command with --json registered, so the flag may
@@ -143,14 +158,30 @@ func (e *env) flags() *flag.FlagSet {
 	return fs
 }
 
+// parseFlags parses flags that may appear before or after positional arguments
+// (`nu get <link> -o out` and `nu get -o out <link>` both work); fs.Args() returns the
+// positional arguments in order. A literal `--` ends flag parsing.
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return err
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return err
+			}
+			return usagef("%v", err)
 		}
-		return usagef("%v", err)
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if len(args) > len(rest) && args[len(args)-len(rest)-1] == "--" {
+			positional = append(positional, rest...)
+			break
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
 	}
-	return nil
+	return fs.Parse(append([]string{"--"}, positional...))
 }
 
 // fail prints an error in the command's output mode and returns the exit code.
@@ -218,15 +249,17 @@ func (e *env) node(ctx context.Context) (node.Node, error) {
 	return e.connect(ctx, "")
 }
 
-// nodeOrLocal is node for get/cat/ls/dag get: when no daemon runs, it starts an
-// in-process node for the duration of the command, holding the repo lock.
+// nodeOrLocal is node for get/cat/ls/share: when no daemon runs, it starts an in-process
+// node with networking for the duration of the command, holding the repo lock.
 func (e *env) nodeOrLocal(ctx context.Context) (node.Node, error) {
+	e.network = true
 	return e.connect(ctx, "using an in-process node for this command")
 }
 
-// nodeOrLocalWrite is nodeOrLocal for add/pin/dag put: the content lands in the store
-// now and is served and announced once a node runs.
+// nodeOrLocalWrite is nodeOrLocal for add/pin/dag: the content lands in the store now
+// (no networking) and is served once a node runs.
 func (e *env) nodeOrLocalWrite(ctx context.Context) (node.Node, error) {
+	e.network = false
 	return e.connect(ctx, "working in-process; the content will be shared when a node runs (`"+nu.Name+" daemon` or `"+nu.Name+" share`)")
 }
 
@@ -251,7 +284,7 @@ func (e *env) connect(ctx context.Context, localNote string) (node.Node, error) 
 			return nil, err
 		}
 	}
-	n, release, err := e.local(r)
+	n, release, err := e.local(r, e.network)
 	if err != nil {
 		return nil, err
 	}
@@ -262,9 +295,10 @@ func (e *env) connect(ctx context.Context, localNote string) (node.Node, error) 
 	return n, nil
 }
 
-// local opens an in-process node under the repo lock. The returned release closes the
-// node and releases the lock.
-func (e *env) local(r *repo.Repo) (*node.Local, func(), error) {
+// local opens an in-process node under the repo lock, with the swarm started when
+// network is set (on an ephemeral port if the configured one is taken). The returned
+// release closes the node and releases the lock.
+func (e *env) local(r *repo.Repo, network bool) (*node.Local, func(), error) {
 	// Take the repo lock to be sure no daemon is alive.
 	lock, err := r.Lock()
 	if err != nil {
@@ -282,7 +316,28 @@ func (e *env) local(r *repo.Repo) (*node.Local, func(), error) {
 		lock.Release()
 		return nil, nil, err
 	}
-	return n, func() { n.Close(); lock.Release() }, nil
+	if !network {
+		return n, func() { n.Close(); lock.Release() }, nil
+	}
+	cfg, err := swarm.RepoConfig(r, n.Key, n.Store)
+	if err != nil {
+		n.Close()
+		lock.Release()
+		return nil, nil, err
+	}
+	cfg.Ephemeral = true
+	cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if e.verbose {
+		cfg.Logger = slog.New(slog.NewTextHandler(e.stderr, nil))
+	}
+	sw, err := swarm.Start(context.Background(), cfg)
+	if err != nil {
+		n.Close()
+		lock.Release()
+		return nil, nil, err
+	}
+	n.Fetcher, n.Net = sw, sw
+	return n, func() { n.Ops.CancelAll(); n.Wait(); sw.Close(); n.Close(); lock.Release() }, nil
 }
 
 // emit writes v as JSON in --json mode, else calls text.
@@ -315,7 +370,7 @@ func printUsage(w io.Writer, cmd *command, path []string) {
 		fmt.Fprintf(w, "usage: %s %s\n\n%s\n", name, cmd.args, cmd.summary)
 	}
 	if cmd == root {
-		fmt.Fprintf(w, "\nglobal flags: --json, --nu-path <dir>, --api <host:port>\n")
+		fmt.Fprintf(w, "\nglobal flags: --json, --nu-path <dir>, --api <host:port>, --verbose\n")
 		fmt.Fprintf(w, "exit codes: %s\n", exitCodesSummary())
 	}
 }

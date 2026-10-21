@@ -43,13 +43,16 @@ type peerProto struct {
 	proto string
 }
 
-// serverStream is the part of *host.Stream a handler uses.
-type serverStream interface {
+// ServerStream is the part of *host.Stream a handler uses. It is exported so a test
+// harness can wrap streams (fault injection) and pass them to Serve.
+type ServerStream interface {
 	io.ReadWriter
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
 	Reset()
 }
+
+type serverStream = ServerStream
 
 // NewServer returns a server for st.
 func NewServer(st *store.Store, cfg ServerConfig) *Server {
@@ -72,10 +75,26 @@ func NewServer(st *store.Store, cfg ServerConfig) *Server {
 // above MaxRequests so that excess requests get a cheap busy status instead of a refused
 // protocol.
 func (s *Server) Register(h *host.Host) error {
-	if err := h.Handle(BytesID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(BytesID, st.Conn().PeerID(), st, s.serveBytes) }); err != nil {
+	if err := h.Handle(BytesID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(BytesID, st.Conn().PeerID(), st) }); err != nil {
 		return err
 	}
-	return h.Handle(HaveID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(HaveID, st.Conn().PeerID(), st, s.serveHave) })
+	return h.Handle(HaveID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(HaveID, st.Conn().PeerID(), st) })
+}
+
+// HandlerLimit is the per-protocol concurrency Register passes to the host.
+func (s *Server) HandlerLimit() int { return 2 * s.cfg.MaxRequests }
+
+// Serve answers one request stream of protocol (BytesID or HaveID) from peer; Register
+// installs it on a host, and harnesses may call it with a wrapped stream.
+func (s *Server) Serve(protocol string, peer wire.PeerID, st ServerStream) {
+	switch protocol {
+	case BytesID:
+		s.serve(BytesID, peer, st, s.serveBytes)
+	case HaveID:
+		s.serve(HaveID, peer, st, s.serveHave)
+	default:
+		st.Reset()
+	}
 }
 
 // Active reports the number of requests being served.

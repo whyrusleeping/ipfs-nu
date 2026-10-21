@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node/content"
+	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/target"
@@ -86,12 +87,17 @@ func LoadKey(r *repo.Repo) (*wire.NodeKey, error) {
 var _ Node = (*Local)(nil)
 
 // Close stops the node: running operations are cancelled and waited for, then the store
-// is closed.
+// is closed. The owner closes the network (Fetcher/Net) between those two steps if it
+// runs one; Close does not.
 func (n *Local) Close() error {
 	n.Ops.CancelAll()
 	n.work.Wait()
 	return n.Store.Close()
 }
+
+// Wait blocks until running operations have finished (after CancelAll: until they have
+// observed the cancellation).
+func (n *Local) Wait() { n.work.Wait() }
 
 // Paths returns the repo layout.
 func Paths(r *repo.Repo) apiv0.Paths {
@@ -194,25 +200,48 @@ func (n *Local) start(kind, target string, work func(o *op.Operation) (any, erro
 	return &snap
 }
 
-// resolve parses a CID target (with optional path) and resolves it in the store.
+// resolve parses a CID or link target (with optional path) and resolves it in the store.
 func (n *Local) resolve(t string) (*content.Node, cid.CID, string, error) {
-	pt, err := target.Parse(t)
+	pt, root, err := parseTarget(t)
 	if err != nil {
 		return nil, cid.CID{}, "", err
-	}
-	if err := pt.Supported(); err != nil {
-		return nil, cid.CID{}, "", err
-	}
-	root, err := cid.Parse(pt.CID)
-	if err != nil {
-		return nil, cid.CID{}, "", apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", pt.CID)
 	}
 	nd, err := n.content.Resolve(root, pt.Path)
 	return nd, root, pt.Path, err
 }
 
+// resolveOrFetch is resolve for readers (cat, ls): content that is not held is fetched
+// first, with the link's hints, and must be complete under the resolved node.
+func (n *Local) resolveOrFetch(ctx context.Context, t string) (*content.Node, cid.CID, string, error) {
+	pt, root, err := parseTarget(t)
+	if err != nil {
+		return nil, cid.CID{}, "", err
+	}
+	var hints []link.Provider
+	if pt.Link != nil {
+		hints = pt.Link.Providers
+	}
+	nd, err := n.ensure(ctx, root, pt.Path, hints, nil, nil)
+	return nd, root, pt.Path, err
+}
+
+func parseTarget(t string) (target.Target, cid.CID, error) {
+	pt, err := target.Parse(t)
+	if err != nil {
+		return pt, cid.CID{}, err
+	}
+	if err := pt.Supported(); err != nil {
+		return pt, cid.CID{}, err
+	}
+	root, err := cid.Parse(pt.CID)
+	if err != nil {
+		return pt, cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", pt.CID)
+	}
+	return pt, root, nil
+}
+
 func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
-	nd, _, _, err := n.resolve(t)
+	nd, _, _, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +252,7 @@ func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
 }
 
 func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
-	nd, root, p, err := n.resolve(t)
+	nd, root, p, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
 		return nil, err
 	}

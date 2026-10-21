@@ -269,7 +269,7 @@ type Status struct {
 }
 
 // NetworkStatus is the network section of Status: who this node is and how it can be
-// reached. Serving and Peers stay false/0 until the daemon runs a libp2p host.
+// reached. Serving and Peers stay false/0 until a libp2p host runs in the process.
 type NetworkStatus struct {
 	// PeerID is the node's base36 libp2p PeerId (the `peer=` hint of its share links).
 	PeerID string `json:"peer_id"`
@@ -281,6 +281,8 @@ type NetworkStatus struct {
 	Serving bool `json:"serving"`
 	// Peers counts connected peers.
 	Peers int `json:"peers"`
+	// Connected lists the connected peers' base36 PeerIds.
+	Connected []string `json:"connected,omitempty"`
 }
 
 // StoreStatus is the store section of Status.

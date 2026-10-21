@@ -109,6 +109,31 @@ executions in a single complete receipt and still enforces the 1 s bound; produc
 queue policy is unchanged. The full tagged `./p2p/... ./cluster/...` set passed three
 uncached repetitions after this correction, with the real miniupnpd binary enabled.
 
+### Public address lookup (0016, 2026-10-21)
+
+Fast in-process tests in `p2p/lookup/public_test.go` publish a signed record through
+bounded HTTP PUT, retrieve its addresses through both DNS and routing/v1 Sources, and
+combine them through the existing Resolver. Twenty addresses force UDP truncation and
+TCP DNS fallback. Other checks cover recursive TXT concatenation/suffix filtering,
+cycle/query limits, cancellation before DNS egress, signature tampering, replay rejection,
+relay-only signing, change-triggered publication, unknown JSON schemas/fields, NDJSON,
+legacy 404 and forbidden upload redirects. TXT, DNS wire, routing JSON and signed-record
+parser fuzz seeds run without external traffic. Tests explicitly opt into loopback HTTP;
+production uses the shared HTTPS/SSRF policy.
+
+Interop: `cd experiments && CGO_ENABLED=0 go test -run '^TestDNSADDRLookupInterop$' -v .`
+passed in about 0.02 s (distinct `dnsaddr_lookup_httptrack_test.go`). A stock go-libp2p
+v0.50.0 host received **only** `/dnsaddr/<Nu-base36-id>.peers.example.test/p2p/<Nu-id>`,
+queried Nu's DNS server through its standard multiaddr resolver, connected over QUIC,
+authenticated Nu's PeerId and exchanged an echo stream. Nu also verified a signed peer
+record created by go-libp2p and returned its addresses through DNS. Everything used
+loopback and test-local DNS; there was no real-network lookup or external operator.
+
+Deferred: CLI/daemon owner wiring of public Sources, persisted publication sequences,
+address-change publisher lifecycle, public TLS/authoritative-DNS deployment and operational
+admission/rate policy. DNSSEC and persistent lookup-directory anti-replay are not claimed.
+Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

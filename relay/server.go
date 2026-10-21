@@ -16,12 +16,14 @@ type Config struct {
 	Server  circuit.ServerConfig
 	Core    proto.Config
 	AutoNAT autonat.Config
+	Lookup  *LookupConfig // nil disables public dnsaddr/routing services
 }
 type Server struct {
 	Host    *host.Host
 	Circuit *circuit.Server
 	Core    *proto.Service
 	AutoNAT *autonat.Service
+	Lookup  *LookupService
 }
 
 func New(cfg Config) (*Server, error) {
@@ -52,9 +54,19 @@ func New(cfg Config) (*Server, error) {
 		s.Close()
 		return nil, err
 	}
+	if cfg.Lookup != nil {
+		s.Lookup, err = NewLookup(*cfg.Lookup)
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 	return s, nil
 }
 func (s *Server) Close() error {
+	if s.Lookup != nil {
+		s.Lookup.Close()
+	}
 	if s.Circuit != nil {
 		s.Circuit.Close()
 	}

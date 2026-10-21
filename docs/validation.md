@@ -151,6 +151,34 @@ foreground and says content is available only while a holder is online), repeat 
 B from a fresh `NU_PATH`, then Ctrl-C the share. Record: OS/arch of both machines, link type
 (Wi-Fi/Ethernet/routed), sizes, wall time of step 5 and anything confusing in the output.
 
+## Browser origin-isolation checks (0035)
+
+**Status: not yet run in any browser.** Required by the
+[security contract](operations.md#feature-entry-gates) gates; results go in the table
+below, one row per browser/OS/version. `scripts/browser-check.sh` adds two copies of
+`scripts/browser-check/` (so two root CIDs exist) and prints the URLs; the page runs
+B2–B6 itself and shows a result block to paste here. Needs a running `nu daemon` on the
+default ports (edit the page's constants otherwise).
+
+| # | Check | Pass when |
+|---|---|---|
+| B1 | Open `http://<cidA>.localhost:8171/` | The check page renders (the browser resolves `*.localhost` to loopback without a hosts entry). If it does not load at all, record "no `*.localhost`" and continue with B7. |
+| B2 | Page fetches `http://localhost:8171/tree/<cidA>/` and `http://127.0.0.1:8171/tree/<cidA>/` | Both reads fail (no CORS); the page reports "blocked". |
+| B3 | Page fetches `http://127.0.0.1:5171/api/v0/status` | Read fails; `nu status` still works from the CLI. |
+| B4 | Page fetches `http://<cidB>.localhost:8171/` and reads an iframe of it | Fetch blocked; `contentDocument` inaccessible. |
+| B5 | Page POSTs to `/api/v0/add` as JSON and as `text/plain` with target `/nu-browser-check-must-not-exist` | `nu operations` lists **no** `add` operation for that path; JSON POST fails in the page (preflight refused). |
+| B6 | Page sets a cookie with `domain=localhost`, a host-only cookie and a `localStorage` key; then open `http://<cidB>.localhost:8171/` and `http://localhost:8171/` | Site B and the bare origin show none of A's values. A `domain=localhost` cookie that leaks is a finding to record (the gateway never reads cookies, so it is not a daemon risk, but it bounds what site content may trust). |
+| B7 | Open `http://127.0.0.1:8171/tree/<cidA>/index.html` and `/tree/<cidA>/` | The HTML is a download (never rendered); the listing renders with an "open as site" link. The gateway root `/` renders. |
+| B8 | macOS (case-insensitive APFS) only: `nu get <cid> -o out` of a tree holding `a.txt` and `A.txt` (the script builds it when the local filesystem allows; otherwise add it on Linux and fetch by share link) | `nu get` prints `skipped A.txt … maps onto existing entry a.txt`; `out/` holds one file with `a.txt`'s content. |
+
+Browsers to cover before the 0028 evidence is complete: Chromium (Linux or macOS),
+Firefox (Linux or macOS); Safari on macOS is required before 0043. Record the browser
+version, OS, the pasted result block, and anything that needed a hosts-file entry.
+
+| Browser | OS | Version | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| (none yet) | | | | | | | | | | | |
+
 ## Release evidence
 
 Index results for [milestone](../spec.md#milestones) exits, the [operational acceptance

@@ -231,12 +231,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = enc.Encode(v)
 }
 
+// requireJSON insists on Content-Type: application/json for request bodies. HTML forms
+// cannot send that type, and a script that sets it triggers a CORS preflight, which the
+// server refuses; so no state-changing body ever arrives from a cross-site page even if
+// the browser sent neither Origin nor Sec-Fetch-Site.
+func requireJSON(r *http.Request) error {
+	mt, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if strings.TrimSpace(mt) != "application/json" {
+		return apiv0.Errorf(apiv0.CodeInvalidArgument, "request body must be sent as Content-Type: application/json, not %q", mt)
+	}
+	return nil
+}
+
 func readJSON(r *http.Request, v any) error {
-	if ct := r.Header.Get("Content-Type"); ct != "" {
-		mt, _, _ := strings.Cut(ct, ";")
-		if strings.TrimSpace(mt) != "application/json" {
-			return apiv0.Errorf(apiv0.CodeInvalidArgument, "request body must be application/json, not %q", mt)
-		}
+	if err := requireJSON(r); err != nil {
+		return err
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, MaxJSONBody))
 	dec.DisallowUnknownFields()
@@ -463,6 +472,9 @@ func (s *Server) dagGet(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) dagPut(w http.ResponseWriter, r *http.Request) error {
+	if err := requireJSON(r); err != nil {
+		return err
+	}
 	res, err := s.n.DagPut(r.Context(), io.LimitReader(r.Body, MaxJSONBody))
 	if err != nil {
 		return err

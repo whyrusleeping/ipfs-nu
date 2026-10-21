@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>nu browser origin-isolation check</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:50em;margin:2em auto;padding:0 1em}td,th{text-align:left;padding:.2em .6em;border-bottom:1px solid #eee;vertical-align:top}.pass{color:#060}.fail{color:#a00}.info{color:#555}pre{background:#f4f4f4;padding:.5em;white-space:pre-wrap}</style>
+<h1>nu browser check</h1>
+<p>This page is served from a <code>&lt;cid&gt;.localhost</code> site origin and tries to reach
+things it must not. Rows reference docs/validation.md "Browser origin-isolation checks";
+paste the result block there. Set the second site's CID below for B4/B6.</p>
+<p>Other site CID: <input id="other" size="64" placeholder="b…"> <button id="run">run</button></p>
+<table id="t"><tr><th>#</th><th>check</th><th>result</th></tr></table>
+<h2>Result block</h2>
+<pre id="out">(not run)</pre>
+<iframe id="fr" hidden></iframe>
+<script>
+const GW_PORT = location.port || "8171", API = "http://127.0.0.1:5171/api/v0";
+const rows = [], out = document.getElementById("out");
+function row(id, what, ok, detail) {
+  rows.push({ id, what, ok, detail });
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${id}</td><td>${what}</td><td class="${ok === null ? "info" : ok ? "pass" : "fail"}"></td>`;
+  tr.lastChild.textContent = (ok === null ? "info" : ok ? "PASS" : "FAIL") + (detail ? " — " + detail : "");
+  document.getElementById("t").appendChild(tr);
+}
+// A cross-origin read must throw (no CORS); a response we can read is a failure.
+async function blockedRead(url, init) {
+  try { const r = await fetch(url, init); await r.text(); return { ok: false, detail: `readable, status ${r.status}` }; }
+  catch (e) { return { ok: true, detail: "blocked: " + e.message }; }
+}
+async function run() {
+  document.querySelectorAll("#t tr:not(:first-child)").forEach(e => e.remove()); rows.length = 0;
+  const other = document.getElementById("other").value.trim();
+  const me = location.hostname;
+  row("B1", "served from " + location.origin, me.endsWith(".localhost"), me.endsWith(".localhost") ? "*.localhost resolves" : "not a site origin: open this page as http://<cid>.localhost:" + GW_PORT + "/");
+  const cid = me.split(".")[0];
+  for (const h of ["localhost", "127.0.0.1"]) {
+    const r = await blockedRead(`http://${h}:${GW_PORT}/tree/${cid}/`); row("B2", `read http://${h}:${GW_PORT}/tree/<me>/`, r.ok, r.detail);
+  }
+  let r = await blockedRead(API + "/status"); row("B3", "read " + API + "/status", r.ok, r.detail);
+  if (other) {
+    r = await blockedRead(`http://${other}.localhost:${GW_PORT}/`); row("B4", "read other site", r.ok, r.detail);
+    const fr = document.getElementById("fr"); fr.src = `http://${other}.localhost:${GW_PORT}/`;
+    await new Promise(res => { fr.onload = res; setTimeout(res, 3000); });
+    let doc = null; try { doc = fr.contentDocument; } catch (e) {}
+    row("B4", "iframe of other site: contentDocument", doc === null, doc === null ? "inaccessible" : "ACCESSIBLE");
+  } else row("B4", "other site", null, "no other CID given");
+  const body = JSON.stringify({ path: "/nu-browser-check-must-not-exist" });
+  r = await blockedRead(API + "/add", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  row("B5", "POST /add as application/json", r.ok, r.detail + " (preflight refused)");
+  try { await fetch(API + "/add", { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body }); } catch (e) {}
+  row("B5", "POST /add as text/plain (sent, opaque)", null, "now run `nu operations`: there must be no add of /nu-browser-check-must-not-exist");
+  document.cookie = "nucheck_domain=" + cid.slice(0, 8) + "; domain=localhost; path=/";
+  document.cookie = "nucheck_host=" + cid.slice(0, 8) + "; path=/";
+  localStorage.setItem("nucheck", cid.slice(0, 8));
+  const seen = document.cookie.split(/;\s*/).filter(c => c.startsWith("nucheck")), mine = cid.slice(0, 8);
+  const foreign = seen.filter(c => !c.endsWith("=" + mine)), ls = localStorage.getItem("nucheck");
+  row("B6", "cookies visible here: " + (seen.join(", ") || "none"), foreign.length === 0, foreign.length ? "FOREIGN values present: " + foreign.join(", ") : "only this origin's values (open the other site and the bare origin's /tree/<cid>/ page to confirm nothing leaks there; this check reports what each origin sees)");
+  row("B6", "localStorage nucheck=" + ls, ls === mine, "");
+  row("B7", "manual", null, `open http://127.0.0.1:${GW_PORT}/tree/${cid}/index.html → must download, not render`);
+  out.textContent = JSON.stringify({ ua: navigator.userAgent, origin: location.origin, when: new Date().toISOString(), rows }, null, 1);
+}
+document.getElementById("run").onclick = run;
+run();
+</script>

@@ -1,8 +1,10 @@
 // Package extract writes a tree walk to a destination directory safely: it refuses path
 // traversal, absolute paths and unsafe names, never follows symlinks already present in
-// the destination, skips symlink entries (reported, not written), writes files atomically
-// (temp file + rename) and limits modes to 0644/0755. `nu get -o` uses it; the tree walker
-// that feeds it comes from the store.
+// the destination, skips symlink entries (reported, not written), reports names the
+// filesystem maps onto another entry (case-insensitive or Unicode-normalizing volumes)
+// instead of silently merging them, writes files atomically (temp file + rename) and
+// limits modes to 0644/0755. `nu get -o` uses it; the tree walker that feeds it comes
+// from the store.
 package extract
 
 import (
@@ -76,6 +78,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 	}
 	rep := &Report{}
 	rootPrepared := false
+	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}}
 	for e, err := range walk {
 		if err != nil {
 			return rep, err
@@ -114,19 +117,38 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			rootPrepared = true
 		}
 		full := filepath.Join(dest, filepath.FromSlash(rel))
+		if parent := x.underSkipped(rel); parent != "" {
+			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "inside skipped directory " + parent})
+			continue
+		}
 		if err := checkNoSymlinks(dest, filepath.Dir(full)); err != nil {
 			return rep, err
+		}
+		if e.Kind == KindDir || e.Kind == KindFile {
+			other, err := x.collides(full)
+			if err != nil {
+				return rep, err
+			}
+			if other != "" {
+				rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "name maps onto existing entry " + other + " on this filesystem (case or Unicode normalization)"})
+				if e.Kind == KindDir {
+					x.skippedDirs = append(x.skippedDirs, rel+"/")
+				}
+				continue
+			}
 		}
 		switch e.Kind {
 		case KindDir:
 			if err := ensureDir(full, false); err != nil {
 				return rep, err
 			}
+			x.wrote(full)
 			rep.Dirs++
 		case KindFile:
 			if err := writeFile(ctx, full, e, rep); err != nil {
 				return rep, err
 			}
+			x.wrote(full)
 		case KindSymlink:
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "symlinks are not extracted (target " + e.Target + ")"})
 		default:
@@ -134,6 +156,67 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		}
 	}
 	return rep, nil
+}
+
+// extraction tracks what this run wrote so that filesystem name transformations are
+// detected: a path that exists although this run never wrote it, and whose exact name is
+// absent from its directory's listing, has been mapped by the filesystem onto another
+// entry (APFS/NTFS case folding, HFS+ NFD normalization). Writing it would silently
+// replace or merge content, so it is reported instead.
+type extraction struct {
+	written     map[string]bool            // absolute paths written by this run
+	listed      map[string]map[string]bool // directory → names present (lazily read)
+	skippedDirs []string                   // tree-relative prefixes ("a/b/") whose contents are skipped
+}
+
+func (x *extraction) wrote(full string) {
+	x.written[full] = true
+	if names := x.listed[filepath.Dir(full)]; names != nil {
+		names[filepath.Base(full)] = true
+	}
+}
+
+// collides returns the existing entry name that full would map onto, or "".
+func (x *extraction) collides(full string) (string, error) {
+	if x.written[full] {
+		return "", nil
+	}
+	if _, err := os.Lstat(full); err != nil {
+		return "", nil // absent (or unreadable: the write reports that)
+	}
+	dir, base := filepath.Dir(full), filepath.Base(full)
+	names := x.listed[dir]
+	if names == nil {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return "", err
+		}
+		names = make(map[string]bool, len(entries))
+		for _, de := range entries {
+			names[de.Name()] = true
+		}
+		x.listed[dir] = names
+	}
+	if names[base] {
+		return "", nil // a pre-existing file of exactly this name: replaced, as documented
+	}
+	// Name the entry the filesystem resolved it to, when a single candidate is obvious.
+	for n := range names {
+		if strings.EqualFold(n, base) {
+			return n, nil
+		}
+	}
+	return "(a differently spelled name)", nil
+}
+
+// underSkipped returns the skipped directory prefix containing rel, or "".
+func (x *extraction) underSkipped(rel string) string {
+	for _, d := range x.skippedDirs {
+		if strings.HasPrefix(rel, d) {
+			return strings.TrimSuffix(d, "/")
+		}
+	}
+	return ""
 }
 
 // safeRelPath validates a tree path and returns it slash-separated without surrounding

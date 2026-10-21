@@ -30,6 +30,33 @@ first-byte/direct durations are absent until a consumer measures them. The
 on-demand `natlab` workflow uses root as the stock-runner fallback; remote CI
 execution is not part of this local evidence.
 
+## Circuit relay v2 smoke (2026-10-21)
+
+[API, limits and exact scope](../p2p/proto/circuit/README.md).
+Linux/Go environment as above; no external peers or host-root privileges used.
+
+- `go test ./p2p/proto/circuit ./relay`: loopback client/relay/target raw echo and
+  independent FIN, voucher peer binding, renewal, missing-reservation rejection,
+  IP reservation and global circuit slots, full-service admitted pairs, and a
+  32-byte directional cap for an unadmitted source. Default protocol tests took
+  roughly 0.05s; their race-enabled run passed too. Fuzz decoder seeds and literal
+  control-message vectors run in the normal package tests.
+- `cd experiments && go test -run '^TestCircuitV2$' -count=1 -v .`: actual
+  go-libp2p v0.50.0 reservation client on Nu and Nu client on go-libp2p relay;
+  signed vouchers accepted in both directions. A Nu pair also exchanged a raw
+  CONNECT/STOP stream through the upstream relay. Passed in approximately 0.02s.
+- `go test -tags natlab -run '^TestCircuitToNATTarget$' -count=1 -v ./p2p/natlab`:
+  real masqueraded reservation from a private target, public-client circuit echo,
+  timed renewal before TTL, and an actual 1s circuit-duration reset. Passed
+  rootless in approximately 2.0s and emitted a standalone scenario outcome.
+
+These prove circuit-v2 control/byte-stream interoperability, **not** Noise/yamux
+secure connections, `/nu/qpath/1`, content transfer, physical-network traversal
+rates or production public-relay operating capacity. Default public operation and
+operator admission/abuse quotas remain gated on 0039. AutoNAT uses a fresh source
+port; alternate-source-IP profiling request semantics are not provided by the
+standard AutoNAT v2 protocol and are not claimed by this implementation.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

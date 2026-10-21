@@ -1,7 +1,7 @@
 ---
 id: "0017"
 title: '0b: disco `/nu/path/1`: candidates, authenticated probes, path selection, continuous re-probing'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
 updated: "2026-10-21"

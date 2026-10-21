@@ -30,6 +30,16 @@ space overhead. Use `lukechampine.com/blake3/bao`; cross-check encoding vectors 
 `bao-tree` at the same group size. BLAKE3 roots match iroh-blobs, but Nu uses its own
 transfer protocol and does not depend on iroh-blobs.
 
+- The outboard is a standard Bao outboard at group log 4: the blob size as 8 bytes little
+  endian, then each parent node (left and right chaining values, 64 bytes) in pre-order.
+  Blobs of at most 16 KiB have no outboard and are verified whole.
+- Ranges are half-open chunk-group ranges `[start, end)`. A range is sent as a standard Bao
+  slice (size header, then the parents on the path and the range's groups in pre-order),
+  checked group by group as it arrives; receivers keep the parents they verify, so they can
+  serve the groups they hold.
+- A byte range `[a, b)` maps to groups `[⌊a / 16384⌋, ⌈min(b, size) / 16384⌉)`. An empty or
+  past-the-end byte range maps to the single group holding its (clamped) start.
+
 Downloads support independently verified ranges, resume and multiple providers. Verify data
 before exposing or serving it; drop peers that supply invalid data. Completed ranges can be
 served onward before the whole blob is present.

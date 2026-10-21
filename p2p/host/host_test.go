@@ -17,7 +17,7 @@ func newHost(t *testing.T) *host.Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := host.New(host.Config{Key: k, Limits: host.Limits{MaxConnections: 4, MaxStreamsPerConnection: 1}})
+	h, err := host.New(host.Config{Key: k, ManualStreams: true, Limits: host.Limits{MaxConnections: 4, MaxStreamsPerConnection: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}

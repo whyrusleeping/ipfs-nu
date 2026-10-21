@@ -20,4 +20,7 @@
   <https://github.com/libp2p/specs/blob/master/tls/tls.md>, including the invalid
   identity signature. An empty expected PeerID marks the invalid vector.
 
+- `multistream.json`: multistream-select 1.0 header, `na`, and Nu protocol
+  proposal frames, with lengths including the newline (multistream spec encoding).
+
 The fixed Ed25519 fixture is public test material, never a deployment key.

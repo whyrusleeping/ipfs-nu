@@ -91,21 +91,47 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 // its local resource slot; CloseWrite sends FIN while leaving reads available.
 // Always Close or Reset, including after EOF. Reset aborts both directions.
 type Stream struct {
-	conn   *Conn
-	mu     sync.Mutex
-	quic   *quic.Stream
-	closed bool
-	once   sync.Once
+	conn     *Conn
+	mu       sync.Mutex
+	quic     *quic.Stream
+	closed   bool
+	lazy     *wire.LazySelect
+	protocol string
+	once     sync.Once
 }
 
-func (s *Stream) Conn() *Conn                        { return s.conn }
-func (s *Stream) Read(b []byte) (int, error)         { return s.quic.Read(b) }
-func (s *Stream) Write(b []byte) (int, error)        { return s.quic.Write(b) }
+func (s *Stream) Conn() *Conn { return s.conn }
+func (s *Stream) Read(b []byte) (int, error) {
+	if s.lazy != nil {
+		return s.lazy.Read(b)
+	}
+	return s.quic.Read(b)
+}
+func (s *Stream) Write(b []byte) (int, error) {
+	if s.lazy != nil {
+		return s.lazy.Write(b)
+	}
+	return s.quic.Write(b)
+}
+func (s *Stream) Protocol() string { return s.protocol }
+func (s *Stream) Confirm() error {
+	if s.lazy != nil {
+		return s.lazy.Confirm()
+	}
+	return nil
+}
 func (s *Stream) SetDeadline(t time.Time) error      { return s.quic.SetDeadline(t) }
 func (s *Stream) SetReadDeadline(t time.Time) error  { return s.quic.SetReadDeadline(t) }
 func (s *Stream) SetWriteDeadline(t time.Time) error { return s.quic.SetWriteDeadline(t) }
-func (s *Stream) CloseWrite() error                  { return s.quic.Close() }
-func (s *Stream) CloseRead()                         { s.quic.CancelRead(0) }
+func (s *Stream) CloseWrite() error {
+	if s.lazy != nil {
+		if _, err := s.lazy.Write(nil); err != nil {
+			return err
+		}
+	}
+	return s.quic.Close()
+}
+func (s *Stream) CloseRead() { s.quic.CancelRead(0) }
 func (s *Stream) release() {
 	s.once.Do(func() {
 		h := s.conn.host

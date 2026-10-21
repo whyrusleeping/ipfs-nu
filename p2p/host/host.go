@@ -51,6 +51,8 @@ type Config struct {
 	Listen      []string
 	PacketConns []net.PacketConn
 	Limits      Limits
+	// ManualStreams disables automatic protocol routing for transport-level users.
+	ManualStreams bool
 }
 type endpoint struct {
 	socket    net.PacketConn
@@ -59,23 +61,26 @@ type endpoint struct {
 	family    int
 }
 type Host struct {
-	key          *wire.NodeKey
-	limits       Limits
-	tls          *tls.Config
-	quic         *quic.Config
-	endpoints    []*endpoint
-	ctx          context.Context
-	cancel       context.CancelFunc
-	slots        chan struct{}
-	accepted     chan *Conn
-	mu           sync.Mutex
-	closed       bool
-	peers        map[wire.PeerID][]*Conn
-	peerStreams  map[wire.PeerID]int
-	totalStreams int
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	closeErr     error
+	key           *wire.NodeKey
+	limits        Limits
+	tls           *tls.Config
+	quic          *quic.Config
+	endpoints     []*endpoint
+	ctx           context.Context
+	cancel        context.CancelFunc
+	slots         chan struct{}
+	accepted      []*Conn
+	acceptReady   chan struct{}
+	manualStreams bool
+	handlers      map[string]*protocolHandler
+	mu            sync.Mutex
+	closed        bool
+	peers         map[wire.PeerID][]*Conn
+	peerStreams   map[wire.PeerID]int
+	totalStreams  int
+	wg            sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 func New(cfg Config) (h *Host, err error) {
@@ -98,7 +103,9 @@ func New(cfg Config) (h *Host, err error) {
 		return h, err
 	}
 	h.slots = make(chan struct{}, h.limits.MaxConnections)
-	h.accepted = make(chan *Conn, h.limits.MaxConnections)
+	h.acceptReady = make(chan struct{}, 1)
+	h.manualStreams = cfg.ManualStreams
+	h.handlers = make(map[string]*protocolHandler)
 	cert, err := wire.NewTLSCertificate(cfg.Key, time.Now())
 	if err != nil {
 		return h, err
@@ -224,20 +231,48 @@ func (h *Host) acceptLoop(e *endpoint) {
 			_ = qc.CloseWithError(1, "connection refused")
 			continue
 		}
+		h.mu.Lock()
+		live := h.accepted[:0]
+		for _, old := range h.accepted {
+			if old.Context().Err() == nil {
+				live = append(live, old)
+			}
+		}
+		h.accepted = append(live, c)
+		h.mu.Unlock()
 		select {
-		case h.accepted <- c:
-		case <-h.ctx.Done():
-			return
+		case h.acceptReady <- struct{}{}:
+		default:
 		}
 	}
 }
+
+// Accept reports incoming authenticated connections. Automatic stream routing
+// remains active unless ManualStreams was configured.
 func (h *Host) Accept(ctx context.Context) (*Conn, error) {
 	for {
-		select {
-		case c := <-h.accepted:
+		h.mu.Lock()
+		var c *Conn
+		if len(h.accepted) > 0 {
+			c = h.accepted[0]
+			h.accepted[0] = nil
+			h.accepted = h.accepted[1:]
+			if len(h.accepted) > 0 {
+				select {
+				case h.acceptReady <- struct{}{}:
+				default:
+				}
+			}
+		}
+		h.mu.Unlock()
+		if c != nil {
 			if c.Context().Err() == nil {
 				return c, nil
 			}
+			continue
+		}
+		select {
+		case <-h.acceptReady:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-h.ctx.Done():
@@ -301,6 +336,10 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 	h.peers[c.peer] = append(list, c)
 	h.wg.Add(1)
 	go func() { defer h.wg.Done(); <-qc.Context().Done(); h.removeConnection(c) }()
+	if !h.manualStreams {
+		h.wg.Add(1)
+		go c.routeStreams()
+	}
 	return c, nil
 }
 func (h *Host) removeConnection(c *Conn) {

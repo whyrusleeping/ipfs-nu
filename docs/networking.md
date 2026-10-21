@@ -105,6 +105,31 @@ outgoing connection and the higher keeps that same incoming connection. Closing
 or resetting a stream releases its local resource slot; half-closing writes alone
 does not. Host shutdown closes connections, listeners, transports and owned sockets.
 
+### Multistream and request framing
+
+Every routed bidirectional stream negotiates `/multistream/1.0.0`, followed by a
+protocol proposal. Tokens are uvarint-length-prefixed UTF-8 strings terminated
+by one newline; the length includes that newline and is capped at 1024 bytes.
+Embedded NUL/CR/newline is invalid. Accept a proposal by echoing it, otherwise send
+`na` and permit another proposal (at most 16 per stream). Negotiation has a 5 s
+stream deadline. Malformed, rejected/abandoned or over-limit streams are reset in
+both directions with application error 0x100; connection errors use code 1.
+
+The host routes incoming streams automatically; transport-level callers may set
+`ManualStreams` and accept raw streams themselves. Register each protocol with a
+positive, host-wide inbound-handler concurrency limit; exhaustion responds `na`.
+Changing a handler while it is executing is rejected. The dispatcher closes the
+stream when its handler returns. Applications own request I/O deadlines after
+negotiation. `OpenStream(peer, protocol)` eagerly confirms negotiation;
+`OpenStreamLazy` pipelines the header, proposal and first write, checks both
+acknowledgements before the first read (or explicit `Confirm`), and reports `na`
+as `ErrNotSupported`. A lazy rejection can follow sent request bytes, so applications
+must not retry a non-idempotent request without their own acknowledgement contract.
+
+Application message helpers use minimal multiformats uvarint length then exact
+message bytes, with a caller-supplied maximum checked before allocation. They do
+not read ahead, so protocol payload starts immediately after the negotiation.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

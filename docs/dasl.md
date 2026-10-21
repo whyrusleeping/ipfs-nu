@@ -84,6 +84,12 @@ Unstable specs (FISL, Tiles protocols) may change without breaking Nu's own form
 - JSON (API, CLI, gateway): atproto conventions, `{"$link": "<cid>"}` and
   `{"$bytes": "<base64>"}`. `nu dag put` accepts that JSON and returns the SHA-256 DRISL CID;
   `nu dag get <cid>[/path]` returns JSON. Lexicon validation is not implied.
+  `$link`/`$bytes` objects have exactly one key; bytes are standard base64, emitted
+  unpadded and accepted with or without padding. JSON numbers without a fraction or
+  exponent are integers, others are 64-bit floats; under the atproto profile an integral
+  number such as `123.0` is the integer `123` and other floats are rejected.
+- Opaque foreign links (atproto record contents only) must be syntactically valid CIDv1;
+  their JSON form is `b` + base32. CIDv0 links are not accepted.
 
 ### CAR
 

@@ -30,3 +30,4 @@ Layer 1 of the sync protocols (D14), with binary DRISL framing.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (ae505e8, merged 4ee694e). proto/ client (Fetch/FetchRanges/FetchWhole/Have, ErrCorrupt vs StatusError vs transport) and server (limits, busy status). Wire: one Bao slice per range in request order; statuses 0–5; have bitmap+info; limits; vectors in testdata/vectors/nu-proto. Evidence: TestBlobRangesAndHave (64 MiB, ranges, onward serving from partial), TestSlowLargeBlob (NU_SLOW 3 GiB, 20.7 s), TestWholeObjects, TestCorruptTransfer, TestCancelAndResume (Active()→0), TestOversizedWholeObject, FuzzBytesRequest/FuzzHaveRequest/FuzzHaveResponse, TestVectors. Spec in docs/data.md D14. Caveat for 0027: Fetch(size=-1) trusts peer-reported size for the partial; pass authenticated sizes and add a discard-partial path.

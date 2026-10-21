@@ -1,7 +1,7 @@
 ---
 id: "0065"
 title: 'Local walking skeleton: auto-init, daemon, API conventions, client, local CLI and loopback gateway'
-status: todo
+status: in_progress
 priority: 1
 created: "2026-10-21"
 updated: "2026-10-21"

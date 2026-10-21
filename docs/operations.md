@@ -27,25 +27,178 @@ steps. Every operation returns the exact target/version and the stage reached.
 These are dimensions, not a single linear lifecycle: published content can still be syncing;
 a replicated snapshot can later become unknown or degraded.
 
-CLI/API wait operations bind to an exact CID/version and requested condition, with timeout,
-nonzero failure exit and machine-readable result. Report confirming holders, evidence age,
-placement epoch and unmet requirements. A concurrent head change must not silently retarget
-the wait. A seed wait means that seed fully holds the requested content, not that it merely
-knows the name. Waiting for cluster metadata acknowledgments is a separate operation.
-
 Readiness is conditional on trusted members' reports, policy feasibility and current
 evidence. It is not consensus, indefinite availability, or proof of independent physical
-storage. An audit shows timely supply of sampled bytes. Require sufficient eligible copies
-and mandatory failure-domain spread; do not weaken policy when a node fails or during setup.
-If strict spread cannot be satisfied, report the shortfall. Best-effort copies, such as
-member-selected collection holdings ([D22](collections.md#guaranteed-copies)), are reported
-as holder counts and never use the same green status.
+storage. The rules below are numbered so tests and reviews can cite them; the report
+encoding and the placement-side release algorithm are in [cluster.md](cluster.md#status),
+seed waits and follow modes in [follow.md](follow.md#seed-waits).
 
-Before update/handoff may release protected content, specify fresh authenticated evidence
-bound to target, retention live set, policy and placement epoch; stale, partitioned or
-conflicting state must not authorize release. Missing/unknown evidence keeps protected
-pins, subject to a visible disk-pressure pause. The evidence/coordination protocol is still
-to specify and fault-test; LWW state alone does not establish a safe release decision.
+### E. Readiness evidence
+
+- **E1 Exact target.** Evidence names one exact target: a CID, plus for archives the
+  version-tree root of the retention live set. Names, "latest" and heads are never targets.
+- **E2 Completion report.** The unit of evidence is a holder's *completion report*
+  `{target, mode, policy, epoch, complete, missing?, seq}` ([encoding](cluster.md#status)).
+  `complete: true` asserts a verified-complete walk: every structure node of `target` and
+  every blob the holder is responsible for under `mode` (`full`: all; `scoped`: the proof
+  chain and the subtree; `lazy`: structure only; `owned`: the blobs it owns in `epoch`) is
+  present and verified against its CID/outboard, as recorded by completeness marks. A
+  report is authenticated by the holder's node key (heartbeat signature) or by the
+  authenticated stream it arrives on, and is attributed to that PeerId only.
+- **E3 Binding.** A report counts only for the exact `(target, mode, policy, epoch)` it
+  names. A report for another epoch, policy or mode is not evidence for the current one.
+  `policy` is the hash of the dataset's policy fields; `epoch` is the placement epoch; the
+  local cluster uses the constant epoch `local`.
+- **E4 Freshness.** A report is *fresh* for `evidence.fresh` (default 5 min) after the
+  receiver obtained it over a live authenticated connection, measured on the receiver's
+  clock; the report's own `time` is informational. A newer `seq` from the same holder
+  replaces the older report, including a `complete: false` replacing `true`. Evidence
+  older than `evidence.fresh` is *stale* and counts for nothing: neither readiness nor loss.
+- **E5 Feasibility.** Readiness first requires a feasible policy in the current epoch:
+  at least `replicas` eligible `active` storage members, and for `spread`, at least
+  `replicas` distinct values of the spread tag among them. Infeasible policy reports
+  `policy_unsatisfiable` with the shortfall (members or domains missing); it is never
+  "ready" and never weakened automatically, including during setup and after failures.
+- **E6 Ready.** A dataset is *ready* at target T in epoch E when E5 holds and every
+  member that owns at least one blob of T in E (the *owner set*) has a fresh report
+  `complete: true` bound to `(T, owned, policy, E)` (a seed's `held` condition uses the
+  follow's own mode instead). The owner set is computed locally
+  from merged state and placement; for `replicas: all` it is every eligible member. For
+  the one-node local cluster the owner set is `{self}` and the local completeness mark
+  is the report, so one-node readiness is local completeness at the explicit `k=1`.
+- **E7 Counting.** Status reports `confirmed` (owners with fresh complete reports),
+  `required` (owner-set size), `missing` (owners without fresh complete reports, each as
+  `stale`, `incomplete`, `epoch` (report bound to another epoch/policy) or `absent`),
+  `extra` (fresh complete reports from non-owners:
+  surplus, draining members, member-selected collection holdings) and `evidence_age`
+  (the oldest fresh report counted). `extra` never contributes to `ready`.
+- **E8 Transitions.** Once ready, a target becomes *unknown* when some owner's evidence
+  goes stale and nothing fresh contradicts it, and *degraded* when fresh evidence or a
+  merged-state change shows fewer confirmed owners than required: an owner reports
+  `complete: false` or omits the target, or an epoch change (a member `unavailable`,
+  `draining` or `removed`) replaces owners that have not yet confirmed in the new epoch.
+  Status keeps the last ready `{epoch, evidence_age}` beside the current result.
+  Unknown is not degraded; neither is loss. Unknown longer than `evidence.unknown_alert`
+  (default 30 min) is an alert condition. Archive-wide readiness is the same rule over
+  the live-set root; a new incomplete version makes the archive not ready without
+  changing the availability result already established for an older complete version.
+- **E9 Audits.** A sampled audit shows that a member served sampled bytes in time. It is
+  not a completion report, never raises `confirmed`, and a failed audit lowers nothing
+  by itself; it is reported separately and feeds repair policy.
+- **E10 Metadata is not content.** Signed-state acknowledgment (`metadata.acknowledged`)
+  and content readiness are separate results with separate fields; no response may fold
+  them into one success. A head write returns `metadata` and `content.state` separately.
+
+### W. Exact-target waits
+
+- **W1 Binding.** A wait names an exact target (CID, or `<ds>@<tid>`) and one condition.
+  The result echoes the target. A head change during the wait never retargets it: the
+  wait continues for the original target and the result carries `superseded_by` when the
+  head moved. Waiting for the newest head is a separate command, not a mode of `wait`.
+- **W2 Conditions.** `metadata` (signed state held by ≥ n storage members, existing
+  `MetadataState`), `held` (every named `--holder <peer>` has a fresh complete report for
+  the target in the requested mode), `ready` (E6) and `archive-ready` (E6 over the live
+  set). `held` with no holder is a usage error. A condition is satisfied only by evidence
+  of its own kind: metadata acknowledgments never satisfy `held`/`ready`, and content
+  reports never satisfy `metadata`.
+- **W3 Result.** `{target, condition, satisfied, mode, epoch, policy, confirmed:
+  [{peer, seq, age}], required, missing: [{peer, reason}], extra, evidence_age,
+  unmet: [reasons], superseded_by?}`. Exit `0` only when `satisfied`; `timeout` (6) when
+  the timeout expires with the condition unmet and the latest snapshot in `details`;
+  `failed` immediately when the condition cannot be met without a state change
+  (`policy_unsatisfiable`, target not resolvable, holder not a member). Default timeouts:
+  `metadata` 30 s, content conditions 10 min; `--timeout 0` waits indefinitely.
+- **W4 Seed wait.** "The seed holds it" means the seed's fresh report is `complete: true`
+  in mode `full` for exactly the published CID (W2 `held`), not that the seed received the
+  name, the proof or the head record. `nu publish --wait-seed <peer>` is `publish` then
+  this wait; the publication result and the wait result are separate objects.
+- **W5 After success.** A satisfied `held`/`ready` wait is permission for the waiting
+  machine to go offline (sleep, disconnect, stop its daemon) without reducing the
+  confirmed copies. It is not permission to delete the local copy (`pin rm` and dataset
+  removal stay explicit), and it describes that moment: later failures are reported as
+  E8 transitions, not retroactive wait failures.
+- **W6 Snapshot.** A wait is the same evaluation as `status` at that instant; `status`
+  must show every field a wait reports, so an operator can see why a wait is blocked.
+
+### S. Safe release
+
+Protected content is: the content of the current served head, of the last policy-ready
+head, of labeled and retention-selected versions, and `cluster-surplus` pins. Release is
+per blob, decided locally by the member holding it, and only under all of the following.
+
+- **S1 Candidate.** A blob is a candidate only when the member's merged state no longer
+  obliges it to hold it: it is surplus (not owned in the current epoch), or unique to a
+  version that is neither current, last policy-ready, labeled nor retention-selected.
+- **S2 Evidence.** The member holds fresh (E4) `complete: true` reports from **every**
+  owner of the blob in the current epoch, bound (E3) to the current head (and live-set
+  root), policy and epoch. "Every owner", not a quorum: a partition that hides one owner
+  defers release. With `replicas: k`, fewer than `k` fresh confirmed owners never permits
+  release; the releasing member's own copy does not count as one of them.
+- **S3 Settled state.** The head, policy and epoch the evidence binds to have been the
+  member's merged current state for `release.settle` (default 10 min), no record is held
+  back for clock skew, and no owner's fresh report names a different epoch or policy
+  (concurrent epochs defer). An owner whose member record changed state within
+  `release.settle` does not count.
+- **S4 Concurrent heads.** While per-signer heads disagree and the displaced head's HLC
+  is within `release.settle`, the content of every disagreeing head is protected. The
+  write outcome shows the resulting head and the displaced intent; archive retention
+  decides whether the displaced head stays an obligation after settling.
+- **S5 First-held protection.** A member that has never held a policy-ready version of a
+  dataset protects the last version it fully held, regardless of head changes, and stages
+  at most `staging.max_heads` (default 2) incoming heads; further heads are observed only.
+- **S6 Drain and handoff.** A `draining` member owns nothing; its blobs become candidates
+  and leave under S1–S3. `member rm` refuses while any surplus blob lacks S2 evidence
+  unless `--force`, which is destructive, requires the dry-run report and records the
+  unconfirmed blobs in the result.
+- **S7 Pressure.** Disk pressure never releases protected content; it pauses acquisition
+  with the bytes needed and the action. Operators may release with an explicit destructive
+  command that prints the S2 shortfall per blob.
+- **S8 Pilot default.** `release.auto` defaults to `false`: candidates are reported
+  (`nu cluster dataset gc --dry-run`: blob, reason, S2/S3 evidence or shortfall) but not
+  released, until 0048's evidence tests (rows R10–R18) pass. Collections with
+  `replicas: 0` are outside S (no guaranteed copies to protect).
+
+### Negative-test matrix (readiness)
+
+"Gate" rows are required by the named task before it ships; the harness is
+[nutest](../nutest) with a fake clock and partition control.
+
+| # | Rule | Scenario | Expected | Coverage |
+|---|---|---|---|---|
+| R1 | E10/W2 | head write acknowledged by all storage members, no content fetched | `metadata.acknowledged`, `content.state` not ready; `wait ready` times out | gate: 0046 |
+| R2 | E2/W4 | seed holds the name record and structure but not all blobs | `held` wait unmet, missing lists the seed as `incomplete` | gate: 0045 |
+| R3 | E1/W1 | head moves from T1 to T2 during `wait T1` | wait keeps T1, `superseded_by: T2`; never succeeds on T2's evidence | gate: 0046 |
+| R4 | E3 | member reports complete for T in epoch E1; E2 current | not counted; status `missing` with reason `epoch` | gate: 0046 |
+| R5 | E4 | clock jumps past `evidence.fresh` with no new reports | ready → unknown, no degraded, no release | gate: 0046 |
+| R6 | E5 | `replicas: 2`, one storage member (or `spread: zone`, one zone) | `policy_unsatisfiable`, shortfall named; `wait ready` fails fast | gate: 0046 |
+| R7 | E6/E7 | all owners complete but one surplus holder incomplete | ready; `extra` counts it, `confirmed` does not change | gate: 0046 |
+| R8 | E7 | collection holdings or surplus complete, owners not | not ready; `extra` shown, no green status | gate: 0046 |
+| R9 | E6 | one-node local cluster, content complete | ready at `k=1`, `required: 1`, never claims two copies | gate: 0047 |
+| R10 | S2 | partition hides one owner after a head update | old head's unique blobs stay pinned on every member | gate: 0048 |
+| R11 | S2 | `k=2`, one owner complete, the other stale | no release; dry-run names the stale owner | gate: 0048 |
+| R12 | S3 | epoch changes (member add) within `release.settle` of readiness | release deferred until settled; then proceeds | gate: 0048 |
+| R13 | S3 | two owners report different epochs | release deferred; status shows epoch disagreement | gate: 0048 |
+| R14 | S4 | two writers write heads concurrently | both heads' content protected within settle; displaced intent in both results | gate: 0048 |
+| R15 | S5 | dataset never ready, heads advance five times | last fully held view pinned; at most 2 staged heads | gate: 0046 |
+| R16 | S6 | drain a member while an owner is partitioned | `member rm` refuses, lists unconfirmed surplus; `--force` reports them | gate: 0048 |
+| R17 | S7 | disk full during update | acquisition paused with bytes needed; protected pins untouched | gate: 0046 |
+| R18 | E9 | sampled audit passes on a member with `complete: false` | not confirmed; audit shown separately | gate: 0048 |
+| R19 | W5 | publisher stops after a satisfied seed wait; fresh client fetches the CID | success from the seed alone | gate: 0045 |
+| R20 | E8 | an owner's member record set `unavailable` by repair authority | degraded, not unknown; repair starts only with authority online | gate: 0048 |
+
+### Feature-entry gates (readiness)
+
+- **0045 (names and seeds)**: E2 full/scoped/lazy report semantics for follows, W1–W5,
+  `publish` and seed wait as separate results, R2 and R19; no claim that publication,
+  proof receipt or metadata acknowledgment is readiness.
+- **0046 (placement and readiness)**: E1–E8, E10, W1–W3, W6, S5, S7 and `release.auto`
+  defaulting to false; R1, R3–R8, R15, R17; `ContentState` carries the W3 fields; one-node
+  `k=1` status (R9) with 0047.
+- **0047 (presets and history)**: E8 archive-wide readiness over the live-set root, R9,
+  and version availability reported separately from readiness.
+- **0048 (repair, handoff, audits)**: S1–S4, S6, S8 enabling `release.auto`; E9; R10–R14,
+  R16, R18, R20 passing in nutest with partitions and a fake clock before automatic
+  release ships. Until then every release is dry-run only.
 
 ## Reader-visible versions
 

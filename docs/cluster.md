@@ -202,8 +202,9 @@ A collection with several writers merges their heads instead of choosing one by 
   If no version was ever policy-ready, protect the last fully held usable view and pause
   policy advancement; keep at most bounded incoming staging, not every observed head.
   Explicit retained snapshots remain obligations. A one-node preset can be ready at its
-  explicit one-copy policy, but never implies redundant storage. Conservative pilot mode
-  may disable automatic protected/surplus release until the evidence protocol passes tests.
+  explicit one-copy policy, but never implies redundant storage. The evidence and release
+  rules are [E1–E10 and S1–S8](operations.md#e-readiness-evidence); `release.auto` is off
+  until 0048's tests pass, so releases are dry-run reports only.
 - Without `history`, a dataset tracks current state as names do. Public `nu.name` records
   remain current-state either way; cluster history is served to members, and outside the
   cluster only through `announce` or bundles.
@@ -366,10 +367,11 @@ claiming proofs remain verifiable after key/account changes.
 - Blob sources are tried in this order: owners by rank, members holding surplus copies, then
   other members found with `/nu/have/1`. There is no DHT lookup.
 - **Handoff:** a blob that a member held but no longer owns becomes **surplus**. Keep its
-  `cluster-surplus` pin until fresh authenticated complete-content evidence for the current
-  target/policy/epoch permits release. A sampled audit alone is not a full-blob completion
-  acknowledgment. Surplus holders serve new owners; unknown/partitioned evidence preserves
-  their pins. The exact release protocol is a prerequisite, not implied by `/nu/have/1`.
+  `cluster-surplus` pin until [S1–S3](operations.md#s-safe-release) hold for that blob:
+  fresh `complete: true` reports from every owner in the current epoch, bound to the
+  current head, policy and epoch, after `release.settle`. A sampled audit is not a
+  completion report (E9). Surplus holders serve new owners; unknown/partitioned evidence
+  preserves their pins. `/nu/have/1` answers are not evidence.
 - **Liveness and repair:** members send signed heartbeats. Admin daemons running with
   `repair = auto` mark a member `unavailable` after `repair.down_after` (default 15 min) of
   missed heartbeats, and `active` again after `repair.up_after` of resumed heartbeats. These
@@ -388,19 +390,37 @@ claiming proofs remain verifiable after key/account changes.
 ### Status
 
 - **Heartbeats**, signed by the member's node key every 30 s:
-  `{peer, seq, time, free, used, epoch, datasets: [{name, head, state, owned, missing, bytes}]}`.
-  Dataset lists are sent as deltas against the previous heartbeat, and full status is fetched
-  on demand. For collections, heartbeats carry only each item holdings log's latest `seq`;
-  item holdings are streamed separately ([D22](collections.md#holdings-reports-and-index)).
-- A dataset is **replicated** at head H in epoch E only when policy is feasible (`k` eligible
-  owners and required domains for each blob) and fresh authenticated reports confirm
-  completion bound to H, policy and E. Archive-wide status covers the retention live set
-  and version-tree root; snapshot availability is also separate. Per-member summaries are
-  trusted completeness assertions, not byzantine storage proofs. Stale reports yield
-  unknown/degraded evidence, never a green result because all remaining nodes are complete.
-  Freshness windows and partition/concurrent-epoch rules must be specified and tested.
+  `{peer, seq, time, free, used, epoch, datasets: [<report>]}`. Dataset lists are sent as
+  deltas against the previous heartbeat, and full status is fetched on demand. For
+  collections, heartbeats carry only each item holdings log's latest `seq`; item holdings
+  are streamed separately ([D22](collections.md#holdings-reports-and-index)).
+- **Completion report** ([E2](operations.md#e-readiness-evidence)), one per dataset the
+  member is eligible for:
+  `{name, target, live?: <version-tree root>, mode: "full"|"scoped:<path>"|"lazy"|"owned",
+  policy: <hash>, epoch, complete: bool, missing?: {blobs, bytes}, owned: {blobs, bytes},
+  state: "syncing"|"held"|"paused"|"error", seq}`. `target` is the exact head CID the
+  member is working toward; `complete: true` is set only from completeness marks for
+  `(target, epoch)` and `(live, epoch)` and cleared by any scrub failure or deletion.
+  `policy` is the SHA-256 of the DRISL-encoded `policy` map of the dataset record; `epoch`
+  is the placement epoch hash. The heartbeat's `seq` orders reports per member.
+- A dataset is **ready** at head H in epoch E by [E5–E6](operations.md#e-readiness-evidence):
+  feasible policy and fresh `complete: true` reports from every owner of H in E, bound to
+  H, policy and E. Archive-wide readiness applies the same rule with `live` set to the
+  retention live set's version-tree root; a snapshot's availability is reported
+  separately. Reports are trusted completeness assertions, not byzantine storage proofs.
+  Stale reports make the result unknown ([E8](operations.md#e-readiness-evidence)),
+  never a green result because all remaining nodes are complete.
+- **Release algorithm** ([S1–S8](operations.md#s-safe-release)), run per member on its
+  own state: for each candidate blob b, compute `owners(b, E)` from merged state; require
+  for each owner a fresh report with `target = H`, `live = L`, `policy = P`, `epoch = E`,
+  `complete: true`; require `(H, L, P, E)` unchanged in merged state for `release.settle`
+  with no held-back records and no owner reporting another epoch; then move b's pin to
+  GC after `dataset.remove_grace`. With `release.auto = false` (default) the decision is
+  only recorded for `nu cluster dataset gc --dry-run`.
 - `nu cluster status` shows observed, syncing and served roots, mode/retention, exact-target
-  readiness, replication from → to and progress, under-replicated, unknown, paused or error.
+  readiness with the [W3](operations.md#w-exact-target-waits) fields (`confirmed`,
+  `required`, `missing`, `extra`, `evidence_age`, `epoch`, `policy`, `unmet`),
+  replication from → to and progress, under-replicated, unknown, paused or error.
   Report missing members/domains, evidence age, capacity and unavailable repair authority,
   with a next action. CLI/API waits and alerts follow [operations](operations.md#readiness-and-status).
   It also shows each member's last heartbeat, free space, clock skew and lag. `nu cluster
@@ -608,8 +628,9 @@ restore before a production recommendation.
 
 ## Details still to specify
 
-- Fresh authenticated exact-target/live-set/policy/epoch readiness evidence, feasibility,
-  release coordination under partitions/concurrent state, and unknown/degraded thresholds.
+- Owner-set size with `replicas: k` on large clusters: E6 requires every owner's report, so
+  a 100-member cluster needs 100 fresh reports per dataset; per-blob confirmed-copy counting
+  from the same reports is the scale-track refinement, with identical outcomes for k ≤ n.
 - Immutable version identity/collision validation and annotation authority; import manifest
   references authenticated by signed versions, plus historical key/identity evidence.
 - Mirror/archive preset defaults, historical availability, provenance/key evidence, budgets,

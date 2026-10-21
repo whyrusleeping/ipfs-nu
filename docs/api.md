@@ -186,7 +186,14 @@ offline); `join` needs networking and returns after the first state sync. Every 
 reports `metadata` (`MetadataState`: signer, commit, rev, `acked_by` storage members,
 `required`, `acknowledged`) apart from `content` (`ContentState`: `none` without a head,
 else `not_tracked` until placement/readiness exist); metadata acknowledgment never
-implies stored content. Writing without a suitable key is `forbidden`; a second cluster
+implies stored content. When 0046 lands, `ContentState.state` takes the
+[E-rule](operations.md#e-readiness-evidence) values `syncing`, `held`, `ready`,
+`degraded`, `unknown`, `policy_unsatisfiable`, `paused`, `error` and gains the
+[W3](operations.md#w-exact-target-waits) fields (`target`, `mode`, `epoch`, `policy`,
+`confirmed`, `required`, `missing`, `extra`, `evidence_age`, `unmet`); the same object is
+the result of `GET /datasets/{name}/wait?condition=…&target=…&timeout=…` and of
+`nu dataset wait`. `not_tracked` disappears then; clients must treat any state other
+than `ready` as not ready. Writing without a suitable key is `forbidden`; a second cluster
 or a dataset name already used in either cluster is `conflict`. In private and isolated
 mode the daemon disables mDNS and gates its host to members from start-up.
 

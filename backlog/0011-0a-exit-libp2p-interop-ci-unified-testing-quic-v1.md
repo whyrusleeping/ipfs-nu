@@ -27,3 +27,4 @@ This is the Phase 0a exit gate: prove wire compatibility continuously.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Harness merged (186e6fd; 7d140af): interop/ separate module, Nu unified-testing driver/image, Docker runner with pinned upstream binaries, Kubo/Lighthouse probes, opt-in Amino checks, .github/workflows/interop.yml (manual + nightly, artifacts). Local results: Nu↔go-libp2p and Nu↔rust-libp2p quic-v1 PASS both directions; Kubo v0.40.0 connect/identify/ping PASS; Lighthouse v8.0.1 connect/identify/eth2 SSZ ping PASS (secp256k1 identity; Lighthouse lacks /ipfs/ping); pinned public Amino peers connect/identify PASS. JS: stock unified-testing js manifest lacks QUIC-v1; follow-up in progress with js-libp2p + @chainsafe/libp2p-quic. Remote CI not yet observed (no GitHub remote).

@@ -63,6 +63,15 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID) (cid
 		return c, s.putBlock(cid.Raw, c.Multihash(), data)
 	}
 
+	// Admission (A6): a known size needs the data plus its outboard; an unknown size
+	// needs one chunk group now and its actual bytes at commit.
+	need := int64(inlineMax)
+	if size >= 0 {
+		need = size + int64(blob.OutboardSize(uint64(size)))
+	}
+	if err := s.admit(need); err != nil {
+		return cid.CID{}, err
+	}
 	f, err := s.stagingFile("blob-*")
 	if err != nil {
 		return cid.CID{}, err
@@ -113,6 +122,10 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID) (cid
 				return cid.CID{}, err
 			}
 			return c, s.putBlock(cid.Raw, m, data)
+		}
+		// The staged bytes are counted; the outboard is still to come.
+		if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
+			return cid.CID{}, err
 		}
 		if h == cid.BLAKE3 {
 			if ob, err = s.stagingFile("obao-*"); err != nil {
@@ -182,7 +195,11 @@ func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, src
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO blobs (mh, size, outboard, src_path, src_size, src_mtime, created)
+	// Delete then insert (not REPLACE) so the usage triggers see both rows.
+	if _, err := tx.Exec(`DELETE FROM blobs WHERE mh = ?`, mhKey(m)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO blobs (mh, size, outboard, src_path, src_size, src_mtime, created)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, mhKey(m), int64(size), obFile != "", src, int64(size), srcMtime, s.nowUnix()); err != nil {
 		return err
 	}
@@ -313,6 +330,9 @@ func (s *Store) AddNoCopy(path string) (cid.CID, error) {
 	size := st.Size()
 	if size <= inlineMax {
 		return s.addBlob(f, size, cid.BLAKE3, nil)
+	}
+	if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
+		return cid.CID{}, err
 	}
 	ob, err := s.stagingFile("obao-*")
 	if err != nil {

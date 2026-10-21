@@ -399,6 +399,10 @@ func TestKillMidWrite(t *testing.T) {
 	if blobs != 2 || rows != 1 || len(staged) != 0 { // the first blob and its outboard
 		t.Fatalf("after crash: %d blob files, %d rows, %d staged", blobs, rows, len(staged))
 	}
+	// Only the committed blob is charged (A1): the orphan and the emptied staging are not.
+	if st, err := s.Stats(); err != nil || st.Blobs != 1<<20 || st.Objects != 1 || st.Staging != 0 {
+		t.Fatalf("accounting after crash: %+v %v", st, err)
+	}
 }
 
 // stallReader produces n bytes, announces "midway" after half, then blocks forever.

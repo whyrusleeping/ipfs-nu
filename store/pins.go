@@ -117,6 +117,15 @@ func (w WalkStats) Complete() bool { return w.Missing == 0 }
 // (if non-nil) with each CID and whether it is held complete. Structure blocks that are
 // missing end the walk below them.
 func (s *Store) Walk(ctx context.Context, p Pin, fn func(c cid.CID, held bool) error) (WalkStats, error) {
+	var f func(c cid.CID, info Info, held bool) error
+	if fn != nil {
+		f = func(c cid.CID, _ Info, held bool) error { return fn(c, held) }
+	}
+	return s.walk(ctx, p, f)
+}
+
+// walk is Walk with the object's Info (zero when absent).
+func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, held bool) error) (WalkStats, error) {
 	var links LinksFunc
 	if p.Mode == Recursive {
 		var ok bool
@@ -149,7 +158,7 @@ func (s *Store) Walk(ctx context.Context, p Pin, fn func(c cid.CID, held bool) e
 			st.Missing++
 		}
 		if fn != nil {
-			if err := fn(c, held); err != nil {
+			if err := fn(c, info, held); err != nil {
 				return st, err
 			}
 		}
@@ -298,7 +307,8 @@ func (s *Store) sweepOrphans(cutoff int64) (int, error) {
 	return n, nil
 }
 
-// GCIfAbove runs GC when Usage exceeds high bytes (the size watermark).
+// GCIfAbove runs GC when Usage exceeds high bytes; GCIfNeeded applies the configured
+// limits instead.
 func (s *Store) GCIfAbove(ctx context.Context, high int64, o GCOptions) (bool, GCResult, error) {
 	u, err := s.Usage()
 	if err != nil || u <= high {

@@ -29,7 +29,17 @@ func (c *Conn) RemoteAddr() net.Addr      { return c.quic.RemoteAddr() }
 func (c *Conn) Close() error              { return c.quic.CloseWithError(0, "closed") }
 func (c *Conn) reserveStream() (*Stream, error) {
 	h := c.host
-	h.mu.Lock()
+	for {
+		version, err := h.checkPeerVersion(c.peer)
+		if err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		if version == h.gateVersion {
+			break
+		}
+		h.mu.Unlock()
+	}
 	defer h.mu.Unlock()
 	if h.closed || c.Context().Err() != nil {
 		return nil, net.ErrClosed

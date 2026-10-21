@@ -8,6 +8,7 @@ import (
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	libmdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	libquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
@@ -100,5 +101,31 @@ func TestMDNSInterop(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("mDNS interop on %s: Nu seen=%v go-libp2p seen=%v", iface.Name, seenNu, seenUpstream)
 		}
+	}
+	upstream.SetStreamHandler("/test/mdns-session/1", func(s network.Stream) {
+		defer s.Close()
+		_ = s.SetDeadline(time.Now().Add(time.Second))
+		b, err := wire.ReadMessage(s, 16)
+		if err == nil {
+			_ = wire.WriteMessage(s, b, 16)
+		}
+	})
+	sessions, err := host.NewSessions(nu, host.SessionConfig{Lookup: discovery, Cache: discovery.Cache()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessions.Close()
+	stream, err := sessions.OpenStream(ctx, remote, "/test/mdns-session/1")
+	if err != nil {
+		t.Fatal("LAN session connect", err)
+	}
+	defer stream.Close()
+	_ = stream.SetDeadline(time.Now().Add(time.Second))
+	if err := wire.WriteMessage(stream, []byte("LAN transfer"), 16); err != nil {
+		t.Fatal(err)
+	}
+	response, err := wire.ReadMessage(stream, 16)
+	if err != nil || string(response) != "LAN transfer" {
+		t.Fatal("LAN session transfer", err)
 	}
 }

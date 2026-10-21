@@ -180,6 +180,54 @@ relay/direct packet paths (D11). With standard peers, a session can hold separat
 and relayed connections once that support lands. [Resumable requests](data.md#d14-transfer-protocols)
 let transfers change connections without restarting the entire download.
 
+### v0 direct/hinted sessions
+
+`host.NewSessions` wraps a Host with one canonical Session per PeerId. `Connect`
+coalesces concurrent attempts and reuses live authenticated host connections;
+`Session.OpenStream` opens an optimistic protocol stream, reconnecting before a
+new request if the connection has gone away. Never replay sent application bytes.
+The request protocol verifies chunks/objects and supplies a new resume request.
+Stream creation contexts do not replace request I/O deadlines; always Close/Reset.
+A canceled connect waiter does not cancel the shared attempt for other waiters;
+the attempt is bounded by ConnectTimeout, and manager Close/Forget cancels it.
+
+Candidates come from explicit/member/link addresses, the local cache, and streaming
+lookup results, starting dials as soon as addresses arrive. Sort available candidates
+LAN/loopback first, then global IPv6, then public IPv4, using confidence within each
+rank. Default stagger is 50 ms; a failed last active dial advances immediately.
+Defaults are 128 canonical sessions/explicit peers, 32 candidates per attempt,
+16 concurrent dials across the manager, four per attempt, 2 s per dial and 5 s per
+connect attempt. The first successful authenticated path wins; cancel/join losing
+dials and close extra successful connections. Retained session handles become invalid
+after Forget, which releases the session slot and can also revoke membership.
+
+Only literal QUIC-v1 direct addresses are dialable in v0. DNS/circuit hints are
+preserved but fail with ErrUnsupportedAddress until their resolver/transport lands.
+No-address cases match ErrNoAddresses. DialError retains per-address reasons
+and lookup errors and unwraps them for errors.Is/As. Certificate PeerId mismatch
+has a typed Expected/Actual error, preserved through QUIC's handshake failure.
+Successful dial addresses enter the optional cache at confidence 1 with seven-day
+expiry; do not promote an address merely because Dial reused another connection.
+Cache persistence failure warns but does not discard a working connection.
+
+Private mode treats explicit Peers/SetPeer as administrative authorization and
+never queries the supplied Resolver. Hints/cache cannot authorize a new member;
+AddHints for a nonmember is rejected. The owner must not separately start public
+lookup/mDNS services in explicit mode. Private sessions install an additional host
+connection guard, intersecting any application/harness policy. Construct it before
+registering application handlers; use Host.Config.AllowPeer to gate private identity
+admission from the moment the listener opens. The guard does not undo data served
+before its installation. Closing the private manager leaves a deny-all guard until
+host shutdown, never silently making it public.
+The session manager owns neither the Host nor the lookup service; close those too.
+
+Host connection gating applies to inbound/outbound certificate identities, connection
+admission and new stream admission. Primary and additional policies intersect and
+run outside host locks. SetConnectionGater/RecheckConnections invalidate concurrent
+admission decisions and close newly denied live connections. This supports harness
+partitions without socket replacement; clearing the primary gate cannot override a
+private-membership guard. Disconnect explicitly drops a peer's current connections.
+
 ## D10. Home relays
 
 Every non-publicly-reachable node on the public Nu network maintains home/backup circuit

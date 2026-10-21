@@ -78,7 +78,7 @@ func NewMDNS(ctx context.Context, cfg MDNSConfig, cache *Cache) (*MDNS, error) {
 			return nil, err
 		}
 		for _, i := range all {
-			if i.Flags&net.FlagUp != 0 && i.Flags&net.FlagMulticast != 0 && i.Flags&net.FlagLoopback == 0 {
+			if i.Flags&net.FlagUp != 0 && i.Flags&net.FlagMulticast != 0 && i.Flags&net.FlagLoopback == 0 && len(interfaceIPs(i)) > 0 {
 				interfaces = append(interfaces, i)
 			}
 		}
@@ -188,8 +188,11 @@ func (m *MDNS) records(iface net.Interface) []dns.RR {
 	var texts []string
 	var used []net.IP
 	for _, address := range m.config.Addresses() {
-		if len(texts) >= 8 || address.Opaque() {
+		if len(texts) >= 8 {
 			break
+		}
+		if address.Opaque() {
+			continue
 		}
 		parsed, err := ma.NewMultiaddrBytes(address.Bytes())
 		if err != nil {

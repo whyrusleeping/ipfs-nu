@@ -7,13 +7,13 @@ import (
 
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
 )
 
-// Peer is a provider candidate the fetcher can open request streams to. Sessions (D9)
-// implement it so requests follow the peer's best path; HostPeer is the minimal version
-// over one host connection.
+// Peer is a provider candidate the fetcher can open request streams to. SessionPeer
+// follows the peer's best path (D9); HostPeer only uses existing host connections.
 type Peer interface {
 	ID() wire.PeerID
 	// Open opens a new stream for one request (see proto.Opener).
@@ -35,6 +35,20 @@ func HostPeer(h *host.Host, id wire.PeerID) Peer {
 	return hostPeer{id: id, open: proto.HostOpener(h, id)}
 }
 
+// SessionPeer opens each request through s, dialing on demand and reconnecting after
+// connection loss. It never retains a connection or replays request bytes; the fetcher
+// resumes verified ranges on a new stream. The caller owns the session manager's lifetime.
+// Forget invalidates this peer just as it invalidates s.
+func SessionPeer(s *host.Session) Peer {
+	return hostPeer{id: s.PeerID(), open: func(ctx context.Context, protocol string) (proto.Stream, error) {
+		stream, err := s.OpenStream(ctx, protocol)
+		if err != nil {
+			return nil, err
+		}
+		return stream, nil
+	}}
+}
+
 // Providers finds candidate peers for content (D15 sources: link hints, publisher nodes,
 // swarms, connected/LAN candidates, routing). Find calls found for each candidate as it is
 // discovered and returns when the source is exhausted. Candidates are confirmed with
@@ -51,6 +65,36 @@ func (s Static) Find(_ context.Context, _ cid.CID, found func(Peer)) error {
 		found(p)
 	}
 	return nil
+}
+
+// Hinted offers session-backed peers from parsed link hints (e.g. lookup.ParseHints).
+// Find installs addresses without dialing; /nu/have/1 opens the first connection.
+// Hints confer no private membership: Sessions must authorize those peers separately.
+// Invalid/rejected hints are reported while other candidates remain usable.
+// The caller must not mutate Hints during Find and owns Sessions' lifetime.
+type Hinted struct {
+	Sessions *host.Sessions
+	Hints    []lookup.Hint
+}
+
+func (h Hinted) Find(ctx context.Context, _ cid.CID, found func(Peer)) error {
+	var errs []error
+	for _, hint := range h.Hints {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
+		if err := h.Sessions.AddHints(ctx, []lookup.Hint{hint}); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		s, err := h.Sessions.Get(hint.Peer)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		found(SessionPeer(s))
+	}
+	return errors.Join(errs...)
 }
 
 // Connected offers every peer h is connected to. Use it only where connected peers are

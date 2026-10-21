@@ -1,7 +1,7 @@
 ---
 id: "0022"
 title: '0c: Sync layer 1: `/nu/bytes/1` (any CID, Bao ranges) + `/nu/have/1`'
-status: in_progress
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

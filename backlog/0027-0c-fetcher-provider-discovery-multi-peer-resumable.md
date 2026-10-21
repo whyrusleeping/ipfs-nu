@@ -29,3 +29,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Started on track/data against a Peer/Opener interface so 0040 sessions plug in when merged (0040 still in progress).

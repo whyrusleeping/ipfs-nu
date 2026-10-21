@@ -21,3 +21,4 @@ Acceptance: LAN and routed peers transfer through sessions with bounded resource
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (85c55b5, merged 8ffac44). host.Sessions: per-peer sessions, staggered LAN→IPv6→IPv4 race, typed errors (no addresses, per-address DialError, PeerIDMismatchError), private allowlist mode with zero discovery, connection gaters for partitions. Evidence: TestSessionsVerifiedResume, TestSessionFailuresAndBounds, TestPrivateSessionsAndPartitionGate, TestAddressRaceOrder, experiments/TestMDNSInterop (session transfer to go-libp2p).

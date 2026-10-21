@@ -1,10 +1,10 @@
 ---
 id: "0051"
 title: '0c: atproto repo core: v3 commits, proofs, diffs/inversion, streamable CAR, P-256/k256 signing'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-30"
-updated: "2026-09-30"
+updated: "2026-10-21"
 depends_on:
     - "0004"
     - "0007"

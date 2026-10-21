@@ -108,7 +108,7 @@ var cmdCat = &command{
 		if err != nil {
 			return err
 		}
-		n, err := e.node(ctx)
+		n, err := e.nodeOrLocal(ctx)
 		if err != nil {
 			return err
 		}
@@ -135,7 +135,7 @@ var cmdLs = &command{
 		if err != nil {
 			return err
 		}
-		n, err := e.node(ctx)
+		n, err := e.nodeOrLocal(ctx)
 		if err != nil {
 			return err
 		}
@@ -162,6 +162,9 @@ var cmdGet = &command{
 			return err
 		}
 		if _, err := oneTarget(fs.Args()); err != nil {
+			return err
+		}
+		if _, err := e.nodeOrLocal(ctx); err != nil {
 			return err
 		}
 		return apiv0.NotImplemented("get")

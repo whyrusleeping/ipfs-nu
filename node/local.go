@@ -35,6 +35,13 @@ func NewLocal(r *repo.Repo) *Local {
 
 var _ Node = (*Local)(nil)
 
+// Close stops the node: running operations are cancelled. Later it closes the store and
+// network.
+func (n *Local) Close() error {
+	n.Ops.CancelAll()
+	return nil
+}
+
 // Paths returns the repo layout.
 func Paths(r *repo.Repo) apiv0.Paths {
 	return apiv0.Paths{

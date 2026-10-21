@@ -230,7 +230,8 @@ func fetchWhole(ctx context.Context, open Opener, mh cid.Multihash, max uint64) 
 
 // Fetch fetches a whole object from one peer into st. size is the object size from an
 // authenticated source (tree entry, file node), or -1 if unknown, in which case the size the
-// peer reports is used and is only proven when the blob completes. Large BLAKE3 blobs go
+// peer reports is used and is only proven when the blob completes. Package fetch proves
+// sizes first and downloads from several peers; this is the single-peer building block. Large BLAKE3 blobs go
 // through a store.Partial, resuming from groups already held, and are committed when
 // complete; everything else uses FetchWhole.
 func Fetch(ctx context.Context, open Opener, st *store.Store, c cid.CID, size int64) error {

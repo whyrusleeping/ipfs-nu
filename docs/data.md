@@ -167,8 +167,17 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   or bytes follow the expected body. The client discards unverified data and demotes the
   peer. Refusals, resets, truncation and timeouts say nothing about a peer's honesty.
 - A minimal client can fetch every Nu object with this protocol and walk DRISL links itself.
-- The fetcher divides large BLAKE3 blobs across peers and re-requests outstanding ranges from
-  multiple peers during the endgame. Serving reads blob data and its outboard.
+- The fetcher divides large BLAKE3 blobs across peers in 1 MiB chunks (one range request
+  each, per-peer concurrency bounded), planned from `/nu/have/1`, and re-requests outstanding
+  chunks from a second peer during the endgame; the first verified copy wins. A peer that
+  sends corrupt data is dropped for the rest of the fetch; peers that lack data stay.
+  Serving reads blob data and its outboard.
+- Blob sizes come from an authenticated parent (tree entry, file node). Otherwise a size
+  claimed in `/nu/have/1` is proven before use by verifying the blob's last group from a
+  peer that claimed it (Bao binds the size to the root). A partial blob whose size differs
+  from the proven size is discarded, and peers that claimed another size are dropped.
+- Without `/nu/tree/1`, trees are fetched by a layer-1 walk: the nu-tree walk's structure
+  nodes level by level in parallel batches, then the blobs in parallel.
 
 ### `/nu/tree/1`
 

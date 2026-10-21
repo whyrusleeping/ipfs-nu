@@ -97,6 +97,23 @@ func (s *Store) OpenPartial(m cid.Multihash) (*Partial, error) {
 	return p, nil
 }
 
+// DiscardPartial deletes a partial blob and its files, for example when its size turned out
+// to be wrong. Handles on it must be closed first. Discarding a missing partial is a no-op.
+func (s *Store) DiscardPartial(m cid.Multihash) error {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+	if _, err := s.db.Exec(`DELETE FROM partials WHERE mh = ?`, mhKey(m)); err != nil {
+		return err
+	}
+	path := s.partialPath(m)
+	for _, f := range []string{path, path + ".obao"} {
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Sink returns the blob.Sink for blob.DecodeSlice; it may be used from several goroutines
 // for disjoint ranges.
 func (p *Partial) Sink() blob.Sink {

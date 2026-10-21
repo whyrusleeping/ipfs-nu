@@ -46,6 +46,129 @@ between them. They therefore run no relays, AutoNAT, port mapping, nu-path or ho
 and they never use third-party infrastructure; Amino, lookup servers and defaults are off.
 libp2p PSK private networks are not available over QUIC.
 
+### Wire primitive encoding and bounds
+
+Node identities are Ed25519. The node-key file is the standard libp2p PrivateKey
+protobuf (type 1, 64-byte seed/public concatenation), created exclusively with mode
+0600, never overwritten by key generation. Loading rejects nonregular files and
+permissions other than 0600. Public key protobufs are deterministic: Type then Data,
+no extra fields, minimal varints. Keys are capped at 8192 encoded bytes; RSA modulus
+sizes are 2048–8192 bits. secp256k1 verification uses the pure-Go Decred v4 module
+because the standard library has no secp256k1 implementation; generation and signing
+of non-Ed25519 identities are not exposed.
+
+PeerIds embed public-key protobufs of at most 42 bytes using identity multihash;
+larger keys use SHA-256. The binary ID limit is 44 bytes, the text limit 128 bytes.
+Accept legacy base58btc and multibase CIDv1 with codec `libp2p-key` (0x72); generate
+legacy base58btc and lowercase base32/base36 CIDv1 strings.
+
+Multiaddrs retain exact bytes. Registered protocols outside the dialable subset are
+preserved without transport semantics. At a truly unregistered protocol code, retain
+the entire remaining suffix opaquely: multiaddr does not encode unknown protocol
+lengths. These addresses have no standard textual rendering and must not be dialed.
+Callers supply maximum text/binary address sizes.
+
+Signed envelopes use RFC 0002: sign the concatenation of the length-prefixed domain,
+payload-type bytes and payload (multiformats uvarint lengths). An empty payload-type
+hint is permitted. Peer records use domain `libp2p-peer-record`, type bytes `03 01`,
+and the deployed peer-record protobuf (PeerId field 1, uint64 sequence field 2,
+repeated AddressInfo field 3, multiaddr bytes in AddressInfo field 1). The record
+PeerId must match the envelope signer. Callers supply total-message, address-count
+and per-address limits, and enforce increasing sequences when storing records.
+Unknown protobuf fields of wire types 0/1/2/5 are skipped; groups, truncated or
+nonminimal varints, bad signatures and identity mismatches are errors. Nested parsing
+is fixed-depth (envelope → record → AddressInfo). Protobuf uint64 *values* support
+all 64 bits; tags, lengths and multiformats integers use `core/varint`'s 63-bit profile.
+
+### Direct QUIC host
+
+Use one stock quic-go Transport per UDP socket, at most one socket per IP family;
+pass pluggable PacketConns directly through to preserve their OOB capabilities.
+Only QUIC-v1 is enabled; unidirectional streams, 0-RTT and TLS session resumption
+are disabled. The ALPN is `libp2p`, TLS minimum version 1.3. Certificates carry
+OID `1.3.6.1.4.1.53594.1.1` with DER SignedKey (two OCTET STRINGs: key protobuf,
+signature). The host key signs `libp2p-tls-handshake:` concatenated with the exact
+certificate SubjectPublicKeyInfo. Verify one current self-signed certificate,
+reject unknown critical extensions, and on dial require the derived PeerId to
+match the `/p2p` suffix. Certificates are limited to 16 KiB. Generated certificates
+use an unrelated P-256 key and one-year validity (one-hour NotBefore allowance).
+
+The initial dialer accepts literal `/ip4|ip6/.../udp/.../quic-v1/p2p/<id>` only;
+DNS resolution, address racing and hints are session/discovery-layer work.
+Default limits are 128 total pending/established connections, one connection per
+peer, 1024 local streams total, 64 per peer and 64 per connection. All are explicit
+host configuration fields. QUIC receive-window caps are 1 MiB per stream and
+4 MiB per connection; handshake idle timeout is 5 s and connection idle timeout
+60 s (20 s keepalive). Reuse a live connection when dialing a known peer. Resolve
+simultaneous duplicate dials consistently: the lower binary PeerId keeps its
+outgoing connection and the higher keeps that same incoming connection. Closing
+or resetting a stream releases its local resource slot; half-closing writes alone
+does not. Host shutdown closes connections, listeners, transports and owned sockets.
+
+### Multistream and request framing
+
+Every routed bidirectional stream negotiates `/multistream/1.0.0`, followed by a
+protocol proposal. Tokens are uvarint-length-prefixed UTF-8 strings terminated
+by one newline; the length includes that newline and is capped at 1024 bytes.
+Embedded NUL/CR/newline is invalid. Accept a proposal by echoing it, otherwise send
+`na` and permit another proposal (at most 16 per stream). Negotiation has a 5 s
+stream deadline. Malformed, rejected/abandoned or over-limit streams are reset in
+both directions with application error 0x100; connection errors use code 1.
+
+The host routes incoming streams automatically; transport-level callers may set
+`ManualStreams` and accept raw streams themselves. Register each protocol with a
+positive, host-wide inbound-handler concurrency limit; exhaustion responds `na`.
+Changing a handler while it is executing is rejected. The dispatcher closes the
+stream when its handler returns. Applications own request I/O deadlines after
+negotiation. `OpenStream(peer, protocol)` eagerly confirms negotiation;
+`OpenStreamLazy` pipelines the header, proposal and first write, checks both
+acknowledgements before the first read (or explicit `Confirm`), and reports `na`
+as `ErrNotSupported`. A lazy rejection can follow sent request bytes, so applications
+must not retry a non-idempotent request without their own acknowledgement contract.
+
+Application message helpers use minimal multiformats uvarint length then exact
+message bytes, with a caller-supplied maximum checked before allocation. They do
+not read ahead, so protocol payload starts immediately after the negotiation.
+
+### Identify, push, ping and address observations
+
+The core protocol service registers `/ipfs/id/1.0.0`, `/ipfs/id/push/1.0.0`, and
+`/ipfs/ping/1.0.0`. On each new connection it requests identify; local protocol
+changes automatically push the current full snapshot to connected peers advertising
+push support. Connection/protocol notifications coalesce and the background worker
+processes peers serially. Explicit Identify/Push/Ping requests share a 32-request
+limit; each inbound core handler also has a 32-stream limit. Deadlines default to
+5 s. Instantiate one core service per host and close it before closing the host.
+
+Identify protobuf fields are public key (1), repeated binary listen multiaddrs (2),
+repeated protocol strings (3), observed multiaddr (4), protocol version (5), agent
+version (6), and signed peer-record envelope (8). Responses/pushes send one
+length-prefixed protobuf of at most 4 KiB; an oversized local snapshot is an error,
+not silent truncation. Receivers merge up to ten length-prefixed fragments (8 KiB
+per fragment, 64 KiB aggregate) through clean EOF, accepting protobuf unknown fields.
+Limits after merging are 128 addresses, 1024 bytes per address/string, and 1024
+protocols. Strings must be UTF-8 and protocol names must be valid multistream IDs.
+Public keys and signed peer records, when present, must match the authenticated
+connection's PeerId. Signed peer records are separately verified, limited to 8 KiB,
+and only replace cached certified addresses for strictly increasing sequences;
+unsigned listen addresses remain explicitly separate. Malformed input resets the
+stream and is not cached. Defaults advertise protocol version `ipfs/0.1.0`, an
+agent derived from the product-name constant, and actual bound socket addresses.
+
+The peer-info cache holds at most 256 peers, evicting the oldest update. Address
+observations are untrusted claims keyed by the observer's actual connection IP/port,
+not its advertised address or PeerId alone. Retain only the newest observation per
+endpoint, including local socket address and timestamp, capped at 128 endpoints
+(oldest evicted). They are not automatically promoted to advertised addresses or
+reachability evidence; AutoNAT/NAT profiling consumes them later. The v0 cache is
+in-memory and has no retention/TTL or persistence contract yet.
+
+Ping sends 32 random bytes and requires an exact echo; RTT excludes protocol
+negotiation. Servers echo successive 32-byte frames, with a 5 s idle/request deadline
+and a 30 s stream lifetime. EOF closes cleanly; partial frames, incorrect echoes
+and timeouts reset the stream. Ping, identify and push failures do not close an
+otherwise authenticated connection.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

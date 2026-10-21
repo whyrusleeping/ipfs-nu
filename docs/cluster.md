@@ -349,7 +349,8 @@ claiming proofs remain verifiable after key/account changes.
 - No per-blob allocation is stored or agreed on. Each member determines its own blobs while
   walking structure. An epoch change triggers a rescan: about 10⁹ short hashes for 10M
   entries × 100 members. Benchmarks must confirm the cost.
-- **Capacity** is an admin-set placement weight; `store_limit` is a separate physical budget.
+- **Capacity** is an admin-set placement weight; `store_limit` is a separate physical budget
+  (the member's `store.limit`, [D17 A5](data.md#accounting-and-budgets)).
   A member that reaches its store limit stops
   acquiring blobs and reports `full`, and affected datasets report under-replication.
   Placement never spills automatically, which keeps it a pure function of signed state.

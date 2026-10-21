@@ -255,22 +255,53 @@ today's DID document alone is not a timeless verification record.
 
 ## Capacity and transfer budgets
 
-Keep these controls distinct:
+Three controls, kept distinct; the store's measures, attribution, admission and pressure
+mechanics are [D17 A1–A8](data.md#accounting-and-budgets).
 
-1. **Logical quota:** referenced file bytes for the selected dataset/scope. `max_size` /
-   `--max-size` means this limit, not a cumulative network budget.
-2. **Physical budget:** unique local blob bytes plus outboards, structure/DB, retained versions,
-   staging/partial downloads and surplus. Charge shared physical bytes once daemon-wide;
-   per-dataset logical totals may count repeated references. Attribution rules need precision.
-3. **Transfer budget:** downloaded bytes over a stated interval and bandwidth/concurrency caps.
-   Repeated retargeting can consume it even while all versions fit the logical quota.
+- **C1 Logical quota.** `max_size`/`--max-size` bound the logical bytes (A1) of one
+  dataset/scope: what it references, counted once per scope, not a cumulative network
+  allowance. A new or grown target that would exceed it pauses that scope with `quota`
+  before fetching; what is held stays held.
+- **C2 Physical budget.** `store.limit` and `store.free_reserve` bound the daemon-wide
+  physical bytes (A5): unique blob bytes plus outboards, structure/DB, retained versions,
+  staging/partials and surplus, each charged once. Per-scope `unique`/`shared` (A4) say
+  what a release would free. A member's `store_limit` in cluster state is this budget.
+- **C3 Transfer budget.** T1–T4 below: received bytes over an interval plus bandwidth and
+  concurrency caps. Repeated retargeting consumes it even while every version fits C1.
+- **C4 Preflight.** Before syncing a target, report the logical size, the additional unique
+  physical bytes where known (missing objects by declared size, marked as an estimate),
+  staging headroom and policy/capacity shortfalls. Publisher and peer size fields are
+  claims (A2): count actual bytes, stop at enforced limits, and never trust a signed size
+  as correct. A false or huge claim is refused before any byte is fetched when it cannot
+  fit (A6) and disproven by verifying the last chunk group otherwise.
+- **C5 Pressure.** On any shortfall: pause new acquisition with the bytes needed and the
+  action to resume (`insufficient_storage` for operations; `paused` with the same details
+  for follows/datasets), reclaim unpinned cache and abandoned staging (A7), and preserve
+  every pin: held, retained, surplus and protected ([S7](#s-safe-release)). Never remove
+  archives or retained versions to make a new update fit. Status shows `pressure`,
+  headroom and the per-scope attribution so an operator can choose what to release.
 
-Preflight reports additional unique storage where known, uncertainty, staging headroom and
-policy/capacity shortfalls. Publisher size fields are estimates until independently checked;
-count actual bytes and stop at enforced limits. Do not trust a signed size claim as correct.
-Reserve daemon-wide free space. On pressure, cancel/pause new acquisition, reclaim unpinned
-cache/abandoned staging safely, and preserve held/retained/surplus pins. Report extra space
-needed and the action to resume. Do not automatically remove archives to make a new update fit.
+### T. Transfer budgets
+
+- **T1 Measure.** Transfer bytes are bytes received from peers (or HTTPS sources), counted
+  as they arrive, including bytes later rejected as corrupt, within a window of
+  `transfer.interval` (default 24 h) that starts at the first charge and resets when it
+  has elapsed. Budgets exist daemon-wide (`transfer.limit`), per
+  follow/dataset (`--transfer-limit`) and per peer (serving-side upload caps); each is a
+  `store.Meter` with `{limit, interval, used, resets_at}`. Bandwidth (`transfer.rate`)
+  and concurrency (`fetch.blobs`, `fetch.peer_requests`) caps shape, not stop, transfer.
+- **T2 At the limit.** The consumer pauses the acquisition that would exceed the budget
+  with status `paused: transfer_budget {used, limit, interval, resets_at, scope}` and the
+  resume action (wait for `resets_at`, or raise the budget). A pause changes no held state:
+  the previous held version stays served, partial blobs keep their verified groups and
+  resume, pins are not released. A target whose fetch paused is never reported held,
+  complete or ready; there is no silent partial "held".
+- **T3 Retargets.** Every retarget charges the same budgets. An exhausted budget pauses at
+  the next retarget with the held version intact; status shows the lack of progress and
+  the next reset.
+- **T4 Enforcement.** The meter is the hook; the fetcher charges it when configured and
+  the follow/cluster consumers configure it per scope. Until the first consumer ships,
+  no transfer budget is enforced and status says so.
 
 Archive cost includes whole changed files initially. Benchmark monolithic rewrites, appends,
 small-object changes and sharded indexes before committing update-cost claims. Sub-file reuse

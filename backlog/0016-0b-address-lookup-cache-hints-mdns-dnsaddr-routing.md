@@ -29,3 +29,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/http (ffc9410; merged 3594b9d). p2p/lookup: DNS dnsaddr Source (recursion, limits, TCP fallback), HTTP routing/v1 peers Source via httpsrc, Directory (signed-record PUT publication, DNS + HTTP handlers) and Publisher; relay.Config.Lookup hook. Evidence: experiments/TestDNSADDRLookupInterop (stock go-libp2p dials Nu given only /dnsaddr/<id>.peers.example.test/p2p/<id>), public_test.go suite, parser fuzz seeds. Deferred: CLI/daemon wiring of public sources and the relay lookup server flags, persisted publication sequences, public TLS/authoritative DNS deployment (0039).

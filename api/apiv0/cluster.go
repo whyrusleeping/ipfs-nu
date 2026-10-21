@@ -56,7 +56,11 @@ type MetadataState struct {
 }
 
 // ContentState is the content side of a status. Placement and readiness evidence are
-// not implemented yet, so State is "not_tracked" (or "none" with no head).
+// not implemented yet, so State is "not_tracked" (or "none" with no head). 0046 gives
+// State the docs/operations.md E-rule vocabulary (syncing, held, ready, degraded, unknown,
+// policy_unsatisfiable, paused, error) and adds the W3 wait fields (target, mode, epoch,
+// policy, confirmed, required, missing, extra, evidence_age, unmet); any state other than
+// "ready" is not ready.
 type ContentState struct {
 	State  string `json:"state"`
 	Detail string `json:"detail,omitempty"`

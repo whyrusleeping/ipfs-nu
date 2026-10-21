@@ -199,8 +199,59 @@ scope, and lazy ones only structurally. See [reader versions](operations.md#read
 
 Verified name deletion ends the follow but leaves visible orphaned retained pins for the
 user to manage. Explicit unfollow releases that follow's pins only; other pin sources stay.
-DID-wide following (existing/future names, non-tree targets, per-name/aggregate quotas and
-recreation after deletion) needs explicit lifecycle rules before its CLI form ships.
+
+The three roots are independent state: *observed* is the newest verified proof's target
+(the name cache, possibly newer than anything held); *syncing* is the target the engine is
+currently acquiring, if any; *held* is the root the follow gateway serves. Readiness
+reports ([E2](operations.md#e-readiness-evidence)) always carry the follow's mode:
+`full` is complete when every structure node and blob of the target is verified present;
+`scoped:<path>` when the proof chain from the root to `<path>` and the whole subtree are;
+`lazy` when all structure is, blobs being cached on access. A scoped follow whose path is
+missing or changes type pauses at the previous held root (`paused`, reason shown) and
+never widens; a lazy follow is never `full`-complete, so a seed asked for a `full` wait
+while following lazily reports `incomplete`, not success.
+
+### Seed waits
+
+A seed is a storage member of the publisher's cluster ([product](product.md#keep-it-available)),
+following the name or pinning a fixed CID. `nu publish <name> <cid> --wait-seed <peer>`
+and `nu wait --holder <peer> <cid>` apply [W1–W5](operations.md#w-exact-target-waits):
+
+- The wait binds the exact CID the publisher wrote, never the name. It is satisfied only
+  by the seed's fresh completion report with `target = <cid>`, `mode = full`,
+  `complete: true`, received over `/nu/cluster/1` heartbeats or the authenticated
+  `status` stream. Name resolution, proof receipt, `metadata.acknowledged` and the seed
+  listing the name in `follow ls` do not satisfy it (operations R2).
+- The result has `publication` (rev, record CID, PDS answer) and `wait` ([W3](operations.md#w-exact-target-waits))
+  as separate objects; `publish` without `--wait-seed` prints that the content is not
+  yet seed-held. A newer publication during the wait sets `superseded_by`; the wait does
+  not move (W1).
+- After `satisfied: true` the publisher may go offline; `nu follow ls`/`status` on the
+  seed then show the dataset as `held` with `confirmed: 1, required: 1`, and a fresh
+  third client fetching the CID succeeds from the seed alone (operations R19).
+- Seeds in a private/isolated cluster serve members only; public retrieval needs public
+  mode and `announce` ([cluster](cluster.md#public-mode)).
+
+### DID-wide follows
+
+`nu follow <did-or-handle>` (no name) follows every `io.ipfs.nu.name` record of the
+account as one *DID follow* that owns per-name mirror datasets:
+
+- **Future names.** Names created after the follow are followed automatically with the DID
+  follow's options; `nu follow ls` lists them under the DID. `nu unfollow <did>/<name>`
+  writes an exclusion so that name is not re-followed; `nu unfollow <did>` removes all.
+- **Non-tree targets.** File and blob records are followed as single-blob datasets. The
+  held root of each sub-follow is whatever kind its record names; a kind change is a new
+  target like any other.
+- **Quotas.** `--max-size` on the DID follow is an aggregate logical quota over all its
+  names; `--path` and `--lazy` apply per name. When a new or grown name would exceed the
+  aggregate, that name pauses with `quota` and the others continue; nothing already held
+  is released to make room.
+- **Deletion and recreation.** A verified deletion ends that sub-follow and orphans its
+  pins visibly (above). A later record with the same name is a new sub-follow and is
+  followed unless excluded; its orphaned pins remain separate until the user removes them.
+- **Status.** The DID follow reports the worst state among its names (`paused` if any is
+  paused) plus per-name observed/syncing/held roots; readiness and waits are per name.
 
 ### Scope boundaries
 
@@ -219,8 +270,7 @@ therefore providers, across datasets.
 
 ## Details still to specify
 
-- Exact-target seed completion evidence/waits, scope/lazy completeness, independent held
-  and observed cache state, logical/physical/transfer accounting and DID-wide lifecycle.
+- Logical/physical/transfer accounting ([0064](operations.md#capacity-and-transfer-budgets)).
 - Exact `/nu/name/1` messages, proof CAR limits, and watch-mesh degree and forwarding rules.
 - Whether firehose `#commit` blocks always contain a complete inclusion path for the record
   (MST inversion suggests so), so they can serve as proofs; verify against indigo.

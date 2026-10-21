@@ -27,6 +27,27 @@ type Config struct {
 	API     APIConfig     `toml:"api"`
 	Gateway GatewayConfig `toml:"gateway"`
 	Swarm   SwarmConfig   `toml:"swarm"`
+	// Relay configures `nu relay`; nil when the section is absent (never written by init).
+	Relay *RelayConfig `toml:"relay,omitempty"`
+}
+
+// RelayConfig configures the standalone `nu relay` role (networking D10). Flags of the
+// same name override these. Limits of 0 use the circuit server defaults.
+type RelayConfig struct {
+	// Listen holds QUIC multiaddrs; default /ip4/0.0.0.0/udp/443/quic-v1.
+	Listen []string `toml:"listen,omitempty"`
+	// Advertise holds the public addresses handed to reserving peers (without /p2p);
+	// required when a listen address is a wildcard IP.
+	Advertise []string `toml:"advertise,omitempty"`
+	// Admit lists peer IDs that get full-service (unlimited) circuits with each other.
+	Admit []string `toml:"admit,omitempty"`
+	// Limits mirror circuit.ServerConfig.
+	MaxReservations   int    `toml:"max_reservations,omitzero"`
+	ReservationsPerIP int    `toml:"reservations_per_ip,omitzero"`
+	MaxCircuits       int    `toml:"max_circuits,omitzero"`
+	CircuitsPerPeer   int    `toml:"circuits_per_peer,omitzero"`
+	CircuitsPerIP     int    `toml:"circuits_per_ip,omitzero"`
+	ReservationTTL    string `toml:"reservation_ttl,omitempty"` // Go duration, default 1h
 }
 
 // APIConfig configures the local API listener.

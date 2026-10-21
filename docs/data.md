@@ -353,7 +353,12 @@ content model.
   strong validator; without one, the download restarts. BLAKE3 URL imports have no size
   limit, while `--hash sha256` imports keep the 8 MiB whole-object limit. The add result
   records the URL, validators and size as provenance, and `--meta` can carry them into a
-  tree entry.
+  tree entry. *Implementation (0059):* `httpsrc.Import` streams into a retained file, then
+  hashes it into the store (with any checksum verified in the same pass); `nu add` retries
+  up to 4 times within its operation, and item pushes keep the retained bytes and
+  validators under `cluster/net/ingest/`, so a restart resumes them. Adopting the retained
+  file into the store without a second copy, and charging it to `store.limit` while it
+  downloads, are hardening work.
 - Use embedded SQLite (`modernc.org/sqlite`, pure Go) for DRISL blocks, pins, name cache,
   follow/dataset state, collection indexes and peer/address caches; blobs and outboards are
   files. The schema carries a version and forward migrations from the first release. Files

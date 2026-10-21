@@ -35,6 +35,9 @@ type CollectionItem struct {
 	// Holders and Conflicts are filled by the single-item query.
 	Holders   []CollectionHolder   `json:"holders,omitempty"`
 	Conflicts []CollectionConflict `json:"conflicts,omitempty"`
+	// Push is this node's push for the path (single-item query on a receiving member);
+	// an item pushed here but not in the merged catalog yet has only Path and Push.
+	Push *CollectionPush `json:"push,omitempty"`
 }
 
 // CollectionHolder is one member's reported holding of an item.

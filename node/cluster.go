@@ -632,7 +632,22 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 			replicas = 1
 		}
 	}
-	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: cluster.Source{Local: true},
+	src := cluster.Source{Local: true}
+	if in := req.Ingest; in != nil {
+		if coll == nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "ingest applies to collections").WithAction("add --collection")
+		}
+		if in.Timeout != "" {
+			if d, err := collection.ParseDuration(in.Timeout); err != nil || d <= 0 {
+				return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "ingest timeout %q must be a duration such as 2h", in.Timeout)
+			}
+		}
+		src.Ingest = &cluster.Ingest{Hosts: in.Hosts}
+		if in.MaxBytes != 0 || in.Attempts != 0 || in.Timeout != "" {
+			src.Ingest.Limits = &cluster.IngestLimits{MaxBytes: in.MaxBytes, Attempts: in.Attempts, Timeout: in.Timeout}
+		}
+	}
+	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: src,
 		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Collection: coll, Note: req.Note}})
 	if err != nil {
 		if errors.Is(err, cluster.ErrNoKey) {
@@ -690,6 +705,12 @@ func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 			}
 			if cp.Expire != nil {
 				out.Collection.Expire = cp.Expire.Facet + "=" + cp.Expire.After
+			}
+			if in := d.Value.Source.Ingest; in != nil {
+				out.Collection.Ingest = &apiv0.DatasetIngest{Hosts: in.Hosts}
+				if l := in.Limits; l != nil {
+					out.Collection.Ingest.MaxBytes, out.Collection.Ingest.Attempts, out.Collection.Ingest.Timeout = l.MaxBytes, l.Attempts, l.Timeout
+				}
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/whyrusleeping/nu"
@@ -20,8 +21,8 @@ import (
 
 var cmdAdd = &command{
 	name:    "add",
-	args:    "[-r] [--raw] [--hash sha256] [--nocopy] [--no-announce] [--no-wait] <path>",
-	summary: "add a file or directory to the local store and print its CID",
+	args:    "[-r] [--raw] [--hash sha256] [--nocopy] [--no-announce] [--no-wait] [--meta meta.json] <path|https-url>",
+	summary: "add a file, directory or https:// URL to the local store and print its CID",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		req := apiv0.AddRequest{Pin: true}
@@ -31,6 +32,7 @@ var cmdAdd = &command{
 		fs.BoolVar(&req.NoCopy, "nocopy", false, "reference the local file instead of copying it")
 		fs.BoolVar(&req.NoAnnounce, "no-announce", false, "do not announce the content to the network")
 		noWait := fs.Bool("no-wait", false, "print the operation and return instead of following it")
+		metaFile := fs.String("meta", "", "metadata record (JSON object) for the added content; URL imports add their provenance under \"source\"")
 		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
@@ -42,6 +44,25 @@ var cmdAdd = &command{
 		}
 		if req.Hash == "blake3" {
 			req.Hash = ""
+		}
+		if *metaFile != "" {
+			b, err := os.ReadFile(*metaFile)
+			if err != nil {
+				return apiv0.Errorf(apiv0.CodeNotFound, "cannot read %s: %v", *metaFile, err)
+			}
+			req.Meta = b
+		}
+		if a := fs.Arg(0); strings.HasPrefix(a, "https://") || strings.HasPrefix(a, "http://") {
+			req.URL = a
+			n, err := e.nodeOrLocalWrite(ctx)
+			if err != nil {
+				return err
+			}
+			op, err := n.Add(ctx, req)
+			if err != nil {
+				return err
+			}
+			return finishOperation(e, ctx, n, op, *noWait, printAdd)
 		}
 		p, err := filepath.Abs(fs.Arg(0))
 		if err != nil {
@@ -63,16 +84,35 @@ var cmdAdd = &command{
 		if err != nil {
 			return err
 		}
-		return finishOperation(e, ctx, n, op, *noWait, func(w io.Writer, res apiv0.AddResult) {
-			fmt.Fprintf(w, "added %s %s\n", res.CID, res.Name)
-			for _, s := range res.Skipped {
-				fmt.Fprintf(w, "skipped %s\n", s)
-			}
-			if res.Link != "" {
-				fmt.Fprintf(w, "share: %s\n", res.Link)
-			}
-		})
+		return finishOperation(e, ctx, n, op, *noWait, printAdd)
 	},
+}
+
+func printAdd(w io.Writer, res apiv0.AddResult) {
+	fmt.Fprintf(w, "added %s %s\n", res.CID, res.Name)
+	for _, s := range res.Skipped {
+		fmt.Fprintf(w, "skipped %s\n", s)
+	}
+	if src := res.Source; src != nil {
+		from := src.URL
+		if src.FinalURL != "" {
+			from = src.FinalURL
+		}
+		fmt.Fprintf(w, "from %s (%d B", from, src.Size)
+		if src.ETag != "" {
+			fmt.Fprintf(w, ", etag %s", src.ETag)
+		}
+		if src.LastModified != "" {
+			fmt.Fprintf(w, ", last modified %s", src.LastModified)
+		}
+		fmt.Fprintln(w, ")")
+	}
+	if res.Entry != nil {
+		fmt.Fprintf(w, "entry: %s %s (%d B), meta %s\n", res.Entry.Kind, res.Entry.CID, res.Entry.Size, res.Entry.Meta)
+	}
+	if res.Link != "" {
+		fmt.Fprintf(w, "share: %s\n", res.Link)
+	}
 }
 
 // finishOperation either prints the started operation (noWait) or follows it and prints

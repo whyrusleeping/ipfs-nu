@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
@@ -33,6 +34,13 @@ type CatalogFetcher interface {
 	FetchCatalog(ctx context.Context, root cid.CID) error
 }
 
+// HeadInterval overrides head.min_interval (0: the 10 s default); tests shorten it.
+var HeadInterval time.Duration
+
+// IngestBackoff is the first retry delay of item URL fetches (0: the default); tests
+// shorten it.
+var IngestBackoff time.Duration
+
 // CollectionIndex makes nodes this process starts run the holdings index (tests; the
 // daemon reads cluster.index from the config).
 var CollectionIndex = false
@@ -44,7 +52,8 @@ func (n *Local) collectionsLocked(c *cluster.Cluster) (*collection.Manager, erro
 		return cs.coll, nil
 	}
 	cfg := collection.Config{DBPath: filepath.Join(n.clusterDir("net"), "collections.db"), Store: n.Store, Cluster: c, Self: n.PeerID(),
-		Service: n.ClusterServiceNoLock, Index: CollectionIndex || n.configIndex(), Interval: ClusterInterval,
+		Service: n.ClusterServiceNoLock, Index: CollectionIndex || n.configIndex(), Interval: ClusterInterval, HTTP: n.httpClient(),
+		IngestBackoff: IngestBackoff, HeadInterval: HeadInterval,
 		GC: func(ctx context.Context) { _, _ = n.Store.GC(ctx, store.GCOptions{Grace: GCGrace}) }}
 	if f := n.Fetcher; f != nil {
 		if _, none := f.(NoFetcher); !none {

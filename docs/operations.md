@@ -369,7 +369,10 @@ destination.**
 - **A5** Request bodies are read only with `Content-Type: application/json`
   (`400 invalid_argument` otherwise). HTML forms cannot send that type and a script that
   sets it triggers a preflight, which A4 refuses, so browsers that send neither `Origin`
-  nor `Sec-Fetch-Site` still cannot deliver a state-changing body.
+  nor `Sec-Fetch-Site` still cannot deliver a state-changing body. The only exceptions are
+  the item push routes' `application/x-ndjson` (`items:batch`) and
+  `application/octet-stream` (`uploads`) bodies, which are equally not CORS-safelisted and
+  are refused under any other type.
 - **A6** No `Access-Control-*` header is ever sent; no cookie is ever set, read or used
   for authorization; responses carry `X-Content-Type-Options: nosniff` and
   `Cache-Control: no-store`.
@@ -381,7 +384,13 @@ destination.**
   operator declares trusted in config; A2 applies with a configured host allowlist in
   place of loopback; A3–A7 apply unchanged, so a token never authorizes a
   browser-originated cross-site request. The API listener is never the content listener
-  (P1).
+  (P1). *State (0059):* implemented only as the **producer listener**
+  (`api.producer.listen`, [api.md](api.md#producer-listener-and-push-tokens)), which serves
+  the item push routes alone. Its tokens are scoped to named collections, so they are
+  created per producer by `nu api token create` rather than at init; `rotate` and `rm`
+  apply on the next request. There is no TLS in this build: the daemon refuses to start
+  the listener unless `api.producer.trusted_network = true`, and `api.producer.hosts`
+  replaces the loopback check of A2. `api.listen` itself stays loopback-only (A1).
 
 ### G. Gateway and browsers
 
@@ -514,6 +523,10 @@ required by the named task before it ships.
 | N33 | X3 | symlink entry | skipped, reported | `extract.TestExtractSafety` |
 | N34 | X4 | `a.txt` and `A.txt` in one directory | both written on case-sensitive FS; second skipped naming `a.txt` on case-insensitive FS | `extract.TestExtractSafety` (Linux); macOS/APFS: browser plan B8 |
 | N35 | X5 | mode `0777`, setuid in tree | `0755` only | `extract.TestExtractSafety` |
+| N36 | A8 | producer listener: push without a token, with another collection's token, with a revoked token | 403, nothing queued | `main.TestProducerPushCLI` |
+| N37 | A8/A2 | producer listener: `Host` not in `api.producer.hosts` | 403 | `main.TestProducerPushCLI` |
+| N38 | A8 | producer listener: any non-push route (`/status`) | 404 | `main.TestProducerPushCLI` |
+| N39 | A8 | `api.producer.listen` without `trusted_network` or `hosts` | refuses to start, action names the key | gate: TLS (0043) |
 
 ### Feature-entry gates
 
@@ -580,7 +593,12 @@ Callers report verification failures against the **final origin**. The in-memory
 marks it demoted for five minutes, retaining at most 256 origins (earliest expiry evicted).
 Schedulers may prefer other sources; fetching is not automatically forbidden. In-process
 tests assert that denied hosts never reach DNS/dial; private-mode packet-capture evidence
-remains part of the private-mode exit, not this package's acceptance evidence.
+remains part of the private-mode exit, not this package's acceptance evidence. Item URL
+imports (0059) are covered in process by `collection.TestItemPush` (unlisted hosts and
+redirects to them are never looked up) and in a network namespace by
+`collection.TestPrivateIngestEgress` (`-tags natlab`; nftables counters show packets only
+to the `ingest.hosts` address and no DNS query); a packet capture on a multi-host private
+deployment is CollGS pilot evidence (0063).
 
 ## Acceptance scenarios
 

@@ -37,6 +37,12 @@ func (m *Manager) Put(name, path string, e *tree.Entry) error {
 	if _, err := m.db.Exec(`INSERT OR REPLACE INTO pending (ds, path, entry) VALUES (?, ?, ?)`, name, joinSegs(segs), eb); err != nil {
 		return err
 	}
+	m.scheduleFlush(name)
+	return nil
+}
+
+// scheduleFlush makes the next head write happen as soon as head.min_interval allows.
+func (m *Manager) scheduleFlush(name string) {
 	m.fmu.Lock()
 	wait := time.Until(m.lastFlush[name].Add(m.cfg.HeadInterval))
 	m.fmu.Unlock()
@@ -45,7 +51,6 @@ func (m *Manager) Put(name, path string, e *tree.Entry) error {
 	} else {
 		time.AfterFunc(wait, m.Kick)
 	}
-	return nil
 }
 
 func joinSegs(segs []string) string {
@@ -201,16 +206,38 @@ func (m *Manager) flushHeadsLocked(ctx context.Context, name string, d *cluster.
 	if err != nil {
 		return err
 	}
-	clear := func() error {
+	// clear drops the queued changes now in head hc and marks their pushes written, in
+	// one transaction: a crash before it re-applies them to the same head.
+	clear := func(hc cid.CID) error {
+		m.pmu.Lock()
+		defer m.pmu.Unlock()
+		tx, err := m.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
 		for _, p := range puts {
-			if _, err := m.db.Exec(`DELETE FROM pending WHERE ds = ? AND path = ? AND entry IS ?`, name, p.path, p.entry); err != nil {
+			if _, err := tx.Exec(`DELETE FROM pending WHERE ds = ? AND path = ? AND entry IS ?`, name, p.path, p.entry); err != nil {
 				return err
 			}
+		}
+		done, err := m.headWritten(tx, name, hc, puts)
+		if err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		for _, r := range done {
+			m.unpinPush(r)
+		}
+		if len(done) > 0 {
+			m.notifyPushes()
 		}
 		return nil
 	}
 	if newRoot == root && oldHeader.Defined() {
-		return clear()
+		return clear(oldHeader)
 	}
 	hdr := tree.Header{V: 1, Root: newRoot, Bytes: ed.root.size, Collection: map[string]any{"facets": facetsGeneric(facetSpecs(d))}}
 	hc, hb, err := drisl.Sum(hdr)
@@ -237,5 +264,5 @@ func (m *Manager) flushHeadsLocked(ctx context.Context, name string, d *cluster.
 	m.lastFlush[name] = m.now()
 	m.fmu.Unlock()
 	_ = ctx
-	return clear()
+	return clear(hc)
 }

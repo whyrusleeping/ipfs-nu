@@ -11,6 +11,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node"
+	"github.com/whyrusleeping/nu/node/repo"
 )
 
 // clusterNode returns the node as a node.ClusterNode (both the client and node.Local are).
@@ -126,6 +127,9 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 		if c.Expire != "" {
 			fmt.Fprintf(w, ", expire %s", c.Expire)
 		}
+		if c.Ingest != nil && len(c.Ingest.Hosts) > 0 {
+			fmt.Fprintf(w, ", ingest hosts %s", strings.Join(c.Ingest.Hosts, ", "))
+		}
 		fmt.Fprintln(w)
 	}
 	if d.Head != nil {
@@ -155,7 +159,7 @@ func datasetCommands(scope string) []*command {
 	return []*command{
 		{
 			name:    "create",
-			args:    "<name> [--replicas k] [--writer did]... [--note text] [--collection --facets facets.toml [--expire facet=400d] [--merge union|lww]]",
+			args:    "<name> [--replicas k] [--writer did]... [--note text] [--collection --facets facets.toml [--expire facet=400d] [--merge union|lww] [--ingest-hosts h,…] [--ingest-attempts n] [--ingest-timeout 2h] [--ingest-max-size 1T]]",
 			summary: "create a dataset record (metadata only; content arrives with `add`/heads)",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
@@ -167,6 +171,18 @@ func datasetCommands(scope string) []*command {
 				facetFile := fs.String("facets", "", "facet declarations file (TOML or JSON): name = {ptr, type}")
 				expire := fs.String("expire", "", "writers prune items whose time facet is older: <facet>=<duration>, e.g. sensed=400d")
 				merge := fs.String("merge", "", "collection head merge: union (default) or lww")
+				var ingest apiv0.DatasetIngest
+				fs.Func("ingest-hosts", "host names item URLs may use in private mode (comma list, repeatable)", func(s string) error {
+					for _, h := range strings.Split(s, ",") {
+						if h = strings.TrimSpace(h); h != "" {
+							ingest.Hosts = append(ingest.Hosts, h)
+						}
+					}
+					return nil
+				})
+				fs.Int64Var(&ingest.Attempts, "ingest-attempts", 0, "fetch attempts per item URL file (default 6)")
+				fs.StringVar(&ingest.Timeout, "ingest-timeout", "", "time limit per fetch attempt (default 2h)")
+				ingestMax := fs.String("ingest-max-size", "", "size limit per item URL file (default 1T)")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
@@ -184,8 +200,19 @@ func datasetCommands(scope string) []*command {
 				if err != nil {
 					return err
 				}
-				d, err := c.DatasetCreate(ctx, scope, apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note,
-					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge})
+				req := apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note,
+					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge}
+				if *ingestMax != "" {
+					var sz repo.Size
+					if err := sz.UnmarshalTOML(*ingestMax); err != nil {
+						return usagef("--ingest-max-size: %v", err)
+					}
+					ingest.MaxBytes = int64(sz)
+				}
+				if len(ingest.Hosts) > 0 || ingest.MaxBytes != 0 || ingest.Attempts != 0 || ingest.Timeout != "" {
+					req.Ingest = &ingest
+				}
+				d, err := c.DatasetCreate(ctx, scope, req)
 				if err != nil {
 					return err
 				}

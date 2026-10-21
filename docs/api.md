@@ -19,6 +19,8 @@ optional). Files are 0600, directories 0700.
 | `nu.db`, `blobs/`, `partial/`, `staging/` | The store ([D17](data.md#d17-store-and-replication)): SQLite (DRISL blocks, inline blobs, pins, import cache; schema version in `PRAGMA user_version`), complete blobs with Bao outboards, partially fetched blobs, in-progress writes |
 | `api`, `gateway` | URL of the running daemon's listeners, written at start and removed at clean shutdown; clients discover the daemon through `api` |
 | `daemon.lock` | flock held by the running daemon, containing its PID; a second daemon fails with `conflict` |
+| `tokens/<name>.json` | push tokens of the producer listener (0600; `nu api token`; deleting the file revokes it) |
+| `cluster/net/ingest/` | retained bytes of interrupted item URL downloads, with their validators |
 | `version` | layout version (`1`) |
 
 Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:8171"`,
@@ -115,7 +117,15 @@ GET    /api/v0/cluster/collections/{name}/rules          CollectionRules (with c
 PUT    /api/v0/cluster/collections/{name}/rules?dry_run= {rules: [rule…]} → CollectionRules
 GET    /api/v0/cluster/collections/{name}/conflicts      [CollectionConflict]
 GET    /api/v0/cluster/metrics                           Prometheus text: collection aggregates
+POST   /api/v0/cluster/collections/{name}/items?wait=written&timeout=  CollectionPushRequest → 202|200 CollectionPush
+POST   /api/v0/cluster/collections/{name}/items:batch    NDJSON CollectionPushRequest lines → NDJSON CollectionPushBatchLine
+DELETE /api/v0/cluster/collections/{name}/items/{path…}?wait=written → CollectionPush (state removed)
+GET    /api/v0/cluster/collections/{name}/pushes         ?since=<cursor>|0&limit= → Page[CollectionPush]
+POST   /api/v0/cluster/collections/{name}/uploads        application/octet-stream body → CollectionUpload {cid, size}
 ```
+
+`add` also takes `{url, meta?}` (URL import) and `meta` for local paths; the result then
+carries `source` (provenance), `meta` and `entry`.
 
 `add` and `get` pass absolute local paths: API and daemon run as the same user on
 loopback, so the daemon reads and writes the files itself. GET never changes state;
@@ -241,6 +251,69 @@ replaces this node's rules (TOML `[[rule]]` tables or a JSON list of flat rule o
   `_local_bytes`, `_shortfall_bytes`, `_holdings_log_seq`, and with the index
   `_unheld_items`, `_copies_items{copies}`, `_member_items{peer}`, all labelled
   `collection`.
+
+## Item pushes (0059)
+
+`node.PushNode` (`node.Local`, `client.Client`) carries the push path of
+[D22 "Ingest"](collections.md#ingest); its semantics are in
+[collections.md](collections.md#item-pushes-and-url-import-preview-0059).
+
+```text
+nu cluster collection put <ds> <path> --meta meta.json [[name=]file|dir]… [--url name=url]…
+    [--checksum name=<hex multihash>]… [--nocopy] [--upload] [--replace] [--wait]
+nu cluster collection put <ds> --batch items.ndjson
+nu cluster collection rm <ds> <path> [--wait]
+nu cluster collection pushes <ds> [--since <cursor>|0]
+nu cluster dataset create <ds> --collection [--ingest-hosts h,…] [--ingest-attempts n]
+    [--ingest-timeout 2h] [--ingest-max-size 1T]
+nu add <https-url> [--hash sha256] [--meta meta.json]
+```
+
+- `CollectionPushRequest` is `{path, meta: {…}|"<cid>", files: {<name>: {upload} |
+  {path, nocopy?} | {url, checksum?, size?}}, replace?}`; `CollectionPush` is `{path, id,
+  state: accepted|fetching|written|failed|removed, duplicate?, replace?, entry?, size?,
+  meta?, head?, sources?: {<name>: URLSource}, tries?, error?, seq, created, updated}`;
+  `URLSource` is `{url, final_url?, etag?, last_modified?, content_type?, size, checksum?,
+  resumed?}`. The single-item query (`GET …/items/{path…}`) adds `push` on the receiving
+  member, and answers `{path, push}` for an item pushed there but not yet in the merged
+  catalog.
+- `put` sends local files as paths (the daemon reads them) on a loopback API, and uploads
+  them first with `--upload` or a remote `--api`; a directory adds every regular file
+  below it under `name/`. `--wait` waits up to 5 min. A failed push exits with its error's
+  category.
+- Item URLs and `nu add https://…` use `httpsrc` with trusted node config
+  `ingest.allow_http` (default false) and `ingest.allow_ips` (address prefixes exempt from
+  the SSRF guard). `nu add` imports a URL as a BLAKE3 file node named after the URL's last
+  path segment (`download` otherwise), with up to 4 attempts that resume on a strong
+  validator; `--hash sha256` keeps the 8 MiB limit; isolated-cluster nodes refuse it.
+  `--meta` stores a metadata record (adding the provenance under `source` unless present),
+  pins it and returns the tree `entry` that carries it.
+- Body types: `items:batch` takes `application/x-ndjson`, `uploads` takes
+  `application/octet-stream`; neither is CORS-safelisted, so A5's rationale holds
+  ([A5](operations.md#a-local-api)).
+
+### Producer listener and push tokens
+
+Producers on other machines push through a separate listener (rule
+[A8](operations.md#a-local-api)), off by default:
+
+```toml
+[api.producer]
+listen = "0.0.0.0:5172"
+hosts = ["nu1.lan", "10.0.0.5"]   # Host header allowlist (A2); "name:port" to pin a port
+trusted_network = true            # required: this build has no TLS
+```
+
+It serves only `POST …/items`, `…/items:batch`, `…/uploads`, `DELETE …/items/{path…}`,
+`GET …/items/{path…}` and `GET …/pushes`, each with `Authorization: Bearer <token>` for
+a token whose collections include `{name}` (`forbidden` otherwise); A3–A7 apply as on the
+loopback API. `nu api token create <name> --collection <ds>…` creates a token
+(`nu_pt_` + 32 random bytes, base64url) in `$NU_PATH/tokens/<name>.json` (0600) and prints
+it; `ls`, `rotate <name>` and `rm <name>` manage them; the daemon reads the directory on
+every request, so rotation and revocation apply immediately. Producers run
+`nu --api <host>:<port> --token <token> cluster collection put …` (or set
+`NU_API_TOKEN`). The loopback API stays unauthenticated (A1–A7), and `api.listen` is still
+refused off loopback.
 
 ## Loopback protections
 

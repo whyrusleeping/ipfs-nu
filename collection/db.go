@@ -44,6 +44,14 @@ var schema = []string{
 	CREATE TABLE idx_cursor (ds TEXT NOT NULL, peer TEXT NOT NULL, epoch TEXT NOT NULL, seq INTEGER NOT NULL,
 		PRIMARY KEY (ds, peer)) WITHOUT ROWID;
 	CREATE TABLE pending (ds TEXT NOT NULL, path TEXT NOT NULL, entry BLOB, PRIMARY KEY (ds, path)) WITHOUT ROWID;`,
+	// 0059: item pushes (the durable accept queue and push log).
+	`CREATE TABLE pushes (ds TEXT NOT NULL, path TEXT NOT NULL, id TEXT NOT NULL, digest BLOB NOT NULL, req TEXT NOT NULL,
+		state TEXT NOT NULL, replace INTEGER NOT NULL DEFAULT 0, files TEXT NOT NULL DEFAULT '{}', sources TEXT NOT NULL DEFAULT '{}',
+		entry BLOB, size INTEGER NOT NULL DEFAULT 0, meta BLOB, head BLOB, error TEXT, tries INTEGER NOT NULL DEFAULT 0,
+		next_ms INTEGER NOT NULL DEFAULT 0, created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL, seq INTEGER NOT NULL,
+		PRIMARY KEY (ds, path)) WITHOUT ROWID;
+	CREATE INDEX pushes_seq ON pushes (ds, seq);
+	CREATE INDEX pushes_work ON pushes (state, next_ms);`,
 }
 
 func openDB(path string) (*sql.DB, string, error) {

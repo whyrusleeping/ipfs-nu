@@ -163,7 +163,7 @@ concurrent snapshots subject to explicit retention and content availability.
 | `{local: true}` | The merged `head/<name>` record, written by admins or listed writers |
 | `{name: "at://…/io.ipfs.nu.name/<n>"}` | An external Nu name, followed as in D19; requires name-plane access or [bundles](#air-gap-bundles) |
 | `{atrepo: "<did>", nsids?, blobs?}` | The latest verified commit of an atproto account ([D21](dasl.md#atproto-accounts-as-archive-datasets)); third-party history is private by default |
-| `{local: true, ingest?: {hosts, limits}}` | A collection's union head, fed by producers pushing items to writer members ([D22](collections.md#ingest)) |
+| `{local: true, ingest?: {hosts, limits}}` | A collection's union head, fed by producers pushing items to writer members ([D22](collections.md#ingest)); `hosts` are at most 256 exact host names or IP literals, `limits` is `{max_bytes?, attempts? (≤ 100), timeout?}` per URL file (defaults 1 TiB, 6, `2h`) |
 
 A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <cid>`.
 

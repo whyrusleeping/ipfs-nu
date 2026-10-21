@@ -353,11 +353,19 @@ func (m *Manager) Item(name, path string) (*apiv0.CollectionItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	push, err := m.PushStatus(name, path)
+	if err != nil {
+		return nil, err
+	}
 	if it == nil {
+		if push != nil { // pushed to this node, not in the merged catalog (yet)
+			return &apiv0.CollectionItem{Path: path, Rule: -1, Push: push}, nil
+		}
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no item %q in collection %q", path, name).
 			WithAction("list items with `nu cluster collection items " + name + "`")
 	}
 	out := m.itemInfo(it)
+	out.Push = push
 	if h, err := m.holding(name, path); err == nil && h != nil {
 		out.Local = h.state
 	}

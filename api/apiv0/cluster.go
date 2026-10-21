@@ -135,6 +135,19 @@ type DatasetCreateRequest struct {
 	Facets     map[string]FacetDecl `json:"facets,omitempty"`
 	Merge      string               `json:"merge,omitempty"`
 	Expire     string               `json:"expire,omitempty"`
+	// Ingest is a collection's push policy (docs/collections.md "Ingest").
+	Ingest *DatasetIngest `json:"ingest,omitempty"`
+}
+
+// DatasetIngest is a collection's push policy: Hosts are the exact host names receiving
+// members may fetch item URLs from in private mode (and, when set, in public mode);
+// MaxBytes, Attempts and Timeout bound each URL file (0/"" take the defaults: 1 TiB, 6
+// attempts, 2h per attempt).
+type DatasetIngest struct {
+	Hosts    []string `json:"hosts,omitempty"`
+	MaxBytes int64    `json:"max_bytes,omitempty"`
+	Attempts int64    `json:"attempts,omitempty"`
+	Timeout  string   `json:"timeout,omitempty"`
 }
 
 // FacetDecl declares a collection facet: a JSON Pointer into the metadata record's JSON
@@ -175,4 +188,5 @@ type DatasetCollection struct {
 	Facets map[string]FacetDecl `json:"facets,omitempty"`
 	Merge  string               `json:"merge"`
 	Expire string               `json:"expire,omitempty"`
+	Ingest *DatasetIngest       `json:"ingest,omitempty"`
 }

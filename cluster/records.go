@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -197,7 +198,31 @@ const MaxDropPaths = 256
 // Source is where a dataset's target comes from; only local datasets exist so far.
 type Source struct {
 	Local bool `drisl:"local"`
+	// Ingest configures producer pushes into a collection (D22 "Ingest").
+	Ingest *Ingest `drisl:"ingest,omitempty"`
 }
+
+// Ingest is a collection's push policy: Hosts are the exact host names (no wildcards)
+// receiving members may fetch item URLs from in private mode (and, when set, in public
+// mode); Limits bound each URL file.
+type Ingest struct {
+	Hosts  []string      `drisl:"hosts,omitempty"`
+	Limits *IngestLimits `drisl:"limits,omitempty"`
+}
+
+// IngestLimits bound URL files of item pushes; zero fields take the defaults
+// (collection.DefaultIngestLimits).
+type IngestLimits struct {
+	// MaxBytes caps one file.
+	MaxBytes int64 `drisl:"max_bytes,omitempty"`
+	// Attempts bounds the fetches of one file before the push fails.
+	Attempts int64 `drisl:"attempts,omitempty"`
+	// Timeout bounds one fetch attempt (a duration such as "2h").
+	Timeout string `drisl:"timeout,omitempty"`
+}
+
+// MaxIngestHosts bounds an ingest host list.
+const MaxIngestHosts = 256
 
 // Policy is a dataset's replication policy (placement is a later task; only replicas is
 // recorded).
@@ -462,6 +487,19 @@ func decodeValue(r *Record, v any) error {
 		}
 		if !d.Source.Local {
 			return errors.New("only local sources are supported")
+		}
+		if in := d.Source.Ingest; in != nil {
+			if d.Collection == nil || len(in.Hosts) > MaxIngestHosts {
+				return errors.New("ingest applies to collections, with at most 256 hosts")
+			}
+			for _, h := range in.Hosts {
+				if h == "" || len(h) > 253 || strings.ContainsAny(h, "*/@[] \t") || (strings.Contains(h, ":") && net.ParseIP(h) == nil) {
+					return fmt.Errorf("bad ingest host %q (exact host names or IP literals)", h)
+				}
+			}
+			if l := in.Limits; l != nil && (l.MaxBytes < 0 || l.Attempts < 0 || l.Attempts > 100 || len(l.Timeout) > 32) {
+				return errors.New("ingest limits out of range")
+			}
 		}
 		if d.Policy.Replicas < 0 || len(d.Writers) > 256 || len(d.Note) > 1024 {
 			return errors.New("policy, writers or note out of range")

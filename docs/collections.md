@@ -380,10 +380,78 @@ roots are in `testdata/vectors/nu-collection/vectors.json`.
   mode, every reachable member); the ordered source list above (writers, then holders,
   then placement owners) is later work.
 
+### Item pushes and URL import (preview, 0059)
+
+These decisions are the preview contract of the push path; routes and types are in
+[api.md](api.md#item-pushes-0059).
+
+- **Accept:** a push is validated (path, metadata record, 1–4096 files, each exactly one of
+  `upload`, `path` or `url`) and durably queued in the collection database before the call
+  returns `202 accepted`; the metadata record is stored and every object the push refers to
+  is pinned `collection-push` until the push is written or failed. Only a member holding a
+  key that may write the collection's head receives pushes (`forbidden` otherwise).
+  Metadata is an atproto-style JSON object (generic DRISL, floats allowed, at most 64 KiB)
+  or the CID of a held record.
+- **Files:** `upload` names a BLAKE3 blob stored by `POST …/uploads` (an
+  `application/octet-stream` body) within the store's one-hour GC grace; `path` is an
+  absolute regular file on the receiving node, copied or with `nocopy` referenced in place
+  (directories are expanded by the CLI); `url` is fetched by URL import. The item is a
+  directory of plain file entries (no mode or MIME type, so entries are reproducible across
+  receiving members) whose entry carries the metadata record.
+- **Idempotence:** a push's digest is SHA-256 over its metadata CID and, per file, the
+  upload CID, local path (and `nocopy`), or checksum (else URL) with the declared size. A
+  push with the digest of the path's current push answers that push with
+  `duplicate: true` (a failed one is retried as a new push), so presigned URLs whose query
+  changes do not defeat idempotence when a checksum is given. A different push while one
+  is in progress at the path is a `conflict` (unless `replace`, which supersedes it).
+- **Written:** once its files are stored the entry is compared with this node's writer
+  side at the path (a queued change, else the writer head). The same entry is a no-op;
+  a different one fails the push with code `conflict` (`details.existing`) unless
+  `replace`; otherwise the entry is queued for the next head write. The push becomes
+  `written` (with `head`, the writer head's tree header) in the same database transaction
+  that clears the queued change after the head write, so a crash in between re-applies the
+  change to the same head and marks it then. `?wait=written[&timeout=]` (default 30 s, at
+  most 5 min; `timeout` error with `details.push` after that) waits for `written` or
+  `failed`.
+- **Failures:** URL files are fetched one attempt at a time by the ingest worker
+  (4 pushes concurrently), with backoff from 5 s doubling to 10 min between attempts,
+  until `ingest.limits.attempts` (default 6). Permanent errors fail at once: policy
+  denials (unlisted host, redirect to one), HTTP 4xx other than 408/416/429, size over
+  `ingest.limits.max_bytes` (default 1 TiB per file) or the declared `size`, a checksum
+  mismatch (which also demotes the final origin), a missing local file or upload. Each
+  attempt is bounded by `ingest.limits.timeout` (default 2 h) and a 1 min network idle
+  timeout. A failed push writes nothing and releases its pins.
+- **Resume:** a URL file's retained bytes live in `cluster/net/ingest/` beside the
+  collection database with the response validators, so a member restart resumes the
+  download with `Range`/`If-Range` on a strong ETag (or a qualifying Last-Modified);
+  without one it restarts. These bytes are not yet charged to `store.limit`.
+- **Checksums:** hex multihashes (STAC `file:checksum`): sha2-256, sha2-512 and blake3;
+  others are `invalid_argument`. Without a checksum, integrity rests on TLS.
+- **Removal:** `DELETE …/items/<path>` queues the path's removal from this node's writer
+  head (idempotent; it cancels a push in progress there) and answers state `removed`;
+  `head` is set once a head write no longer has the item.
+- **Push log:** the pushes table is the log: each pushed path appears once with its latest
+  state, in the order of its last change, after a cursor (`since=0` from the start;
+  `next_cursor` always set; a cursor from another collection-database epoch answers
+  `resync`). Retention equals the item table's: one row per path ever pushed.
+- **Batch:** `POST …/items:batch` takes `application/x-ndjson`, one push request per line
+  (at most 10 000 lines, 1 MiB each), and answers NDJSON
+  `{line, path, push | error}` in request order; each line is accepted or rejected on its
+  own.
+- **Egress:** `ingest.hosts` holds exact host names or IP literals (httpsrc's allowlist
+  rules: no wildcards or suffixes). In private mode receiving members fetch only from them
+  (none when unset); in public mode they narrow fetches when set; isolated members refuse
+  URL files. URLs are checked at accept, and every redirect before any DNS lookup or dial.
+  Plain HTTP and private source addresses (a producer's LAN web seed) need trusted node
+  config: `ingest.allow_http = true` and `ingest.allow_ips = ["10.0.0.0/24"]`.
+- **Credentials:** remote producers use the producer listener with a push token scoped to
+  named collections ([A8](operations.md#a-local-api), [api.md](api.md#producer-listener-and-push-tokens)).
+  Per-producer rate limits are not implemented.
+
 ## Details still to specify
 
-- Item API upload framing, batch format, push-log retention, credential scoping and
-  per-producer rate limits (0059; the writer queue above is its durable accept queue).
+- Per-producer rate limits and quotas; charging in-progress URL downloads to
+  `store.limit`; TLS on the producer listener.
 - Partial items (`files`), per-file copy counts and `partial` holdings.
 - Union-head history (which entries a writer appends for merged versions); collections
   run with `history` off.

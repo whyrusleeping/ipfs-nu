@@ -46,6 +46,40 @@ between them. They therefore run no relays, AutoNAT, port mapping, nu-path or ho
 and they never use third-party infrastructure; Amino, lookup servers and defaults are off.
 libp2p PSK private networks are not available over QUIC.
 
+### Wire primitive encoding and bounds
+
+Node identities are Ed25519. The node-key file is the standard libp2p PrivateKey
+protobuf (type 1, 64-byte seed/public concatenation), created exclusively with mode
+0600, never overwritten by key generation. Loading rejects nonregular files and
+permissions other than 0600. Public key protobufs are deterministic: Type then Data,
+no extra fields, minimal varints. Keys are capped at 8192 encoded bytes; RSA modulus
+sizes are 2048–8192 bits. secp256k1 verification uses the pure-Go Decred v4 module
+because the standard library has no secp256k1 implementation; generation and signing
+of non-Ed25519 identities are not exposed.
+
+PeerIds embed public-key protobufs of at most 42 bytes using identity multihash;
+larger keys use SHA-256. The binary ID limit is 44 bytes, the text limit 128 bytes.
+Accept legacy base58btc and multibase CIDv1 with codec `libp2p-key` (0x72); generate
+legacy base58btc and lowercase base32/base36 CIDv1 strings.
+
+Multiaddrs retain exact bytes. Registered protocols outside the dialable subset are
+preserved without transport semantics. At a truly unregistered protocol code, retain
+the entire remaining suffix opaquely: multiaddr does not encode unknown protocol
+lengths. These addresses have no standard textual rendering and must not be dialed.
+Callers supply maximum text/binary address sizes.
+
+Signed envelopes use RFC 0002: sign the concatenation of the length-prefixed domain,
+payload-type bytes and payload (multiformats uvarint lengths). An empty payload-type
+hint is permitted. Peer records use domain `libp2p-peer-record`, type bytes `03 01`,
+and the deployed peer-record protobuf (PeerId field 1, uint64 sequence field 2,
+repeated AddressInfo field 3, multiaddr bytes in AddressInfo field 1). The record
+PeerId must match the envelope signer. Callers supply total-message, address-count
+and per-address limits, and enforce increasing sequences when storing records.
+Unknown protobuf fields of wire types 0/1/2/5 are skipped; groups, truncated or
+nonminimal varints, bad signatures and identity mismatches are errors. Nested parsing
+is fixed-depth (envelope → record → AddressInfo). Protobuf uint64 *values* support
+all 64 bits; tags, lengths and multiformats integers use `core/varint`'s 63-bit profile.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

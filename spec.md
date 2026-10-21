@@ -270,7 +270,8 @@ experiments/            separate Go module for spikes; may use go-libp2p/Kubo, n
 ```
 
 Dependencies: stock `quic-go`, `indigo`, `lukechampine.com/blake3`, `go-cid`/`go-multiaddr`
-leaf modules, `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
+leaf modules, `github.com/decred/dcrd/dcrec/secp256k1/v4` (libp2p secp256k1 verification;
+stdlib does not implement that curve), `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
 `miekg/dns`, `BurntSushi/toml`, Prometheus client. Adapt Tailscale's
 BSD-3 portmapper/netmon instead of importing `tailscale.com`. WSS/Noise/yamux, when needed
 for reach, belong to networking rather than an import-only build tag. Retain stock QUIC/TLS;

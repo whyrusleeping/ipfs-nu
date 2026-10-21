@@ -215,7 +215,8 @@ not depend on Amino; a routing fallback is not a second content model.
   collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk
   profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
   links count and when the pin is complete.
-  GC is mark-and-sweep with a size watermark.
+  GC is mark-and-sweep with a size watermark. Explicit releases (unfollow, unpin, collection
+  release) may also trigger an incremental sweep of the released content.
 - `nu follow` pins newly resolved targets according to policy. Retain the previous pinned
   target as a replication safeguard, not as publication history. Large, frequently updated
   trees use delta sync, completeness marks, atomic pin switches, scopes and quotas

@@ -23,27 +23,34 @@ These are sizing targets, not measured limits; [validation](validation.md) owns 
 
 | Quantity | Target |
 |---|---|
-| Ingest | 20k+ new items/day per collection, sustained, from several writers |
+| Ingest | 20k+ new items/day per collection, sustained, from several writers; about 20 TiB/day at full Sentinel-2 L2A size |
 | Items | 10M per collection (the [D19 target](follow.md#design-target)); shard by time beyond that |
-| Item | one file or a small directory, 100 KiB–1 GiB; metadata typically 1–2 KiB, at most 64 KiB |
+| Item | a directory of tens of files, typically about 1 GiB and up to several GiB (a full L2A scene is 19 COG/metadata files, 1.05 GiB); metadata typically 1–2 KiB, at most 64 KiB |
 | Members | tens of storage members, each with its own selection |
 | Visibility | copies per item, rarest items, holders of an item, items of a member, transfers; fresh within two heartbeats |
 
-Metadata dominates structure: at about 2 KiB per item including tree overhead, 13k items/day
-add roughly 26 MB of structure per day, and 10M items about 20 GB per member. Benchmarks
-must confirm this before it becomes a supported limit.
+Every member holds the catalog, which costs about 2 KiB per item including tree overhead.
+That is roughly 40 MB/day at 20k items/day, and about 20 GB for 10M items. The internal
+structure of an item (tens of entries) is held only with the item. A member that keeps every
+item of a 20k/day collection needs about 2 Gbit/s sustained just to keep up. Benchmarks
+must confirm these figures before they become supported limits.
 
 ### Items and facets
 
-- An **item** is a tree entry that carries `meta` ([D3](data.md#d3-directory-trees)).
-  Entries below an item belong to it, and items do not nest. The writer chooses the path
-  layout; time-prefixed paths such as `2026/10/19/<item-id>` keep path scopes, listings and
-  expiry cheap. Item paths should derive from a stable source identifier (e.g. the STAC id),
-  so that independent writers of the same item choose the same path.
+- An **item** is a tree entry that carries `meta` ([D3](data.md#d3-directory-trees)), usually a
+  directory of files. Entries below an item belong to it, and items do not nest. The writer
+  chooses the path layout. Time-prefixed paths such as `2026/10/19/<item-id>` keep path
+  scopes, listings and expiry cheap, and keep different writers' trees sharing all but their
+  newest subtrees. Item paths should derive from a stable source identifier (e.g. the STAC
+  id), so that independent writers of the same item choose the same path.
 - **Metadata records** are application DRISL (generic DRISL, so floats are allowed) of at
-  most 64 KiB. They are structure: SHA-256, stored in the DB and held by every member that
-  holds the collection's structure ([placement](cluster.md#placement)). Together they form
-  the **catalog**, so any member can list and query every item without fetching item bytes.
+  most 64 KiB. They are structure: SHA-256 and stored in the DB.
+- The **catalog** is the structure above and including the item entries: directory MSTs
+  down to each item's entry, plus its metadata record. Every eligible member holds the
+  catalog, which replaces D20's rule that every eligible member holds all structure. Any
+  member can therefore list and query every item without fetching item contents. An item's
+  **internal structure** (its directory MST and file nodes) is held only by members that
+  hold the item, either self-selected or through placement.
 - The tree header declares **facets**, which are typed values extracted from metadata by
   JSON Pointer over the atproto-style JSON form ([D21](dasl.md#drisl)):
 
@@ -83,6 +90,10 @@ rescue = { below = 2, max_bytes = "100GiB" }
   its predicates hold: `eq`/`in` for strings, `min`/`max` for numbers and times, `within`
   (a duration back from now) for times, and `intersects` for bboxes. `hold = false` excludes
   items. Unmatched items are not held. Rules may also set `path` and `max_bytes`.
+- **Partial items:** a rule may set `files`, a list of globs relative to the item (for
+  example `["visual.tif", "*.json", "*.xml"]`). The member then holds only those files plus
+  the item's internal structure, and reports a `partial` holding. Copy counts include only
+  complete holders. Per-file copy counts are available for each item.
 - **Reconciliation, not events.** Whenever a member applies a new head, it evaluates added
   and changed items. Whenever a `within` window moves, it re-evaluates the items at that
   window's edge. Holdings are therefore a function of catalog, rules and clock. Missed
@@ -90,9 +101,11 @@ rescue = { below = 2, max_bytes = "100GiB" }
   nothing depends on having seen an item arrive. Backfill after a rule change is paced by
   the transfer budget.
 - **Rolling holdings:** an item that leaves a `within` window, or that a changed rule no
-  longer selects, loses its `collection-select` pin. GC then reclaims bytes not pinned by
-  another source. No protected-version rule applies, because the release is the operator's
-  choice.
+  longer selects, loses its `collection-select` pin. The member then sweeps the item's blobs
+  and internal structure incrementally within `gc.release_delay` (default 1 min), reclaiming
+  whatever no other source pins. It does not wait for GC's size watermark, because a rolling
+  node frees about as much as it fetches every day. No protected-version rule applies,
+  because the release is the operator's choice.
 - **Budgets:** `max_bytes` bounds the logical bytes each rule holds. When it is reached, new
   matches pause and status reports the shortfall
   ([capacity](operations.md#capacity-and-transfer-budgets)). Nu never evicts selected items
@@ -106,8 +119,12 @@ rescue = { below = 2, max_bytes = "100GiB" }
   follows an item change stream with a cursor (`GET /v1/collections/<ds>/items?since=`) and
   calls `hold`/`release` per item, which sets or clears pin source `collection-manual`. Nu
   runs no user code.
-- Selected items are fetched from holders known from holdings reports, then placement
-  owners, then other members via `/nu/have/1`. Followers use the
+- Selected items are fetched first from the members whose writer heads contain the item
+  (initially only the member that received the push), then from holders known from holdings
+  reports or the index, then from placement owners, then from other members via
+  `/nu/have/1`. Large files are split across all of these sources with Bao ranges
+  ([D2](data.md#d2-blobs)), so popular new items spread as they arrive. Members that run no
+  index still follow the holdings logs of the members they fetch from. Followers use the
   [dataset swarm](follow.md#dataset-swarm).
 - `nu cluster collection rules <ds> --dry-run` reports the items and bytes a rule set would
   hold before it is applied.
@@ -127,6 +144,11 @@ rescue = { below = 2, max_bytes = "100GiB" }
 - Counting self-selected copies toward `replicas`, which would avoid storing duplicates on
   floor members, needs the readiness-evidence protocol of
   [operations](operations.md#readiness-and-status) and is later work.
+- **D20 defaults for collections:** collections use mirror semantics with `history` off by
+  default. The protected-version rule and surplus handoff apply only to blobs placed by
+  `replicas`. Self-selected holdings follow the latest merged head without readiness gating.
+  With `replicas: 0`, nothing waits on the release-evidence protocol. Archive history for a
+  collection is an explicit opt-in, and its encoding is still to specify.
 
 ### Union heads
 
@@ -139,7 +161,11 @@ A collection dataset therefore defaults to `merge: union`:
   encoding is still to specify.
 - The merged root is deterministic. Every member computes it incrementally by diffing each
   changed writer head against that writer's previous head. Waits and readiness bind to the
-  merged root plus the vector `{writer did → head cid}`.
+  merged root plus the vector `{writer did → head cid}`. Members fetch only the catalog
+  portion of writer heads. Because MSTs are canonical, writers holding the same items under
+  time-prefixed paths share every subtree except the newest, so N writers cost little more
+  catalog storage than one. Members keep only each writer's latest head and the merged
+  catalog.
 - When writers supply the same path with identical entries, the result is one item. When the
   entries differ, the entry from the writer listed earliest in the dataset's `writers` wins,
   which is stable across later head writes. Heads written by admins not listed as writers
@@ -165,17 +191,20 @@ Nu takes over at the point where the torrentizer would build a torrent.
 ```text
 POST /v1/cluster/collections/<ds>/items
   { path, meta: {…} | <cid>,
-    files: { <name>: <upload> | {path, nocopy?} | {url, checksum?, size?} } }
+    files: { <relative path>: <upload> | {path, nocopy?} | {url, checksum?, size?} } }
 → { path, entry?, state: accepted|fetching|written|failed, head? }
 
 nu cluster collection put <ds> <path> --meta meta.json [<file>… | --url <name>=<url>…] [--nocopy]
 ```
 
-- **Files** are uploads, local paths on the receiving node, or URLs. Local paths may use
-  `--nocopy`, which seeds in place like the prototype. The node fetches URLs with
-  [URL import](data.md#d17-store-and-replication), which is the equivalent of the
-  prototype's web seed. Files become BLAKE3 blobs. A supplied checksum (a multihash, such as
-  STAC `file:checksum`) is verified after download, and a mismatch fails the item.
+- **Files** are keyed by their path inside the item (e.g. `R10m/B02.jp2`), so one push can
+  carry a whole multi-file scene. Each is an upload, a local path on the receiving node (a
+  file or directory, optionally `--nocopy` to seed in place like the prototype), or a URL.
+  The node fetches URLs with [URL import](data.md#d17-store-and-replication), which is the
+  equivalent of the prototype's web seed. Files become BLAKE3 blobs. A supplied checksum (a
+  multihash, such as STAC `file:checksum`) is verified after download, and a mismatch fails
+  the item. Without one, integrity rests on TLS. S3 multipart ETags (`…-21`) are change
+  validators, not content hashes.
 - **Completion:** the call returns once the push is durably queued. The member writes the
   item into its own head once every file is stored, and `?wait=written` blocks until then.
   Copies on other members are a separate question for the
@@ -210,7 +239,7 @@ and local paths only.
 ### Holdings reports and index
 
 - For each collection, every storage member keeps an item holdings log of
-  `{seq, path, entry, state: fetching|complete|released}` transitions, bounded by default to
+  `{seq, path, entry, state: fetching|partial|complete|released}` transitions, bounded by default to
   1M transitions. Heartbeats carry the log's latest `seq` per collection instead of item data.
 - `/nu/cluster/1` `holdings {dataset, since?}` returns the changes after a cursor, or a paged
   snapshot that ends with a cursor. A cursor older than the log answers `resync`, never an
@@ -266,10 +295,9 @@ reports from non-members; and byzantine holders.
   members.
 - Rescue convergence and oscillation damping when several rescue members act on the same
   stale counts.
-- Catalog growth and expiry defaults, and whether `--lazy`-style catalog-only members
-  are needed.
-- How `--select` follows interact with D19 completeness marks for partially selected
-  subtrees.
+- Catalog growth and expiry defaults. Completeness marks and atomic switches for a held
+  view that is complete for the catalog plus selected items (whole or partial), shared
+  with `--select` follows and D19 scopes.
 
 ## References
 

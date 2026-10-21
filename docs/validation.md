@@ -61,7 +61,17 @@ Observed on 2026-10-20 from the prototype's public dashboard (`http://57.128.118
 
 The rarest-first sample is biased, and the size percentiles are not a whole-collection
 distribution. The full Sentinel-2 L2A rate the architecture targets is "tens of thousands
-of datasets per day". Production products would be much larger than reduced COGs.
+of datasets per day".
+
+**Production shape (vmx, 2026-10-20):** real datasets are much larger than the demo, with
+several files each. BitTorrent compatibility does not matter, and running the Go Nu daemon
+is acceptable. For scale, one full Earth Search L2A item checked on 2026-10-20
+(`S2B_28SBB_20261019_0_L2A`) has 19 HTTPS assets: 13 band COGs, a visual COG, an SCL mask,
+metadata XML/JSON and a thumbnail, totalling 1.05 GiB. Its JP2 originals are 18 more assets
+on `s3://`. The assets carry S3 ETags but no `file:checksum`. At 13k–20k items/day, that is
+about 13–20 TiB/day of ingest, and a member keeping everything needs about 1.3–2 Gbit/s
+sustained. The pilot must record the real product set, file counts and size distribution
+before sizing claims.
 
 Pilot success criteria:
 
@@ -72,7 +82,10 @@ Pilot success criteria:
   [collection item API](collections.md#ingest). Use uploads, `--nocopy` paths or URLs, with
   retries after producer restarts and no lost or duplicated items.
 - Sustain at least 20k items/day from at least two union writers without lost or
-  duplicated items.
+  duplicated items, at the demo's item shape.
+- With full multi-file scenes on declared hardware, measure push ingest and per-member
+  fan-out throughput (Gbit/s), multi-source fetch of new items, and partial-item (`files`)
+  holdings.
 - After a member restart, an outage longer than its log or a late join, holdings converge
   with no missed items. The prototype's data-manager documents missed takes as a known
   limitation.

@@ -7,7 +7,7 @@ created: "2026-10-20"
 updated: "2026-10-20"
 depends_on:
     - "0057"
-    - "0052"
+    - "0061"
 spec_refs:
     - docs/collections.md#Ingest
     - docs/data.md#D17. Store and replication

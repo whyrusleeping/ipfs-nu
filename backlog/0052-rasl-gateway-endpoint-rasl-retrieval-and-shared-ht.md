@@ -1,13 +1,14 @@
 ---
 id: "0052"
-title: RASL gateway endpoint, rasl:// retrieval and shared HTTPS source fetching with SSRF guards
+title: RASL gateway endpoint and rasl:// retrieval (on 0061 httpsrc)
 status: todo
 priority: 2
 created: "2026-09-30"
-updated: "2026-09-30"
+updated: "2026-10-20"
 depends_on:
     - "0028"
     - "0035"
+    - "0061"
 spec_refs:
     - docs/dasl.md#RASL
     - docs/operations.md#API, gateway and public exposure
@@ -18,7 +19,7 @@ DASL RASL support (D21), plus the `httpsrc/` package shared with FISL and atprot
 
 - Gateway `GET`/`HEAD /.well-known/rasl/<cid>` for held DASL/BDASL CIDs (raw or DRISL): `application/octet-stream`, `nosniff`, no cookies or content negotiation, `Range`. Public seeds answer only for content they already serve publicly and never fetch unheld CIDs on demand.
 - `nu get rasl://<cid>/?hint=h…`: parallel HTTPS hint fetches alongside Nu discovery, redirects treated as 307, verification by CID (whole object, 8 MiB limit, restart on failure).
-- `httpsrc`: refuse loopback/private/link-local targets, re-checked after redirects and DNS resolution, unless explicitly configured. Size/time bounds. Per-origin demotion after verification failures.
+- Uses `httpsrc` from 0061 (SSRF guards, bounds, per-origin demotion).
 - `nu share` emits a `rasl://` link when an HTTPS seed serves the object.
 
 **Acceptance**

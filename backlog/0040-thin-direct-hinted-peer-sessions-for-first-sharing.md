@@ -4,10 +4,10 @@ title: Thin direct/hinted peer sessions for first sharing and private archives
 status: todo
 priority: 1
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-20"
 depends_on:
     - "0010"
-    - "0016"
+    - "0060"
 spec_refs:
     - docs/networking.md#D9. Peer sessions
     - Milestones

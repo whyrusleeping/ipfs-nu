@@ -273,9 +273,10 @@ claiming proofs remain verifiable after key/account changes.
 
 - **Structure** (directory and MST nodes, entry metadata, file nodes, tree header) of every
   placed head goes to every eligible storage member. At roughly 0.1–1% of bytes
-  ([D19](follow.md#design-target)), plus metadata for collections, this lets any eligible
-  member enumerate blobs, compute placement, evaluate collection selections, and serve tree
-  requests and diffs.
+  ([D19](follow.md#design-target)), this lets any eligible member enumerate blobs, compute
+  placement, and serve tree requests and diffs. Collections narrow this rule to the
+  [catalog](collections.md#items-and-facets). Item-internal structure goes only to members
+  that hold the item.
 - **Blobs** use weighted rendezvous hashing. For blob digest `b` and member `p`, compute
   `u = (uint64(blake3("nu.place\0" ‖ peerId_p ‖ b)[0:8]) + 1) / (2^64 + 1)` and
   `score = −capacity_p / ln(u)`. The owners are the `k` highest-scoring eligible members in

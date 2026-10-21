@@ -76,8 +76,10 @@ type View struct {
 	// Heads holds every authorized signer's head record per dataset (union-head hook);
 	// Head picks the LWW winner.
 	Heads map[string]map[string]Signed[Head]
-	// History and Drop hold the LWW winners' record CIDs (their schemas are other tasks).
+	// History and Drop hold the LWW winners' record CIDs (history's schema is another
+	// task); Drops holds the decoded drop records.
 	History, Drop map[string]Signed[cid.CID]
+	Drops         map[string]Signed[Drop]
 
 	Repos map[string]*RepoState
 	// Ignored counts out-of-scope or invalid records; HeldBack counts records whose hlc is
@@ -314,6 +316,7 @@ func Evaluate(g Genesis, src Repos, now time.Time, maxFuture time.Duration) *Vie
 	v.Datasets = map[string]Signed[Dataset]{}
 	v.History = map[string]Signed[cid.CID]{}
 	v.Drop = map[string]Signed[cid.CID]{}
+	v.Drops = map[string]Signed[Drop]{}
 	v.Heads = map[string]map[string]Signed[Head]{}
 	for _, c := range win {
 		r := c.r
@@ -331,6 +334,7 @@ func Evaluate(g Genesis, src Repos, now time.Time, maxFuture time.Duration) *Vie
 			v.History[r.RKey] = Signed[cid.CID]{Value: &r.CID, Signer: c.signer, HLC: r.HLC, Deleted: r.Deleted}
 		case NSDrop:
 			v.Drop[r.RKey] = Signed[cid.CID]{Value: &r.CID, Signer: c.signer, HLC: r.HLC, Deleted: r.Deleted}
+			v.Drops[r.RKey] = signed[Drop](c)
 		}
 	}
 	for name, by := range heads {
@@ -372,6 +376,43 @@ func (v *View) Head(name string) (Signed[Head], bool) {
 		return best, false
 	}
 	return best, found
+}
+
+// DropPaths returns the paths a live drop record removes from a union collection.
+func (v *View) DropPaths(name string) []string {
+	d, ok := v.Drops[name]
+	if !ok || d.Deleted || d.Value == nil {
+		return nil
+	}
+	return d.Value.Paths
+}
+
+// Writers returns the authorized, unrevoked signers of name's heads in union rank
+// order: the dataset's listed writers in list order, then other signers (admins and
+// root) in DID order.
+func (v *View) Writers(name string) []string {
+	d, _ := v.Dataset(name)
+	var out []string
+	usable := func(did string) bool {
+		k := v.Keys[did]
+		h, ok := v.Heads[name][did]
+		return k != nil && k.Revoked == nil && ok && !h.Deleted && h.Value != nil
+	}
+	if d != nil {
+		for _, w := range d.Writers {
+			if usable(w) && !slices.Contains(out, w) {
+				out = append(out, w)
+			}
+		}
+	}
+	var rest []string
+	for did := range v.Heads[name] {
+		if usable(did) && !slices.Contains(out, did) {
+			rest = append(rest, did)
+		}
+	}
+	slices.Sort(rest)
+	return append(out, rest...)
 }
 
 // IsMember reports whether id has a non-removed member record.

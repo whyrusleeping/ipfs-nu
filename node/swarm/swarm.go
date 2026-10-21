@@ -275,6 +275,19 @@ func (s *Swarm) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, 
 	return classify(root, err)
 }
 
+// FetchCatalog fetches a collection catalog (header, container directories and item
+// metadata, not item contents) from connected peers.
+func (s *Swarm) FetchCatalog(ctx context.Context, root cid.CID) error {
+	if s.fetcher == nil {
+		return apiv0.Errorf(apiv0.CodeFailed, "this node has no store to fetch into")
+	}
+	_, err := s.fetcher.Fetch(ctx, root, fetch.Options{Catalog: true})
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	return classify(root, err)
+}
+
 // classify turns a fetch failure into the API error contract: not_found when a provider
 // answered that it does not hold the content, unavailable when none could be reached.
 func classify(root cid.CID, err error) error {

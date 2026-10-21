@@ -23,3 +23,4 @@ Acceptance: CollGS pilot criteria in docs/validation.md#pilot-candidates met on 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Carried from 0057: produce the ≥20k items/day from ≥2 union writers run, measured catalog bytes/item, index cost and re-evaluation cost, and a multi-host private-mode run without multicast (0057 only has in-process evidence). Scaling notes from 0057: every writer head change walks that writer's whole catalog; item listing/status scan the whole items table; release sweep is a full store GC.

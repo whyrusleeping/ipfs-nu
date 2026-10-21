@@ -1,7 +1,7 @@
 ---
 id: "0064"
 title: 'Store resource accounting and budgets: specify and implement logical/physical/transfer limits'
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"

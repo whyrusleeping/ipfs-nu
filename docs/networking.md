@@ -413,8 +413,8 @@ The socket's disco demux envelope is `01 6e 75 64 01`, followed by a two-byte bi
 payload length and exactly 1–1024 opaque payload bytes. The first byte has no QUIC fixed
 bit. Reject malformed/version-mismatched envelopes; cap the independent receive queue at
 32. Receipt never triggers a response, authorizes a destination or selects a path. The
-MAC/nonce/replay/destination/rate contract and payload schema belong to 0017; framing alone
-is **not authenticated disco**. `host.Conn.ExportKeyingMaterial` exposes the authenticated
+MAC/nonce/replay/destination/rate contract and payload schema are specified below;
+framing alone is **not authenticated disco**. `host.Conn.ExportKeyingMaterial` exposes the authenticated
 inner TLS exporter for that owner. Unknown non-QUIC traffic remains available to quic-go's
 non-QUIC demux. There must not be a competing raw UDP reader.
 
@@ -427,7 +427,10 @@ virtual peers. Losing this stream revokes its probe keys, pending challenges and
 paths; fall back to the relay. It is not a public UDP discovery service.
 
 All integers below are unsigned big-endian. Each control frame is `uint16 N` followed
-by exactly N bytes (maximum 363): `version=1:u8, type=1:u8, generation:u64,
+by exactly N bytes (maximum 363). Each direction first sends exactly one 18-byte hello:
+`version=1:u8, type=0:u8, random_nonce:16 bytes`. Generate a fresh cryptographically
+random nonce for every control stream, including reopening on the same inner connection.
+Then send candidate frames: `version=1:u8, type=1:u8, generation:u64,
 count:u8`, then count (0–16) entries, each `kind:u8, lifetime_seconds:u16,
 endpoint:19 bytes`. Kinds are LAN=1, global IPv6=2, mapped=3, reflexive=4. Lifetime
 is 1–600 seconds, measured from receipt. Generations start at 1 and strictly increase;
@@ -456,8 +459,9 @@ The socket envelope remains `01 6e 75 64 01 | uint16(96) | payload`. The fixed
 
 Derive 80 bytes from inner TLS ExportKeyingMaterial using label
 `EXPORTER-nu-path-1` and context `uint16(len(lowPeerID)) | lowPeerID bytes |
-uint16(len(highPeerID)) | highPeerID bytes`, with raw PeerID bytes sorted
-lexicographically. Bytes 0–15 are the session ID; 16–47 authenticate low→high,
+uint16(len(highPeerID)) | highPeerID bytes | lowPeerHelloNonce:16 |
+highPeerHelloNonce:16`, with raw PeerID bytes sorted lexicographically. Both fresh
+hello nonces bind the keys and replay state to this particular control stream. Bytes 0–15 are the session ID; 16–47 authenticate low→high,
 48–79 high→low. Never reuse keys across connections, persist them, derive them from
 outer relay TLS or use a single reflection-prone key in both directions. Verify the
 session, exact length, reserved bytes, MAC (constant-time), source authorization and
@@ -716,7 +720,11 @@ backpressure. The pipeline takes a snapshot of registrations for each reaction.
 Socket/host owners wire rebind and AutoNAT first, then mapping-client replacement or
 `Refresh`, relay reservation renewal, identify push and path probing. These hooks are
 provided without editing those owners; unregistered stages are no-ops, not evidence
-that a running daemon has performed the operation. The NAT-lab test registers all six
+that a running daemon has performed the operation. `p2p/disco.Service.RestartProbing`
+implements the final hook: revoke stale direct proofs, fall back to the surviving relay,
+coalesce a candidate re-exchange and restart the early probe schedule. Mapping changes
+call `Service.Update`; `disco.FromMapping` enforces expiry and PCP PEER restrictions.
+The NAT-lab test registers all six
 hooks and verifies a real interface/address change completes the pipeline within 1 s.
 
 ## D13. Peer-address discovery
@@ -874,15 +882,17 @@ in [validation](validation.md#linux-nat-lab-smoke-2026-10-21).
 
 ## Details still to verify
 
-Production HTTPS-compatible fallback wire/security rules, relay admission/economics,
-endpoint support and the authenticated destination/probe contract remain to specify.
+Production HTTPS-compatible fallback wire/security rules, relay admission/economics
+and endpoint support remain to specify. The path v1 destination/probe contract above
+requires independent review and an explicit socket-owner authorization policy before
+public enablement.
 The conservative stock-quic-go path is constrained by D11. Physical socket replacement,
 multihomed/source-interface offload behavior and capacity-collapse/long reliable-relay
 performance still need validation; the near-raw direct throughput target is not established.
 Adaptive inner MTU is not part of the initial design. Public direct-first setup,
-reattachment admission/crossed-attempt policy, pair-aware relay reservation, authenticated
-replay-resistant probing and destination authorization belong to the owning control-plane
-tasks. Fast shared-socket/NAT-lab tests establish packet-core behavior, not those public
+reattachment admission/crossed-attempt policy and pair-aware relay reservation remain
+owning control-plane tasks. `p2p/disco` supplies replay-resistant probes and exact candidate
+authorization, but does not choose the daemon's peer trust or destination policy. Fast shared-socket/NAT-lab tests establish packet-core behavior, not those public
 security contracts, operating capacity or field traversal rates.
 
 ## References

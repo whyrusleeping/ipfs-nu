@@ -7,6 +7,59 @@ hypotheses and sizing targets, not measured capabilities. Record reproducible re
 (or link reports indexed here), including negative results. Synthetic regression tests do
 not establish field success.
 
+## Authenticated Nu path discovery (0017, 2026-10-21)
+
+Implementation: `p2p/disco`; [wire/security contract](networking.md#path-v1-control-and-probe-security-contract-0017)
+and [owner integration / deliberate limits](../p2p/disco/README.md). Baseline
+`677aab8` plus 0017; stock quic-go v0.64.1, Go 1.26.0, rootless Linux namespaces.
+These are **bounded fixture smoke measurements**, not field success rates.
+
+Reproduce:
+
+```
+go test ./p2p/disco -v
+go test -race ./p2p/disco -count=1
+go test -tags natlab ./p2p/disco -run '^TestNATLabDisco$' -v -count=1
+```
+
+| Real UDP/nftables fixture pair | Both endpoints direct after Open | Direct recovery after address change | Verified transfer |
+|---|---:|---:|---|
+| EIM/EIF ↔ EIM/EIF | 11.5 ms | 1.039 s | 4,194,304 bytes; prior progress 131,072 bytes preserved |
+| EIM/EIF ↔ EIM/APDF | 29.1 ms | 1.047 s | 4,194,304 bytes; prior progress 131,072 bytes preserved |
+
+Each case starts on a framed relay leg, upgrades with exporter-authenticated probes,
+then flaps an interface and changes its inside address `10.0.0.2` → `10.0.0.3`
+and external address `198.18.0.20` → `198.18.0.22` while transferring. The actual
+shared wildcard UDP socket, inner QUIC connection and application stream remain
+open; every 16 KiB chunk is byte-verified. Recovery includes the deliberately
+one-second-paced control update. The relay is a process-bridged Unix stream,
+**not** an end-to-end circuit reservation/reconnection test; direct traffic crosses
+real namespaces, routers and nftables NAT/filter rules. Candidate mappings are
+primed by an observer-bound packet before exchange, as reflexive discovery would
+do. Without priming, nft conntrack can cache an initial no-DNAT result, leaving
+all eight early probes unanswered; that fixture artifact was observed and is not
+counted as a successful initial traversal. APDF is on one side; both mappings
+are EIM. No public/IPv6/router-mapped traversal matrix is claimed.
+
+The fast loopback test also withdraws/re-advertises candidates, transfers while
+relay-only, executes the D12 RestartProbing hook and reopens disco on the **same**
+inner TLS connection with fresh per-control-stream nonce-bound keys. Focused
+negatives cover MAC forgery, replay, unauthorized source/destination, unsolicited,
+wrong-destination and expired pongs, expired candidates, forbidden address classes,
+peer/global output rates, PCP PEER restrictions, healthy-path hysteresis and
+continuous 30 s / 2 min / 10 min retry scheduling without long sleeps. Both message
+decoders have fuzz seed coverage. The focused race run passed.
+
+Pre-commit `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` passed. Independent security review is **not yet complete**;
+it is requested for the D11 path contract and mandatory owner destination policy
+before public enablement. Daemon/CLI integration is not installed here. A 1 GB
+soak, long/field NAT matrices (0024/0025), physical socket replacement, constrained
+MTU and relay reconnection remain unverified; small probes alone cannot establish
+the required 1200-byte inner packet budget. Prediction/spraying/profile negotiation
+and datagram relay optimization are separate extension tasks, not silently enabled
+by the baseline protocol.
+
 ## Libp2p container interop (2026-10-21)
 
 Task 0011; [runner, contract, exact source/image pins and reproduction](../interop/README.md).

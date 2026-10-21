@@ -366,6 +366,44 @@ multihomed OOB/ECN behavior, performance tuning and long reliable-relay loss/cap
 measurements. Qpath setup by itself never authorizes serving content. The default
 stack does not enable public Nu-path orchestration or silently claim this remaining
 throughput criterion is complete.
+## Amino Kademlia service (0023)
+
+Local checks: `go test ./kad ./fetch` passes, including codec roundtrip/malformed
+input and bounds, XOR bucket limits, and an in-process three-node QUIC DHT scenario:
+server nodes announce a BLAKE3 multihash, an independent client finds the provider,
+client-only mode registers no handler, and FIND_PEER lookup returns the target. The
+message-decoder fuzz target `kad.FuzzDecode` has fixed seeds and runs in the normal
+package suite.
+
+Interop: from `experiments/`, `go test -run '^TestAminoProviderInteropBothDirections$'
+-count=1 -v ./kad` passed on 2026-10-21 in about 0.08 s. It used a loopback stock
+QUIC go-libp2p v0.50.0 host and Nu host, with `/ipfs/kad/1.0.0`: Nu's native BLAKE3
+provider was found by an independent go-libp2p DHT host, and Nu found a go-libp2p
+SHA-256 provider after a go-libp2p client announced it. No external network was used.
+Loopback path only; UDP receive-buffer warning was present. The go-side server's
+routing table was explicitly seeded with the Nu peer for this test; this is not a
+bootstrap/fleet result.
+
+Opt-in live test: `cd experiments && NU_AMINO=1 go test -run
+'^TestLiveNuAminoProviderKeys$' -count=1 -v ./kad` was run on 2026-10-21. It used
+Nu's own client and an independent Nu lookup client for SHA-256 control, BLAKE3 and
+the deterministic follow-swarm BLAKE3 key
+`bafkr4ie4nrxp5ca6g4zhxq7faiflql3tvztv6zpwohutv6bvewhvrdmjjq`. DNSADDR resolution
+returned QUIC-v1 candidates and the harness resolved DNS address components to
+literal IPs, but **no live provide→independent-find case passed**. An initial ~99 s
+run failed on TCP-only/non-v1 referrals, private/loopback and unreachable UDP claims,
+RPC timeouts and some remote application resets; only the latter BLAKE3 and swarm
+runs reached a provider query, without a successful find. After restricting routing
+referrals to public literal QUIC-v1 candidates, a second ~62 s run failed all three
+cases during Provide: several seeds were unreachable/timed out, and one QUIC remote
+refused/resets the connection. SHA-256, random BLAKE3 and the exact swarm key therefore
+remain **inconclusive**, not rejected by the key namespace. The exact follow CID was
+`bafkr4ie4nrxp5ca6g4zhxq7faiflql3tvztv6zpwohutv6bvewhvrdmjjq`. UDP receive-buffer
+warning remained (416 KiB available vs 7168 KiB requested). Owner-side daemon wiring of AutoNAT reachability,
+automatic bootstrap lifecycle, pinned-CID enumeration and periodic reprovide is not
+installed; private-mode disabling is enforced by the service constructor but owner
+policy remains to be wired. Provider replica fraction, long-term expiry/republish, and
+field Amino availability remain unmeasured.
 
 ## Early experiments
 

@@ -20,6 +20,27 @@ milestones are acceptance gates, not claims of measured results.
 | Routing | Amino Kademlia client; server when publicly reachable, with limits |
 | Resources | Per-peer, per-protocol and per-connection limits |
 
+`kad.New` implements `/ipfs/kad/1.0.0` directly over the routed host, with client
+mode by default. The owner sets `PubliclyReachable` only from its AutoNAT v2 verdict
+and must not construct it in private/isolated mode. A `SetPubliclyReachable` hook
+changes server mode as reachability changes. `BootstrapDNS` resolves the deployed
+bootstrap PeerIds through the existing dnsaddr resolver, resolves DNS4/DNS6
+multiaddr components to bounded literal IP candidates, and keeps only UDP/QUIC-v1
+addresses; `AddBootstrap` accepts another bounded lookup Source. No TCP bootstrap
+addresses are dialed. Public mode rejects loopback, private and link-local referral
+addresses by default; `AllowPrivateAddresses` is an explicit in-process/lab override. Amino `ADD_PROVIDER` is a one-way request.
+
+Wire/runtime limits: 64 KiB message, 80-byte key (matching upstream's provider-key
+limit), 20 peers/message and 32 addresses/peer (1024 bytes/address); routing k=20,
+lookup alpha=3 and at most 16 rounds. Server defaults are 32 concurrent requests,
+4 per authenticated peer and 4096 provider records. Provider records expire after
+48 h; `ProvideAndRepublish` refreshes local announcements every 22 h. Client APIs
+are `FindNode`, `FindProviders`, `Provide`, `ProvidePinned`, plus `Service.Lookup`
+for the lookup.Source hook; `fetch.Kademlia` adapts GET_PROVIDERS. The owner must
+pass only pinned blob/file-node/tree-root CIDs to `ProvidePinned` (never interior
+shards) and supply usable advertised addresses. Node/CLI wiring and automatic pin
+enumeration are not installed yet; hint/LAN/private lookup remains independent.
+
 Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, Helia and
 Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus
 participation. Joining Amino does not imply UnixFS/Bitswap data support.

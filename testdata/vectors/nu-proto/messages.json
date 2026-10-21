@@ -1,0 +1,14 @@
+[
+  {"name": "bytes request, whole SHA-256 object", "kind": "bytes-request",
+   "hex": "a1626d68582212203086cf468ccca87cc7840e0755947526a039eea35f486002d7f1c53d7c58686a"},
+  {"name": "bytes request, two BLAKE3 group ranges [0,64) [128,130)", "kind": "bytes-request",
+   "hex": "a2626d6858221e208e1923fa910f04c5bef11bc09d1856d4f8d5f7841951900c50a60e7a814761996672616e67657382820018408218801882"},
+  {"name": "bytes response header, ok, size 1048576", "kind": "bytes-header",
+   "hex": "a26473697a651a001000006673746174757300"},
+  {"name": "bytes response header, ranges not held", "kind": "bytes-header",
+   "hex": "a2656572726f7278197265717565737465642072616e676573206e6f742068656c646673746174757302"},
+  {"name": "have request, SHA-256 object and BLAKE3 blob window [0,4096)", "kind": "have-request",
+   "hex": "a16477616e7482a1626d68582212203086cf468ccca87cc7840e0755947526a039eea35f486002d7f1c53d7c58686aa2626d6858221e208e1923fa910f04c5bef11bc09d1856d4f8d5f7841951900c50a60e7a814761996572616e67658200191000"},
+  {"name": "have response to the request above: second item partial, ranges [0,4) [100,101)", "kind": "have-response",
+   "hex": "a36468617665410264696e666f81a46473697a651a0400000065636f64656318556672616e6765738282000482186418656677696e646f7782001910006673746174757300"}
+]

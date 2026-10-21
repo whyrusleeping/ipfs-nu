@@ -29,3 +29,4 @@ Specify in docs/operations.md and docs/data.md (D17), then implement in `store/`
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/app (4470879, e248ad8, 3b9c053; merged). Spec: docs/data.md D17 Accounting and budgets A1–A8; docs/operations.md C1–C5 + transfer budgets T1–T4. store: Limits, BudgetError admission before writes, MaxBlobSize, per-class Stats, Attribution, GCIfNeeded, Meter hook; migration 3 usage counters. Surfaces: insufficient_storage (507/exit 11), [store] config, status budget line, maintenance loop. Evidence: TestBudgetAdmission, TestKillMidWrite (accounting after crash), node TestStoreBudget, TestAccountingCounters, TestAttribution, TestMeter. Deferred to consumers: transfer-budget enforcement, per-scope paused status, attribution API route. Open product questions raised: free_reserve default (1 GiB), MaxBlobSize 8 TiB, synchronous pressure GC on admission.

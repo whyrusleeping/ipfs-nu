@@ -1,7 +1,7 @@
 ---
 id: "0038"
 title: Early stock-quic-go Nu-path feasibility spike
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"

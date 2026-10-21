@@ -1,10 +1,10 @@
 ---
 id: "0015"
 title: '0b: magicsock under quic-go + `/nu/qpath/1` (QUIC over relay stream)'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0005"
     - "0013"

@@ -51,6 +51,10 @@ type Daemon struct {
 	errs    chan error
 	closeMu sync.Mutex
 	closed  bool
+
+	maintainCtx  context.Context
+	maintainStop context.CancelFunc
+	maintainDone chan struct{}
 }
 
 // ShutdownTimeout bounds graceful shutdown of the HTTP servers.
@@ -166,6 +170,13 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	go d.serve(d.apiSrv, d.apiLn)
 	go d.serve(d.gwSrv, d.gwLn)
+	// Store maintenance (D17 A7): GC at the watermark or below the free-space reserve.
+	d.maintainCtx, d.maintainStop = context.WithCancel(ctx)
+	d.maintainDone = make(chan struct{})
+	go func() {
+		defer close(d.maintainDone)
+		n.Maintain(d.maintainCtx, log.Info)
+	}()
 	log.Info("daemon started", "version", nu.Version, "repo", opts.Repo.Root(), "api", d.Node.API, "gateway", d.Node.Gateway, "peer", n.PeerID().Base36())
 	return d, nil
 }
@@ -214,6 +225,10 @@ func (d *Daemon) Close() error {
 	}
 	if d.Node != nil {
 		d.Node.Ops.CancelAll()
+	}
+	if d.maintainStop != nil {
+		d.maintainStop()
+		<-d.maintainDone
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()

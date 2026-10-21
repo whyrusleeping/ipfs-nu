@@ -22,8 +22,11 @@ optional). Files are 0600, directories 0700.
 | `version` | layout version (`1`) |
 
 Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:8171"`,
-`swarm.listen = ["/ip4/0.0.0.0/udp/4171/quic-v1", "/ip6/::/udp/4171/quic-v1"]`. The
-daemon refuses non-loopback API/gateway listeners until authentication exists.
+`swarm.listen = ["/ip4/0.0.0.0/udp/4171/quic-v1", "/ip6/::/udp/4171/quic-v1"]`,
+`store.limit = "0"` (physical budget, unlimited), `store.free_reserve = "1G"`,
+`store.gc_watermark = 0.9` ([D17 A5](data.md#accounting-and-budgets); sizes take a
+K/M/G/T/P suffix or a bare byte count). The daemon refuses non-loopback API/gateway
+listeners until authentication exists.
 
 ## Error envelope and exit categories
 
@@ -44,6 +47,7 @@ with the code's category. Flag and argument mistakes exit 2 like Go's `flag` pac
 | `forbidden` | 403 | 8 | loopback/origin protections or authentication |
 | `cancelled` | 409 | 9 | operation cancelled, command interrupted |
 | `not_implemented` | 501 | 10 | endpoint exists but is not in this build |
+| `insufficient_storage` | 507 | 11 | a store budget refused the write ([D17 A6](data.md#accounting-and-budgets)); `details` carry `{reason: store_limit\|free_space, need, headroom, physical, limit, free, reserve}` |
 
 ## Paging
 
@@ -167,13 +171,19 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
   the in-process node will keep serving until interrupted — in this build it explains
   that content is available only while a holder is online and returns. `add` fills
   `AddResult.link` the same way.
-- **`status`** carries a `store` section `{objects, bytes, pins}` (`store.Stats`): held
-  objects, bytes on disk excluding `--nocopy` sources, and pins, and a `network` section
-  `{peer_id, addrs, serving, peers}` from the same identity and address seams. The CLI
-  reads them from the daemon or, when none runs and the repo lock is free, from an
-  in-process node, and prints bytes with a unit.
-- No GC runs in this build; when it does, the node passes `node.GCGrace` so unpinned
-  objects of in-progress adds survive.
+- **`status`** carries a `store` section (`store.Stats`, [D17 A8](data.md#accounting-and-budgets))
+  `{objects, pins, bytes, blobs, outboards, partials, db, staging, reserved, nocopy, free,
+  limit, reserve, headroom, pressure}`: physical bytes by class (each object charged
+  once; `--nocopy` sources reported, not charged), the budgets and the headroom left
+  (`-1` unknown/unlimited), and a `network` section `{peer_id, addrs, serving, peers}`
+  from the identity and address seams. The CLI reads them from the daemon or, when none
+  runs and the repo lock is free, from an in-process node, and prints a `budget:` line
+  with the pressure state and its action.
+- The store admits every write against the budgets (A6); a refusal is
+  `insufficient_storage` from the operation (`add`, `get`, fetches, `dag put`) with the
+  shortfall in `details`. The daemon runs `store.GCIfNeeded` every `node.MaintainInterval`
+  (10 min) and the store runs it on a shortfall; GC passes `node.GCGrace` so unpinned
+  objects of in-progress adds and fetches survive, and never removes pinned content.
 
 ## Clusters (0062)
 

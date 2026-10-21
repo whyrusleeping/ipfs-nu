@@ -129,7 +129,7 @@
       "Error": {
         "type": "object", "required": ["code", "message"],
         "properties": {
-          "code": {"type": "string", "enum": ["failed", "invalid_argument", "not_found", "not_supported", "not_implemented", "conflict", "timeout", "unavailable", "forbidden", "cancelled"]},
+          "code": {"type": "string", "enum": ["failed", "invalid_argument", "not_found", "not_supported", "not_implemented", "conflict", "timeout", "unavailable", "forbidden", "cancelled", "insufficient_storage"]},
           "message": {"type": "string"},
           "action": {"type": "string", "description": "what to do next, in plain language"},
           "details": {"type": "object", "additionalProperties": true}
@@ -165,7 +165,7 @@
           "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"}}},
           "paths": {"type": "object", "properties": {"root": {"type": "string"}, "config": {"type": "string"}, "key": {"type": "string"}, "db": {"type": "string"}, "blobs": {"type": "string"}, "api_file": {"type": "string"}}},
           "operations": {"type": "object", "additionalProperties": {"type": "integer"}},
-          "store": {"type": "object", "required": ["objects", "bytes", "pins"], "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}}},
+          "store": {"type": "object", "required": ["objects", "bytes", "pins"], "description": "physical accounting (D17 A8); -1 means unknown/unlimited", "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}, "blobs": {"type": "integer"}, "outboards": {"type": "integer"}, "partials": {"type": "integer"}, "db": {"type": "integer"}, "staging": {"type": "integer"}, "reserved": {"type": "integer"}, "nocopy": {"type": "integer"}, "free": {"type": "integer"}, "limit": {"type": "integer"}, "reserve": {"type": "integer"}, "headroom": {"type": "integer"}, "pressure": {"type": "boolean"}}},
           "network": {"type": "object", "required": ["peer_id", "addrs", "serving", "peers"], "properties": {"peer_id": {"type": "string", "description": "base36 PeerId"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}, "peers": {"type": "integer"}}}
         }
       },

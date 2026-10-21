@@ -44,22 +44,27 @@ const (
 	CodeForbidden Code = "forbidden"
 	// CodeCancelled: the operation was cancelled or the command interrupted.
 	CodeCancelled Code = "cancelled"
+	// CodeInsufficientStorage: a store budget refused the write (D17 A6). Details carry
+	// the shortfall: reason (store_limit|free_space), need, headroom, physical, limit,
+	// free, reserve.
+	CodeInsufficientStorage Code = "insufficient_storage"
 )
 
 // Exit categories. Every CLI command exits with one of these; a code's category is
 // ExitCode(code). Flag parsing errors exit with ExitUsage like Go's flag package.
 const (
-	ExitOK             = 0
-	ExitFailed         = 1
-	ExitUsage          = 2
-	ExitNotFound       = 3
-	ExitNotSupported   = 4
-	ExitConflict       = 5
-	ExitTimeout        = 6
-	ExitUnavailable    = 7
-	ExitForbidden      = 8
-	ExitCancelled      = 9
-	ExitNotImplemented = 10
+	ExitOK                  = 0
+	ExitFailed              = 1
+	ExitUsage               = 2
+	ExitNotFound            = 3
+	ExitNotSupported        = 4
+	ExitConflict            = 5
+	ExitTimeout             = 6
+	ExitUnavailable         = 7
+	ExitForbidden           = 8
+	ExitCancelled           = 9
+	ExitNotImplemented      = 10
+	ExitInsufficientStorage = 11
 )
 
 // ExitCode maps an error code to the CLI exit category. Unknown codes map to ExitFailed.
@@ -83,6 +88,8 @@ func ExitCode(c Code) int {
 		return ExitForbidden
 	case CodeCancelled:
 		return ExitCancelled
+	case CodeInsufficientStorage:
+		return ExitInsufficientStorage
 	}
 	return ExitFailed
 }
@@ -108,6 +115,8 @@ func HTTPStatus(c Code) int {
 		return 403
 	case CodeCancelled:
 		return 409
+	case CodeInsufficientStorage:
+		return 507
 	}
 	return 500
 }
@@ -285,13 +294,34 @@ type NetworkStatus struct {
 	Connected []string `json:"connected,omitempty"`
 }
 
-// StoreStatus is the store section of Status.
+// StoreStatus is the store section of Status (D17 A8). Byte fields are physical: what
+// the store occupies on disk, each object charged once.
 type StoreStatus struct {
 	// Objects counts held objects (blocks, blobs and partial blobs).
 	Objects int64 `json:"objects"`
-	// Bytes is what the store holds on disk, excluding --nocopy sources.
+	// Bytes is the physical total: blobs + outboards + partials + db + staging.
 	Bytes int64 `json:"bytes"`
 	Pins  int64 `json:"pins"`
+	// Blobs is complete copied blob data, Outboards the Bao outboards, Partials the
+	// verified bytes of partial blobs, DB the database with its WAL, Staging in-progress
+	// writes, Reserved admitted but unwritten fetch bytes.
+	Blobs     int64 `json:"blobs"`
+	Outboards int64 `json:"outboards"`
+	Partials  int64 `json:"partials"`
+	DB        int64 `json:"db"`
+	Staging   int64 `json:"staging"`
+	Reserved  int64 `json:"reserved"`
+	// NoCopy is the bytes of --nocopy sources referenced in place, not charged.
+	NoCopy int64 `json:"nocopy"`
+	// Free is the free space on the store's filesystem (-1 unknown).
+	Free int64 `json:"free"`
+	// Limit is store.limit (0 unlimited); Reserve is store.free_reserve.
+	Limit   int64 `json:"limit"`
+	Reserve int64 `json:"reserve"`
+	// Headroom is what new writes may still use (-1 unlimited); Pressure is set while it
+	// is 0, when acquisition pauses with insufficient_storage.
+	Headroom int64 `json:"headroom"`
+	Pressure bool  `json:"pressure"`
 }
 
 // Daemon describes the running process.

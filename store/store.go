@@ -12,6 +12,10 @@
 // An object becomes visible only when its metadata row commits, after its files were
 // written, synced and renamed into place; a crash leaves at most orphan files, which GC
 // removes.
+//
+// Accounting (D17 A1–A8, accounting.go): physical bytes per class are counters kept by
+// triggers, every write is admitted against Limits before it stores anything, and
+// GCIfNeeded collects at the watermark or below the free-space reserve.
 package store
 
 import (
@@ -27,6 +31,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/whyrusleeping/nu/core/atrepo"
+	"github.com/whyrusleeping/nu/core/blob"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
@@ -40,6 +45,8 @@ var ErrNotFound = fmt.Errorf("store: %w", mst.ErrNotFound)
 type Options struct {
 	// DefaultHash is the hash for AddBlob: cid.BLAKE3 (default) or cid.SHA256.
 	DefaultHash cid.Hash
+	// Limits are the budgets (A5); see Limits for the zero values.
+	Limits Limits
 }
 
 // Store is safe for concurrent use.
@@ -51,6 +58,14 @@ type Store struct {
 	profMu   sync.RWMutex
 	profiles map[string]LinksFunc
 	now      func() time.Time
+
+	limMu  sync.RWMutex
+	limits Limits
+	// resMu guards the admission reservations and the pressure-GC clock.
+	resMu          sync.Mutex
+	reserved       int64
+	admitted       admitCache
+	lastPressureGC time.Time
 }
 
 // LinksFunc is a walk profile: the links of a block that a recursive pin follows.
@@ -87,7 +102,7 @@ func Open(dir string, opts Options) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{dir: dir, db: db, opts: opts, now: time.Now, profiles: map[string]LinksFunc{
+	s := &Store{dir: dir, db: db, opts: opts, now: time.Now, limits: opts.Limits.withDefaults(), profiles: map[string]LinksFunc{
 		"nu-tree":      tree.Links,
 		"atrepo":       atrepo.Links,
 		"atrepo+blobs": atrepo.LinksWithBlobs,
@@ -113,9 +128,15 @@ func (s *Store) profile(name string) (LinksFunc, bool) {
 }
 
 // migrations[i] upgrades schema version i to i+1. Append only; never edit a released entry.
-var migrations = []string{
+// A migration is SQL plus an optional Go step run in the same transaction after it.
+type migration struct {
+	sql  string
+	post func(tx *sql.Tx) error
+}
+
+var migrations = []migration{
 	// 1: blocks, blobs, partial range maps, pins.
-	`CREATE TABLE blocks (
+	{sql: `CREATE TABLE blocks (
 		mh BLOB PRIMARY KEY, codec INTEGER NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL
 	) WITHOUT ROWID;
 	CREATE TABLE blobs (
@@ -128,13 +149,73 @@ var migrations = []string{
 	CREATE TABLE pins (
 		cid BLOB NOT NULL, mode TEXT NOT NULL, profile TEXT NOT NULL, source TEXT NOT NULL,
 		name TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (cid, mode, source, name)
-	);`,
+	);`},
 	// 2: import cache: (path, hash) → blob CID with the source's size/mtime/inode, so an
 	// unchanged file is not re-hashed on re-add.
-	`CREATE TABLE import_cache (
+	{sql: `CREATE TABLE import_cache (
 		path TEXT NOT NULL, hash INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
 		inode INTEGER NOT NULL, cid BLOB NOT NULL, used INTEGER NOT NULL, PRIMARY KEY (path, hash)
-	) WITHOUT ROWID;`,
+	) WITHOUT ROWID;`},
+	// 3: accounting (D17 A1): the verified bytes of each partial blob, and per-class
+	// physical byte counters maintained by triggers in the writing transaction. The
+	// outboard formula is blob.OutboardSize for sizes above one group.
+	{sql: `ALTER TABLE partials ADD COLUMN held INTEGER NOT NULL DEFAULT 0;
+	CREATE TABLE usage (class TEXT PRIMARY KEY, bytes INTEGER NOT NULL) WITHOUT ROWID;
+	INSERT INTO usage VALUES ('blocks', (SELECT coalesce(sum(length(data)), 0) FROM blocks));
+	INSERT INTO usage VALUES ('blobs', (SELECT coalesce(sum(size), 0) FROM blobs WHERE src_path IS NULL));
+	INSERT INTO usage VALUES ('nocopy', (SELECT coalesce(sum(size), 0) FROM blobs WHERE src_path IS NOT NULL));
+	INSERT INTO usage VALUES ('outboards',
+		(SELECT coalesce(sum(8 + 64 * ((size + 16383) / 16384 - 1)), 0) FROM blobs WHERE outboard = 1)
+		+ (SELECT coalesce(sum(8 + 64 * ((size + 16383) / 16384 - 1)), 0) FROM partials));
+	INSERT INTO usage VALUES ('partials', 0);
+	CREATE TRIGGER usage_blocks_i AFTER INSERT ON blocks BEGIN
+		UPDATE usage SET bytes = bytes + length(new.data) WHERE class = 'blocks'; END;
+	CREATE TRIGGER usage_blocks_d AFTER DELETE ON blocks BEGIN
+		UPDATE usage SET bytes = bytes - length(old.data) WHERE class = 'blocks'; END;
+	CREATE TRIGGER usage_blobs_i AFTER INSERT ON blobs BEGIN
+		UPDATE usage SET bytes = bytes + new.size WHERE class = CASE WHEN new.src_path IS NULL THEN 'blobs' ELSE 'nocopy' END;
+		UPDATE usage SET bytes = bytes + new.outboard * (8 + 64 * ((new.size + 16383) / 16384 - 1)) WHERE class = 'outboards'; END;
+	CREATE TRIGGER usage_blobs_d AFTER DELETE ON blobs BEGIN
+		UPDATE usage SET bytes = bytes - old.size WHERE class = CASE WHEN old.src_path IS NULL THEN 'blobs' ELSE 'nocopy' END;
+		UPDATE usage SET bytes = bytes - old.outboard * (8 + 64 * ((old.size + 16383) / 16384 - 1)) WHERE class = 'outboards'; END;
+	CREATE TRIGGER usage_partials_i AFTER INSERT ON partials BEGIN
+		UPDATE usage SET bytes = bytes + new.held WHERE class = 'partials';
+		UPDATE usage SET bytes = bytes + 8 + 64 * ((new.size + 16383) / 16384 - 1) WHERE class = 'outboards'; END;
+	CREATE TRIGGER usage_partials_d AFTER DELETE ON partials BEGIN
+		UPDATE usage SET bytes = bytes - old.held WHERE class = 'partials';
+		UPDATE usage SET bytes = bytes - 8 - 64 * ((old.size + 16383) / 16384 - 1) WHERE class = 'outboards'; END;
+	CREATE TRIGGER usage_partials_u AFTER UPDATE OF held ON partials BEGIN
+		UPDATE usage SET bytes = bytes + new.held - old.held WHERE class = 'partials'; END;`,
+		post: migrateHeld},
+}
+
+// migrateHeld fills partials.held from the group bitmaps (migration 3).
+func migrateHeld(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT mh, size, groups FROM partials`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		mh   []byte
+		held int64
+	}
+	var upd []row
+	for rows.Next() {
+		var mh, groups []byte
+		var size int64
+		if err := rows.Scan(&mh, &size, &groups); err != nil {
+			rows.Close()
+			return err
+		}
+		upd = append(upd, row{mh, heldBytes(groups, uint64(size))})
+	}
+	rows.Close()
+	for _, r := range upd {
+		if _, err := tx.Exec(`UPDATE partials SET held = ? WHERE mh = ?`, r.held, r.mh); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SchemaVersion is the schema version this binary writes.
@@ -153,9 +234,15 @@ func migrate(db *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(migrations[v]); err != nil {
+		if _, err := tx.Exec(migrations[v].sql); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("store: migration %d: %w", v+1, err)
+		}
+		if post := migrations[v].post; post != nil {
+			if err := post(tx); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("store: migration %d: %w", v+1, err)
+			}
 		}
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err != nil {
 			tx.Rollback()
@@ -193,6 +280,10 @@ type Info struct {
 	Size     uint64
 	Complete bool // false for partial blobs
 	NoCopy   bool
+	// Physical is the bytes charged for the object (A1): data plus outboard for a copied
+	// blob, the outboard alone for a --nocopy reference, verified bytes plus outboard
+	// for a partial blob.
+	Physical uint64
 }
 
 // Has reports whether the store holds the object with c's multihash. A --nocopy blob whose
@@ -203,7 +294,7 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 	var size int64
 	err := s.db.QueryRow(`SELECT codec, length(data) FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&codec, &size)
 	if err == nil {
-		return Info{Codec: cid.Codec(codec), Size: uint64(size), Complete: true}, true, nil
+		return Info{Codec: cid.Codec(codec), Size: uint64(size), Complete: true, Physical: uint64(size)}, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Info{}, false, err
@@ -215,14 +306,22 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 				return Info{}, false, err
 			}
 		}
-		return Info{Codec: cid.Raw, Size: row.size, Complete: true, NoCopy: row.srcPath != ""}, true, nil
+		info := Info{Codec: cid.Raw, Size: row.size, Complete: true, NoCopy: row.srcPath != ""}
+		if !info.NoCopy {
+			info.Physical = row.size
+		}
+		if row.outboard {
+			info.Physical += blob.OutboardSize(row.size)
+		}
+		return info, true, nil
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return Info{}, false, err
 	}
-	err = s.db.QueryRow(`SELECT size FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size)
+	var held int64
+	err = s.db.QueryRow(`SELECT size, held FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size, &held)
 	if err == nil {
-		return Info{Codec: cid.Raw, Size: uint64(size)}, true, nil
+		return Info{Codec: cid.Raw, Size: uint64(size), Physical: uint64(held) + blob.OutboardSize(uint64(size))}, true, nil
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return Info{}, false, nil
@@ -254,20 +353,12 @@ func (s *Store) Put(c cid.CID, data []byte) error {
 }
 
 func (s *Store) putBlock(codec cid.Codec, m cid.Multihash, data []byte) error {
+	if err := s.admit(int64(len(data))); err != nil {
+		return err
+	}
 	s.gcMu.RLock()
 	defer s.gcMu.RUnlock()
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, ?)`,
 		mhKey(m), int(codec), data, s.nowUnix())
 	return err
-}
-
-// Usage returns the bytes the store holds: blocks, copied blobs, outboards and partials.
-func (s *Store) Usage() (int64, error) {
-	var blocks, blobs, obs, parts sql.NullInt64
-	err := s.db.QueryRow(`SELECT
-		(SELECT sum(length(data)) FROM blocks),
-		(SELECT sum(size) FROM blobs WHERE src_path IS NULL),
-		(SELECT sum(8 + 64 * ((size + 16383) / 16384 - 1)) FROM blobs WHERE outboard = 1),
-		(SELECT sum(size) FROM partials)`).Scan(&blocks, &blobs, &obs, &parts)
-	return blocks.Int64 + blobs.Int64 + obs.Int64 + parts.Int64, err
 }

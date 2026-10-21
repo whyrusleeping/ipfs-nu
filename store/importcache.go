@@ -51,27 +51,3 @@ func (s *Store) ImportCachePut(src Source, h cid.Hash, c cid.CID) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, src.Path, int(h), src.Size, src.Mtime, src.Inode, c.Bytes(), s.nowUnix())
 	return err
 }
-
-// Stats summarises the store for status output.
-type Stats struct {
-	// Objects counts blocks, blobs (complete) and partial blobs.
-	Objects int64
-	// Bytes is Usage: what the store holds on disk, excluding --nocopy sources.
-	Bytes int64
-	Pins  int64
-}
-
-// Stats returns object, byte and pin counts.
-func (s *Store) Stats() (Stats, error) {
-	var st Stats
-	var blocks, blobs, parts, pins sql.NullInt64
-	err := s.db.QueryRow(`SELECT (SELECT count(*) FROM blocks), (SELECT count(*) FROM blobs),
-		(SELECT count(*) FROM partials), (SELECT count(*) FROM pins)`).Scan(&blocks, &blobs, &parts, &pins)
-	if err != nil {
-		return st, err
-	}
-	st.Objects = blocks.Int64 + blobs.Int64 + parts.Int64
-	st.Pins = pins.Int64
-	st.Bytes, err = s.Usage()
-	return st, err
-}

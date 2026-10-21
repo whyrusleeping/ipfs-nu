@@ -167,10 +167,10 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 	return nil
 }
 
-// usage reports free disk space (unknown: 0) and bytes the store holds.
+// usage reports free disk space (unknown: 0) and physical bytes the store holds.
 func (n *Local) usage() (free, used int64) {
-	used, _ = n.Store.Usage()
-	return 0, used
+	st, _ := n.Store.Stats()
+	return max(st.Free, 0), st.Bytes
 }
 
 // DetachNetwork stops the cluster service; call it before closing the swarm.

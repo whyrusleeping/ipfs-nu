@@ -186,9 +186,10 @@ known. Publisher fields are claims; verify actual sizes and enforce limits durin
 If logical, physical or transfer limits stop progress, preserve A and report a pause plus
 required space/budget and next action. Physical limits include old/history/staging/surplus,
 not just B. Repeated retargets need a separate transfer budget/bandwidth control.
-See [capacity contracts](operations.md#capacity-and-transfer-budgets) for dedup accounting,
-free-space reserve and cleanup. Lazy readiness covers structure, not offline blobs; missing
-or type-changed scoped paths pause without silently expanding to the full dataset.
+Dedup accounting, free-space reserve, admission and cleanup are [D17 A1–A8](data.md#accounting-and-budgets);
+quota/transfer behavior is [C1–C5 and T1–T4](operations.md#capacity-and-transfer-budgets).
+Lazy readiness covers structure, not offline blobs; missing or type-changed scoped paths
+pause without silently expanding to the full dataset.
 
 ### Lifecycle and reader contract
 
@@ -270,7 +271,8 @@ therefore providers, across datasets.
 
 ## Details still to specify
 
-- Logical/physical/transfer accounting ([0064](operations.md#capacity-and-transfer-budgets)).
+- Enforcing the transfer budget ([T4](operations.md#capacity-and-transfer-budgets)) and the
+  `--max-size` quota in the follow syncer; the accounting itself is specified.
 - Exact `/nu/name/1` messages, proof CAR limits, and watch-mesh degree and forwarding rules.
 - Whether firehose `#commit` blocks always contain a complete inclusion path for the record
   (MST inversion suggests so), so they can serve as proofs; verify against indigo.

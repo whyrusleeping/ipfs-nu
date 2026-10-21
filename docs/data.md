@@ -368,9 +368,10 @@ not depend on Amino; a routing fallback is not a second content model.
   collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk
   profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
   links count and when the pin is complete.
-  GC is mark-and-sweep with a size watermark; unpinned objects younger than a grace period
-  survive so in-progress adds and fetches are not collected before they are pinned. Explicit releases (unfollow, unpin, collection
-  release) may also trigger an incremental sweep of the released content.
+  GC is mark-and-sweep, triggered by the watermark, free-space reserve and admission
+  shortfalls (A7); unpinned objects younger than a grace period survive so in-progress
+  adds and fetches are not collected before they are pinned. Explicit releases (unfollow,
+  unpin, collection release) may also trigger an incremental sweep of the released content.
 - `nu follow` pins newly resolved targets according to policy. Retain the previous pinned
   target as a replication safeguard, not as publication history. Large, frequently updated
   trees use delta sync, completeness marks, atomic pin switches, scopes and quotas
@@ -378,7 +379,8 @@ not depend on Amino; a routing fallback is not a second content model.
 - Seed nodes follow their owner's DID under specified lifecycle/budgets. Laptop publication
   → exact-target seed completion wait → laptop sleep is the intended workflow; a fresh third
   client must retrieve the acknowledged CID. Proof/publication alone is not readiness.
-- Shared quota/headroom/staging and recovery rules are in [operations](operations.md).
+- Quota, headroom, staging and pressure rules are the accounting rules below and the
+  [capacity contracts](operations.md#capacity-and-transfer-budgets).
   Pins needed by held views, retained archives or unconfirmed handoffs survive disk pressure;
   GC reclaims only unpinned content. `--nocopy` is not an independent archive copy: source
   mutation/deletion must invalidate availability until reverified or reacquired.
@@ -386,13 +388,79 @@ not depend on Amino; a routing fallback is not a second content model.
   semantics. Reject traversal/unsafe extraction and report unsupported transformations.
   Stable content export and clean-machine restore are production requirements.
 
+### Accounting and budgets
+
+Rules are numbered so tests and status output can cite them. The store (`store`) implements
+A1–A8; the transfer rules are in [operations](operations.md#capacity-and-transfer-budgets).
+
+- **A1 Three measures, never mixed.** *Logical bytes* of a target (a pin, dataset or
+  follow) are the sizes of the distinct objects its walk profile reaches, each counted once
+  per target: a raw blob by its length, a structure block by its encoded length. The same
+  object under two targets counts in each. `max_size`/`--max-size` are logical. *Physical
+  bytes* are what the store occupies on disk, daemon-wide, each object charged once however
+  many pins reach it: complete copied blobs, outboards (`blob.OutboardSize`), the verified
+  bytes of partial blobs plus their outboards, the database file with its WAL (blocks, pins,
+  indexes) and in-progress staging. *Transfer bytes* are bytes received over an interval
+  and belong to the fetch/follow layer, not the store.
+- **A2 Claims are not sizes.** A size from a tree entry, file node, name record or peer is a
+  claim until the object is held and verified. The store reports held logical bytes and
+  the count of missing objects (`WalkStats`); a preflight that adds declared sizes of
+  missing objects reports them as an estimate with that uncertainty. Physical bytes are
+  charged as they verify (a partial blob by its verified groups), never as declared.
+- **A3 `--nocopy`.** A referenced source is not charged (only its outboard is); its bytes are
+  reported separately as `nocopy`. Once a source fails verification its row is dropped, so
+  it is neither held, logical nor advertised until re-added or fetched.
+- **A4 Attribution.** A *scope* is a pin source plus name: one follow, dataset, collection,
+  or the explicit pins (`explicit`, name `""`). An object's physical bytes are *unique* to a
+  scope when only that scope's pins reach it, *shared* when pins of two or more scopes reach
+  it, and *unpinned* when no pin reaches it (grace-protected adds and fetches, cache,
+  abandoned partials). `unique` is what releasing the scope frees after GC; releasing a
+  scope never frees shared bytes. Per-scope `logical`, `physical` (everything its pins
+  reach) and `unique` come from one mark pass over all pins (`Store.Attribution`).
+  *Example:* follows F1 and F2 each pin a 10 GiB tree; 6 GiB of blobs are identical.
+  Logical: 10 GiB each. Physical daemon-wide: 14 GiB plus outboards. F1 unique 4 GiB, F2
+  unique 4 GiB, shared 6 GiB. `nu unfollow F1` frees 4 GiB. A retained previous version of
+  F1 that differs by one 1 GiB file adds 1 GiB physical, unique to F1 (the scope), and 0
+  logical to F1's current target.
+- **A5 Budgets.** `store.limit` is the physical budget (0: unlimited); `store.free_reserve`
+  is free space kept on the filesystem holding the store (default 1 GiB); headroom is
+  `min(limit − physical, free − reserve)` over the terms that apply. `store.gc_watermark`
+  (default 0.9) is the fraction of `limit` above which automatic GC runs.
+- **A6 Admission.** Every write declares its need before it stores anything: a known-size
+  add or fetch needs the object plus its outboard; a partial blob needs its missing groups
+  plus the outboard on first open; an unknown-size add needs one chunk group up front and
+  its actual bytes at commit. When need exceeds headroom the store first reclaims (A7),
+  rechecks, then refuses with `BudgetError{reason: store_limit|free_space, need, headroom,
+  physical, limit, free, reserve}`; the API reports it as `insufficient_storage` with those
+  details and the action. A refused write leaves nothing visible and nothing held is
+  released. Partial blobs are refused before any byte is fetched when the declared size
+  exceeds headroom or `MaxBlobSize` (8 TiB, the bound of the group bitmap); the fetcher
+  proves a claimed size by verifying the last chunk group before fetching the rest and
+  discards partials of disproven sizes.
+- **A7 Reclaim and pressure.** GC runs when physical ≥ watermark × limit, when free space
+  < reserve, on an admission shortfall (at most once a minute), and on request. It removes
+  only unpinned objects older than the grace period, abandoned partials (unreachable from
+  every pin and not updated within the grace), and orphan files; `staging/` is emptied at
+  open. GC never removes pinned content of any source: under pressure, acquisition pauses
+  with the bytes needed and the action (release pins with `pin rm`/unfollow, free disk
+  space, or raise `store.limit`); protected content ([S7](operations.md#s-safe-release))
+  is never released to make a new update fit.
+- **A8 Status.** `nu status` and `GET /api/v0/status` report the `store` section:
+  `{objects, pins, bytes (physical), blobs, outboards, partials, db, staging, reserved
+  (admitted, unwritten fetch bytes), nocopy, free, limit, reserve, headroom, pressure}`,
+  where `free`/`headroom` are `-1` when unknown or unlimited and `pressure` is set while
+  headroom is 0. Operations that stop on a
+  budget fail with `insufficient_storage`; a follow or cluster consumer that pauses instead
+  reports the same details in its paused status.
+
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
 precision work includes extraction rules (filenames, case, symlinks on export) and the
 `atrepo` profile of `/nu/tree/1`. Name kinds now distinguish `tree|file|blob`; canonical
-vectors and wrapper/stream behavior still require implementation validation. Logical size,
-unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches
+vectors and wrapper/stream behavior still require implementation validation. Accounting is
+specified (A1–A8, [T1–T4](operations.md#capacity-and-transfer-budgets)); transfer budgets
+are enforced when their first consumer (follow) lands. Crash-consistent pin/held switches
 and export compatibility remain to specify. Benchmarks must validate
 fanout/node-size behavior and actual archive update/storage costs.
 

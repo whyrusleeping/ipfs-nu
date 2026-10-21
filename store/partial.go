@@ -27,13 +27,23 @@ type Partial struct {
 	mu     sync.Mutex
 	groups []byte // bitmap of verified groups
 	dirty  bool
+	held   int64 // verified bytes as last persisted
+	// reserved is the admitted but unwritten bytes (A6): the missing bytes at open, less
+	// what each Flush persisted; released on close.
+	reserved int64
+	readOnly bool
 }
 
 // Partial opens (or creates) the partial blob for a BLAKE3 multihash of the given size.
-// Blobs that fit one chunk group are fetched whole with PutBlob instead.
+// Blobs that fit one chunk group are fetched whole with PutBlob instead. The size is a
+// claim (A2): the missing bytes (plus the outboard on first open) are admitted against the
+// budgets before anything is written, and sizes above MaxBlobSize are refused.
 func (s *Store) Partial(m cid.Multihash, size uint64) (*Partial, error) {
 	if m.Hash != cid.BLAKE3 || !blob.HasOutboard(size) {
 		return nil, errors.New("store: partial blobs are BLAKE3 blobs larger than one chunk group; fetch others whole")
+	}
+	if size > MaxBlobSize {
+		return nil, fmt.Errorf("store: declared blob size %d exceeds the %d-byte limit", size, MaxBlobSize)
 	}
 	if info, ok, err := s.Has(cid.New(cid.Raw, m)); err != nil {
 		return nil, err
@@ -42,12 +52,15 @@ func (s *Store) Partial(m cid.Multihash, size uint64) (*Partial, error) {
 	}
 	p := &Partial{s: s, MH: m, Size: size}
 	var dbSize int64
-	err := s.db.QueryRow(`SELECT size, groups FROM partials WHERE mh = ?`, mhKey(m)).Scan(&dbSize, &p.groups)
+	err := s.db.QueryRow(`SELECT size, groups, held FROM partials WHERE mh = ?`, mhKey(m)).Scan(&dbSize, &p.groups, &p.held)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
+		if err := s.admit(int64(size + blob.OutboardSize(size))); err != nil {
+			return nil, err
+		}
 		p.groups = make([]byte, (blob.Groups(size)+7)/8)
 		s.gcMu.RLock()
-		_, err = s.db.Exec(`INSERT INTO partials (mh, size, groups, updated) VALUES (?, ?, ?, ?)`,
+		_, err = s.db.Exec(`INSERT INTO partials (mh, size, groups, held, updated) VALUES (?, ?, ?, 0, ?)`,
 			mhKey(m), int64(size), p.groups, s.nowUnix())
 		s.gcMu.RUnlock()
 		if err != nil {
@@ -57,23 +70,40 @@ func (s *Store) Partial(m cid.Multihash, size uint64) (*Partial, error) {
 		return nil, err
 	case uint64(dbSize) != size:
 		return nil, fmt.Errorf("store: partial blob %s has size %d, not %d", m, dbSize, size)
+	default:
+		if err := s.admit(int64(size) - p.held); err != nil {
+			return nil, err
+		}
 	}
+	p.reserved = int64(size) - p.held
+	s.reserve(p.reserved)
 	path := s.partialPath(m)
 	if p.f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600); err != nil {
+		p.release()
 		return nil, err
 	}
 	if p.ob, err = os.OpenFile(path+".obao", os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 		p.f.Close()
+		p.release()
 		return nil, err
 	}
 	return p, nil
+}
+
+// release returns the remaining reservation.
+func (p *Partial) release() {
+	p.mu.Lock()
+	n := p.reserved
+	p.reserved = 0
+	p.mu.Unlock()
+	p.s.reserve(-n)
 }
 
 // OpenPartial opens an existing partial blob read-only, for serving the groups it held when
 // it was last flushed. It never creates one: ErrNotFound if there is none, ErrComplete if the
 // blob has been completed.
 func (s *Store) OpenPartial(m cid.Multihash) (*Partial, error) {
-	p := &Partial{s: s, MH: m}
+	p := &Partial{s: s, MH: m, readOnly: true}
 	var size int64
 	err := s.db.QueryRow(`SELECT size, groups FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size, &p.groups)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -179,10 +209,10 @@ func (p *Partial) ExtractSlice(dst io.Writer, r blob.Range) error {
 	return blob.ExtractSlice(dst, p.f, p.ob, p.Size, r)
 }
 
-// Flush syncs the data and persists the held-group map.
+// Flush syncs the data and persists the held-group map and verified byte count.
 func (p *Partial) Flush() error {
 	p.mu.Lock()
-	if !p.dirty {
+	if !p.dirty || p.readOnly {
 		p.mu.Unlock()
 		return nil
 	}
@@ -195,8 +225,19 @@ func (p *Partial) Flush() error {
 	if err := p.ob.Sync(); err != nil {
 		return err
 	}
-	_, err := p.s.db.Exec(`UPDATE partials SET groups = ?, updated = ? WHERE mh = ?`, snap, p.s.nowUnix(), mhKey(p.MH))
-	return err
+	held := heldBytes(snap, p.Size)
+	_, err := p.s.db.Exec(`UPDATE partials SET groups = ?, held = ?, updated = ? WHERE mh = ?`, snap, held, p.s.nowUnix(), mhKey(p.MH))
+	if err != nil {
+		return err
+	}
+	// The persisted bytes are now counted; shrink the reservation by the same amount.
+	p.mu.Lock()
+	delta := min(held-p.held, p.reserved)
+	p.held = held
+	p.reserved -= delta
+	p.mu.Unlock()
+	p.s.reserve(-delta)
+	return nil
 }
 
 // Commit turns a complete partial into a normal blob, atomically.
@@ -225,7 +266,10 @@ func (p *Partial) Close() error {
 	return errors.Join(p.Flush(), p.close())
 }
 
-func (p *Partial) close() error { return errors.Join(p.f.Close(), p.ob.Close()) }
+func (p *Partial) close() error {
+	p.release()
+	return errors.Join(p.f.Close(), p.ob.Close())
+}
 
 // HeldRanges reports what the store holds of a blob, for /nu/have/1: the whole range for a
 // complete blob, verified ranges for a partial one.

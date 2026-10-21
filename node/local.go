@@ -51,8 +51,9 @@ type Local struct {
 }
 
 // GCGrace is the grace period a node passes to store GC (store.GCOptions.Grace), so the
-// objects of an add or fetch in progress survive until they are pinned. No GC runs
-// automatically in this build; the constant pins the contract for when it does.
+// objects of an add or fetch in progress survive until they are pinned. Automatic GC
+// (store.GCIfNeeded, D17 A7) runs from the daemon's Maintain loop and on admission
+// shortfalls.
 const GCGrace = time.Hour
 
 // NewLocal opens the store in the repo (creating it on first use), loads or creates the
@@ -63,7 +64,11 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := store.Open(r.Root(), store.Options{})
+	limits, err := storeLimits(r)
+	if err != nil {
+		return nil, err
+	}
+	st, err := store.Open(r.Root(), store.Options{Limits: limits})
 	if err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the store in %s: %v", r.Root(), err).
 			WithAction("check that the directory is writable and not in use by an older or newer " + nu.Name)
@@ -129,7 +134,7 @@ func (n *Local) Status(ctx context.Context) (*apiv0.Status, error) {
 	if err != nil {
 		return nil, err
 	}
-	st.Store = &apiv0.StoreStatus{Objects: ss.Objects, Bytes: ss.Bytes, Pins: ss.Pins}
+	st.Store = storeStatus(ss)
 	st.Network = n.networkStatus()
 	return st, nil
 }
@@ -196,7 +201,8 @@ func (n *Local) start(kind, target string, work func(o *op.Operation) (any, erro
 	n.work.Add(1)
 	go func() {
 		defer n.work.Done()
-		o.Finish(work(o))
+		res, err := work(o)
+		o.Finish(res, apiErr(err))
 	}()
 	snap := o.Snapshot()
 	return &snap
@@ -452,7 +458,7 @@ func (n *Local) DagPut(ctx context.Context, doc io.Reader) (*apiv0.DagPutResult,
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
 	}
 	if err := n.Store.Put(c, enc); err != nil {
-		return nil, err
+		return nil, apiErr(err)
 	}
 	return &apiv0.DagPutResult{CID: c.String()}, nil
 }

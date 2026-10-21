@@ -24,12 +24,6 @@ var (
 	ErrResponse = errors.New("httpsrc: invalid response")
 )
 
-// StatusError is an unexpected HTTP status; it matches ErrResponse with errors.Is.
-type StatusError struct{ Code int }
-
-func (e *StatusError) Error() string        { return fmt.Sprintf("%v: HTTP status %d", ErrResponse, e.Code) }
-func (e *StatusError) Is(target error) bool { return target == ErrResponse }
-
 // Config is trusted application policy, not input supplied by a remote caller.
 type Config struct {
 	AllowHTTP bool

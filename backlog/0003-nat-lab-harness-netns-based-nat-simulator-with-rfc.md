@@ -27,3 +27,4 @@ A reusable test harness that runs Nu nodes (and third-party libp2p nodes) behind
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/net (d73e599, merged). p2p/natlab (natlab tag): rootless user+net namespaces with a root fallback, segments/NAT routers via nftables (EIM/ADM/APDM fixtures, EIF/ADF/APDF filtering, port allocation fixtures, hairpin, UDP block), network-change primitives (address/route/link changes, rebinding, conntrack flush), per-process Nu hosts. Evidence: mapping smoke observes EIM 5000/5000/5000, ADM 5000/5000/5001, distinct random APDM ports; filtering verified with unsolicited packets; hairpin/UDP-block/rebind/flush/link-cycle pass; suite ~6 s rootless locally. .github/workflows/natlab.yml written but not yet run on GitHub (no remote). Deferred: IPv6/NAT64 presets, nine-pair validation, two-NAT/CGNAT e2e, mapping lifetime measurements.

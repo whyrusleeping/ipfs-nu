@@ -26,3 +26,4 @@ AutoNAT v2 (`/libp2p/autonat/2/dial-request`, `/dial-back`), client and server.
 
 ## Work log
 - 2026-10-21: Implemented on track/net (cb922b2, merged c0d41e8): p2p/proto/autonat client+server, amplification protection, nonce checks, rate limits, private-mode refusal. Evidence: loopback tests (direct, cross-IP paid, filtered UDP → Unreachable), fuzz seeds, experiments/TestAutoNATv2 vs go-libp2p v0.50.0 both directions. Remaining: NAT-lab classification acceptance (needs 0003); publishing confirmed addresses into identify/peer records and scheduling (daemon integration).
+- 2026-10-21: NAT-lab acceptance met (d73e599): public node Reachable at ~0.40 s, NAT'd node Unreachable at ~0.72 s from scenario start, rootless. Publishing confirmed addresses into identify/peer records and periodic scheduling belong with daemon integration (0020).

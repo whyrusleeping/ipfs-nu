@@ -1,7 +1,7 @@
 ---
 id: "0053"
 title: 'atproto record fetch and repo snapshots: nu get at://, CAR import/export, ls/cat and /at/ gateway browsing'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-30"
 updated: "2026-10-21"

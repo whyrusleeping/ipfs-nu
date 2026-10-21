@@ -56,40 +56,21 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 func (n *Local) get(o *op.Operation, root cid.CID, p string, hints []link.Provider, req apiv0.GetRequest) (*apiv0.GetResult, error) {
 	ctx := o.Context()
 	res := &apiv0.GetResult{CID: root.String(), Path: p}
-	fetch := func(c cid.CID) error {
-		o.Stage("fetching")
-		res.Fetched = true
-		last := time.Now()
-		return n.Fetcher.Fetch(ctx, c, hints, func(done, total int64) {
-			if time.Since(last) > 100*time.Millisecond {
-				o.Progress(done, total, "bytes")
-				last = time.Now()
-			}
-		})
-	}
-	o.Stage("resolving")
-	nd, err := n.content.Resolve(root, p)
-	if _, notHeld := content.IsNotHeld(err); notHeld {
-		// The root (or structure on the way to the path) is missing: fetch from the root.
-		if err := fetch(root); err != nil {
-			return nil, err
+	last := time.Now()
+	nd, err := n.ensure(ctx, root, p, hints, func(stage string) {
+		o.Stage(stage)
+		if stage == "fetching" {
+			res.Fetched = true
 		}
-		o.Stage("resolving")
-		nd, err = n.content.Resolve(root, p)
-	}
+	}, func(done, total int64) {
+		if time.Since(last) > 100*time.Millisecond {
+			o.Progress(done, total, "bytes")
+			last = time.Now()
+		}
+	})
 	if err != nil {
 		return nil, err
 	}
-	// Structure resolved; make sure everything under the resolved node is here.
-	if err := n.requireComplete(ctx, nd.CID); err != nil {
-		if _, notHeld := content.IsNotHeld(err); !notHeld {
-			return nil, err
-		}
-		if err := fetch(nd.CID); err != nil {
-			return nil, err
-		}
-	}
-
 	out := req.Output
 	if out == "" {
 		out = filepath.Join(req.Dir, defaultName(nd, root, p))
@@ -113,6 +94,42 @@ func (n *Local) get(o *op.Operation, root cid.CID, p string, hints []link.Provid
 		o.Log("skipped " + s.Path + ": " + s.Reason)
 	}
 	return res, nil
+}
+
+// ensure resolves root/p and makes everything under the resolved node held, fetching
+// through the Fetcher (with the link's hints) when the root, the structure on the way to
+// p, or anything under the resolved node is missing. stage and progress may be nil.
+func (n *Local) ensure(ctx context.Context, root cid.CID, p string, hints []link.Provider, stage func(string), progress func(done, total int64)) (*content.Node, error) {
+	if stage == nil {
+		stage = func(string) {}
+	}
+	fetch := func(c cid.CID) error {
+		stage("fetching")
+		return n.Fetcher.Fetch(ctx, c, hints, progress)
+	}
+	stage("resolving")
+	nd, err := n.content.Resolve(root, p)
+	if _, notHeld := content.IsNotHeld(err); notHeld {
+		// The root (or structure on the way to the path) is missing: fetch from the root.
+		if err := fetch(root); err != nil {
+			return nil, err
+		}
+		stage("resolving")
+		nd, err = n.content.Resolve(root, p)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Structure resolved; make sure everything under the resolved node is here.
+	if err := n.requireComplete(ctx, nd.CID); err != nil {
+		if _, notHeld := content.IsNotHeld(err); !notHeld {
+			return nil, err
+		}
+		if err := fetch(nd.CID); err != nil {
+			return nil, err
+		}
+	}
+	return nd, nil
 }
 
 // defaultName names the output when the caller gave a directory: the path's last segment,

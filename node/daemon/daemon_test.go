@@ -50,7 +50,8 @@ func TestDaemonEndToEnd(t *testing.T) {
 		t.Fatalf("discover without daemon: %v", err)
 	}
 
-	d, err := Start(ctx, Options{Repo: r, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0", Logger: slog.New(slog.DiscardHandler)})
+	d, err := Start(ctx, Options{Repo: r, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0",
+		SwarmListen: []string{"/ip4/127.0.0.1/udp/0/quic-v1"}, NoMDNS: true, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}

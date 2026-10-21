@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node/daemon"
@@ -19,12 +21,47 @@ import (
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
-// The CLI follows an operation through the client and exits with the error category.
-func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
-	r, _, err := repo.Open(t.TempDir())
+// loopbackRepo initializes a repo whose swarm listens on loopback at an ephemeral port
+// with mDNS off, so tests never touch the machine's network.
+func loopbackRepo(t *testing.T, dir string) *repo.Repo {
+	t.Helper()
+	r, _, err := repo.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := r.ConfigSet("swarm.listen", `["/ip4/127.0.0.1/udp/0/quic-v1"]`); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfigSet("swarm.mdns", "false"); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// syncBuf is a bytes.Buffer safe for a writer and a reader on different goroutines.
+type syncBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *syncBuf) String() string            { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// waitFor polls cond until it holds or the timeout expires.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// The CLI follows an operation through the client and exits with the error category.
+func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
+	r := loopbackRepo(t, t.TempDir())
 	d, err := daemon.Start(context.Background(), daemon.Options{Repo: r, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0", Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
@@ -69,19 +106,19 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 	}
 	// Daemonless: cat/ls/add run an in-process node when no daemon runs; a held lock
 	// without an answering API is a clear unavailable error.
-	lonely, _, _ := repo.Open(t.TempDir())
+	lonely := loopbackRepo(t, t.TempDir())
 	cid := "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"
 	cases = append(cases,
 		struct {
 			args []string
 			exit int
-		}{[]string{"--nu-path", lonely.Root(), "cat", cid}, apiv0.ExitNotFound},
+		}{[]string{"--nu-path", lonely.Root(), "cat", cid}, apiv0.ExitUnavailable},
 		struct {
 			args []string
 			exit int
 		}{[]string{"--nu-path", lonely.Root(), "add", filepath.Join(t.TempDir(), "missing")}, apiv0.ExitNotFound},
 	)
-	locked, _, _ := repo.Open(t.TempDir())
+	locked := loopbackRepo(t, t.TempDir())
 	lk, err := locked.Lock()
 	if err != nil {
 		t.Fatal(err)
@@ -112,15 +149,19 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 	}
 }
 
-// From a fresh $NU_PATH with no init: `add -r` of a site without a daemon, then the site
+// From a fresh $NU_PATH with no init: `add -r` of a site without a daemon, a foreground
+// `share` serves it to a `get` from a second repo that has no daemon either, then the site
 // renders on its <cid>.localhost origin and lists on /tree/<cid>/ once a daemon runs;
-// `--json` output and daemonless pin/ls follow suit.
+// `--json` output and daemonless pin/ls follow suit. (Both repos get a loopback swarm
+// config first, which is the only way the test stays off the machine's network; the
+// recipient still runs no init and no daemon.)
 func TestAddSiteAndBrowse(t *testing.T) {
 	site := filepath.Join(t.TempDir(), "site")
 	os.MkdirAll(filepath.Join(site, "sub"), 0o755)
 	os.WriteFile(filepath.Join(site, "index.html"), []byte("<h1>hello</h1>"), 0o644)
 	os.WriteFile(filepath.Join(site, "sub", "style.css"), []byte("body{}"), 0o644)
 	root := filepath.Join(t.TempDir(), "nu")
+	loopbackRepo(t, root)
 
 	var out, errb bytes.Buffer
 	if code := run([]string{"--nu-path", root, "add", "-r", site}, &out, &errb); code != apiv0.ExitOK {
@@ -136,30 +177,40 @@ func TestAddSiteAndBrowse(t *testing.T) {
 	}
 	cid := fields[1]
 
-	// share prints a link naming this repo's PeerId; get of that link (and of the CID with
-	// -o) reproduces the directory; a file inside the tree lands under its own name.
-	out.Reset()
-	if code := run([]string{"--nu-path", root, "share", cid}, &out, &errb); code != apiv0.ExitOK {
-		t.Fatalf("share: exit %d: %s", code, errb.String())
-	}
-	shareLink, err := link.Parse(strings.TrimSpace(out.String()))
-	if err != nil || shareLink.CID.String() != cid || len(shareLink.Providers) != 1 {
-		t.Fatalf("share link %q: %v", out.String(), err)
+	// share (no daemon) prints a link naming this repo's PeerId and its loopback address,
+	// then serves in the foreground until interrupted. A second repo with no daemon gets
+	// the link in-process; the directory is reproduced.
+	shareCtx, stopShare := context.WithCancel(context.Background())
+	var shareOut, shareErr syncBuf
+	shareDone := make(chan int, 1)
+	go func() { shareDone <- runCtx(shareCtx, []string{"--nu-path", root, "share", cid}, &shareOut, &shareErr) }()
+	waitFor(t, "share to serve", func() bool { return strings.Contains(shareErr.String(), "available only while a holder is online") })
+	shareLink, err := link.Parse(strings.TrimSpace(shareOut.String()))
+	if err != nil || shareLink.CID.String() != cid || len(shareLink.Providers) != 1 || len(shareLink.Providers[0].Addrs) != 1 {
+		t.Fatalf("share link %q: %v", shareOut.String(), err)
 	}
 	key, err := wire.LoadNodeKey(filepath.Join(root, repo.KeyFile))
 	if err != nil || shareLink.Providers[0].Peer != key.Public().PeerID() {
 		t.Fatalf("share link peer %s is not the repo's key (%v)", shareLink.Providers[0].Peer.Base36(), err)
 	}
-	if !strings.Contains(errb.String(), "available only while a holder is online") {
-		t.Fatalf("share without a daemon did not explain serving: %q", errb.String())
-	}
+	other := loopbackRepo(t, filepath.Join(t.TempDir(), "other")).Root()
 	dest := filepath.Join(t.TempDir(), "copy")
 	out.Reset()
-	if code := run([]string{"--nu-path", root, "get", "-o", dest, shareLink.String()}, &out, &errb); code != apiv0.ExitOK {
-		t.Fatalf("get: exit %d: %s", code, errb.String())
+	errb.Reset()
+	if code := run([]string{"--nu-path", other, "get", "-o", dest, shareLink.String()}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("get from share: exit %d: %s", code, errb.String())
 	}
 	if !strings.HasPrefix(out.String(), "wrote "+cid+" to "+dest+" (2 files, 20 B)") {
 		t.Fatalf("get output: %q", out.String())
+	}
+	stopShare()
+	if code := <-shareDone; code != apiv0.ExitOK {
+		t.Fatalf("share exit %d: %s", code, shareErr.String())
+	}
+	// The fetched copy is held: cat through the other repo's own store and a second get.
+	out.Reset()
+	if code := run([]string{"--nu-path", other, "cat", cid + "/sub/style.css"}, &out, &errb); code != apiv0.ExitOK || out.String() != "body{}" {
+		t.Fatalf("cat fetched: exit %d: %q %s", code, out.String(), errb.String())
 	}
 	for p, want := range map[string]string{"index.html": "<h1>hello</h1>", "sub/style.css": "body{}"} {
 		if b, err := os.ReadFile(filepath.Join(dest, p)); err != nil || string(b) != want {
@@ -173,9 +224,10 @@ func TestAddSiteAndBrowse(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(dest, "css")); err != nil || string(b) != "body{}" {
 		t.Fatalf("extracted file: %q %v", b, err)
 	}
-	// Not-held content asks the fetcher, which this build does not have.
+	// Not-held content with no provider hint and no peer is unavailable, with an action.
 	out.Reset()
-	if code := run([]string{"--nu-path", root, "get", "-o", filepath.Join(dest, "x"), "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"}, &out, &errb); code != apiv0.ExitNotImplemented {
+	errb.Reset()
+	if code := run([]string{"--nu-path", root, "get", "-o", filepath.Join(dest, "x"), "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"}, &out, &errb); code != apiv0.ExitUnavailable || !strings.Contains(errb.String(), "→") {
 		t.Fatalf("get missing: exit %d: %s", code, errb.String())
 	}
 
@@ -213,6 +265,9 @@ func TestAddSiteAndBrowse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	if d.Swarm == nil || len(d.Node.Addrs()) != 1 || !strings.HasPrefix(d.Node.Addrs()[0].String(), "/ip4/127.0.0.1/udp/") {
+		t.Fatalf("daemon swarm addrs: %v", d.Node.Addrs())
+	}
 	_, port, _ := strings.Cut(d.GatewayAddr(), ":")
 	get := func(host, path string) (*http.Response, string) {
 		req, _ := http.NewRequest("GET", "http://"+d.GatewayAddr()+path, nil)

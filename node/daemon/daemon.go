@@ -1,6 +1,6 @@
 // Package daemon assembles and runs the Nu daemon: it opens the repo, takes the daemon
-// lock, serves the local API and the loopback gateway, records their addresses in the repo
-// so clients can find them, and shuts down gracefully.
+// lock, starts the swarm (node/swarm), serves the local API and the loopback gateway,
+// records their addresses in the repo so clients can find them, and shuts down gracefully.
 package daemon
 
 import (
@@ -19,6 +19,7 @@ import (
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/node/swarm"
 )
 
 // Options configures a daemon.
@@ -27,12 +28,19 @@ type Options struct {
 	Repo *repo.Repo
 	// APIListen and GatewayListen override config.toml when non-empty. ":0" picks a port.
 	APIListen, GatewayListen string
-	Logger                   *slog.Logger
+	// SwarmListen overrides swarm.listen when non-empty (multiaddrs).
+	SwarmListen []string
+	// NoNetwork runs without a swarm (no fetching, no serving); NoMDNS keeps the swarm
+	// but disables LAN discovery. Swarm customizes the swarm further (tests).
+	NoNetwork, NoMDNS bool
+	Swarm             func(*swarm.Config)
+	Logger            *slog.Logger
 }
 
 // Daemon is a running daemon.
 type Daemon struct {
-	Node *node.Local
+	Node  *node.Local
+	Swarm *swarm.Swarm // nil with NoNetwork
 
 	log     *slog.Logger
 	lock    *repo.Lock
@@ -90,6 +98,29 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 2)}
+	if !opts.NoNetwork {
+		scfg, err := swarm.RepoConfig(opts.Repo, n.Key, n.Store)
+		if err != nil {
+			d.Close()
+			return nil, err
+		}
+		scfg.Logger = log
+		if len(opts.SwarmListen) > 0 {
+			scfg.Listen = opts.SwarmListen
+		}
+		if opts.NoMDNS {
+			scfg.MDNS = false
+		}
+		if opts.Swarm != nil {
+			opts.Swarm(&scfg)
+		}
+		d.Swarm, err = swarm.Start(ctx, scfg)
+		if err != nil {
+			d.Close()
+			return nil, err
+		}
+		n.Fetcher, n.Net = d.Swarm, d.Swarm
+	}
 
 	d.apiLn, err = net.Listen("tcp", apiAddr)
 	if err != nil {
@@ -125,7 +156,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 	}
 	go d.serve(d.apiSrv, d.apiLn)
 	go d.serve(d.gwSrv, d.gwLn)
-	log.Info("daemon started", "version", nu.Version, "repo", opts.Repo.Root(), "api", d.Node.API, "gateway", d.Node.Gateway)
+	log.Info("daemon started", "version", nu.Version, "repo", opts.Repo.Root(), "api", d.Node.API, "gateway", d.Node.Gateway, "peer", n.PeerID().Base36())
 	return d, nil
 }
 
@@ -185,6 +216,13 @@ func (d *Daemon) Close() error {
 		if ln != nil {
 			_ = ln.Close()
 		}
+	}
+	if d.Node != nil {
+		d.Node.Ops.CancelAll()
+		d.Node.Wait()
+	}
+	if d.Swarm != nil {
+		keep(d.Swarm.Close())
 	}
 	if d.Node != nil {
 		keep(d.Node.Close())

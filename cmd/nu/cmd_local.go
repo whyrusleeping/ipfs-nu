@@ -169,7 +169,7 @@ func formatValue(v any) string {
 
 var cmdDaemon = &command{
 	name:    "daemon",
-	summary: "run the node: local API, loopback gateway (and later the libp2p swarm)",
+	summary: "run the node: libp2p swarm, local API and loopback gateway",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		apiListen := fs.String("api-listen", "", "override api.listen (host:port)")
@@ -188,8 +188,8 @@ var cmdDaemon = &command{
 		}
 		st, _ := d.Node.Status(ctx)
 		if err := e.emit(st, func(w io.Writer) {
-			fmt.Fprintf(w, "%s %s serving %s\n  API      http://%s%s\n  gateway  http://%s/\npress Ctrl-C to stop\n",
-				nu.Name, nu.Version, r.Root(), d.APIAddr(), apiv0.Prefix, d.GatewayAddr())
+			fmt.Fprintf(w, "%s %s serving %s\n  peer id  %s\n  swarm    %s\n  API      http://%s%s\n  gateway  http://%s/\npress Ctrl-C to stop\n",
+				nu.Name, nu.Version, r.Root(), d.Node.PeerID().Base36(), strings.Join(st.Network.Addrs, ", "), d.APIAddr(), apiv0.Prefix, d.GatewayAddr())
 		}); err != nil {
 			d.Close()
 			return err
@@ -213,7 +213,7 @@ type localStatus struct {
 
 var cmdStatus = &command{
 	name:    "status",
-	summary: "one summary: daemon, version, paths, store, identity and addresses (later: reachability, shares, datasets)",
+	summary: "one summary: daemon, version, paths, store, identity, addresses and connected peers",
 	run: func(ctx context.Context, e *env, args []string) error {
 		if err := parseFlags(e.flags(), args); err != nil {
 			return err
@@ -232,7 +232,7 @@ var cmdStatus = &command{
 		}
 		if !ls.Running {
 			// Read the store and identity in-process when nothing holds the repo lock.
-			if n, release, err := e.local(r); err == nil {
+			if n, release, err := e.local(r, false); err == nil {
 				if st, err := n.Status(ctx); err == nil {
 					ls.Store, ls.Network = st.Store, st.Network
 				}
@@ -253,8 +253,11 @@ var cmdStatus = &command{
 				fmt.Fprintf(w, "addresses:  %s\n", addrs)
 				if ls.Network.Serving {
 					fmt.Fprintf(w, "network:    serving, %d peers connected\n", ls.Network.Peers)
+					for _, p := range ls.Network.Connected {
+						fmt.Fprintf(w, "            %s\n", p)
+					}
 				} else {
-					fmt.Fprintf(w, "network:    not serving (no host in this build; shared content is available only while a holder is online)\n")
+					fmt.Fprintf(w, "network:    not serving (shared content is available only while a holder is online; run `%s daemon` or `%s share`)\n", nu.Name, nu.Name)
 				}
 			}
 			if !ls.Running {

@@ -33,6 +33,8 @@ const (
 	GatewayFile = "gateway"
 	// LockFile is held (flock) by the running daemon and contains its PID.
 	LockFile = "daemon.lock"
+	// PeersFile is the persisted peer-address cache (p2p/lookup FileStore).
+	PeersFile = "peers.json"
 	// VersionFile records the layout version for future migrations.
 	VersionFile = "version"
 )

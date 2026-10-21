@@ -17,7 +17,7 @@ import (
 const (
 	DefaultAPIListen     = "127.0.0.1:5171"
 	DefaultGatewayListen = "127.0.0.1:8171"
-	// DefaultSwarmPort is the libp2p QUIC UDP port. Reserved for the networking track.
+	// DefaultSwarmPort is the libp2p QUIC UDP port.
 	DefaultSwarmPort = 4171
 )
 
@@ -41,10 +41,12 @@ type GatewayConfig struct {
 	Listen string `toml:"listen"`
 }
 
-// SwarmConfig configures libp2p listening. Reserved: read by the networking track.
+// SwarmConfig configures libp2p listening and discovery.
 type SwarmConfig struct {
 	// Listen holds multiaddrs, by default QUIC v1 on UDP DefaultSwarmPort for IPv4 and IPv6.
 	Listen []string `toml:"listen"`
+	// MDNS enables LAN peer discovery (default true).
+	MDNS bool `toml:"mdns"`
 }
 
 // DefaultConfig returns the configuration written at init.
@@ -55,7 +57,7 @@ func DefaultConfig() *Config {
 		Swarm: SwarmConfig{Listen: []string{
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", DefaultSwarmPort),
 			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", DefaultSwarmPort),
-		}},
+		}, MDNS: true},
 	}
 }
 

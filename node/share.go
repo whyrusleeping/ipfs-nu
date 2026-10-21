@@ -21,6 +21,8 @@ type Net interface {
 	Addrs() []wire.Multiaddr
 	// Peers counts connected peers.
 	Peers() int
+	// Connected lists the connected peers.
+	Connected() []wire.PeerID
 }
 
 // MaxLinkAddrs bounds the address hints a share link carries: enough for a LAN and a
@@ -136,14 +138,18 @@ func (n *Local) networkStatus() *apiv0.NetworkStatus {
 		ns.Addrs = append(ns.Addrs, a.String())
 	}
 	if n.Net != nil {
-		ns.Serving, ns.Peers = true, n.Net.Peers()
+		ns.Serving = true
+		for _, id := range n.Net.Connected() {
+			ns.Connected = append(ns.Connected, id.Base36())
+		}
+		ns.Peers = len(ns.Connected)
 	}
 	return ns
 }
 
 // Share returns the link for a held CID target. The content must be complete in the
-// store; the node is the provider hint. Serving the content needs a running host, which
-// this build does not start; the result says so with Serving=false.
+// store; the node is the provider hint. Serving=false says no host runs in this process
+// (the caller starts one, or the content is served once a daemon runs).
 func (n *Local) Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.ShareLink, error) {
 	pt, err := target.Parse(req.Target)
 	if err != nil {

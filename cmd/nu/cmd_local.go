@@ -47,12 +47,20 @@ var cmdInit = &command{
 		if err != nil {
 			return err
 		}
-		return e.emit(map[string]any{"root": r.Root(), "created": !existed}, func(w io.Writer) {
+		// A complete repo has an identity: create node.key now so the first share link
+		// and the first daemon agree on the PeerId.
+		key, err := node.LoadKey(r)
+		if err != nil {
+			return err
+		}
+		peer := key.Public().PeerID().Base36()
+		return e.emit(map[string]any{"root": r.Root(), "created": !existed, "peer_id": peer}, func(w io.Writer) {
 			if existed {
 				fmt.Fprintf(w, "already initialized at %s\n", r.Root())
 			} else {
 				fmt.Fprintf(w, "initialized %s\n", r.Root())
 			}
+			fmt.Fprintf(w, "peer id: %s\n", peer)
 		})
 	},
 }
@@ -192,19 +200,20 @@ var cmdDaemon = &command{
 
 // Shared by status and doctor: local facts that need no daemon.
 type localStatus struct {
-	Version string              `json:"version"`
-	Paths   apiv0.Paths         `json:"paths"`
-	Running bool                `json:"running"`
-	Daemon  *apiv0.Daemon       `json:"daemon,omitempty"`
-	Ops     map[apiv0.State]int `json:"operations,omitempty"`
-	Store   *apiv0.StoreStatus  `json:"store,omitempty"`
+	Version string               `json:"version"`
+	Paths   apiv0.Paths          `json:"paths"`
+	Running bool                 `json:"running"`
+	Daemon  *apiv0.Daemon        `json:"daemon,omitempty"`
+	Ops     map[apiv0.State]int  `json:"operations,omitempty"`
+	Store   *apiv0.StoreStatus   `json:"store,omitempty"`
+	Network *apiv0.NetworkStatus `json:"network,omitempty"`
 	// Error explains why the daemon could not be reached.
 	Error *apiv0.Error `json:"error,omitempty"`
 }
 
 var cmdStatus = &command{
 	name:    "status",
-	summary: "one summary: daemon, version, paths, store (later: reachability, shares, datasets)",
+	summary: "one summary: daemon, version, paths, store, identity and addresses (later: reachability, shares, datasets)",
 	run: func(ctx context.Context, e *env, args []string) error {
 		if err := parseFlags(e.flags(), args); err != nil {
 			return err
@@ -219,13 +228,13 @@ var cmdStatus = &command{
 		} else if st, err := n.Status(ctx); err != nil {
 			ls.Error = toAPIError(err)
 		} else {
-			ls.Running, ls.Daemon, ls.Ops, ls.Store, ls.Version = true, &st.Daemon, st.Operations, st.Store, st.Version
+			ls.Running, ls.Daemon, ls.Ops, ls.Store, ls.Network, ls.Version = true, &st.Daemon, st.Operations, st.Store, st.Network, st.Version
 		}
 		if !ls.Running {
-			// Read the store in-process when nothing holds the repo lock.
+			// Read the store and identity in-process when nothing holds the repo lock.
 			if n, release, err := e.local(r); err == nil {
 				if st, err := n.Status(ctx); err == nil {
-					ls.Store = st.Store
+					ls.Store, ls.Network = st.Store, st.Network
 				}
 				release()
 			}
@@ -233,7 +242,20 @@ var cmdStatus = &command{
 		return e.emit(ls, func(w io.Writer) {
 			fmt.Fprintf(w, "%s %s\nrepo:       %s\n", nu.Name, ls.Version, ls.Paths.Root)
 			if ls.Store != nil {
-				fmt.Fprintf(w, "store:      %d objects, %s, %d pins\n", ls.Store.Objects, humanCount(ls.Store.Bytes, "bytes"), ls.Store.Pins)
+				fmt.Fprintf(w, "store:      %d objects, %s, %d pins\n", ls.Store.Objects, humanBytes(ls.Store.Bytes), ls.Store.Pins)
+			}
+			if ls.Network != nil {
+				fmt.Fprintf(w, "peer id:    %s\n", ls.Network.PeerID)
+				addrs := "none"
+				if len(ls.Network.Addrs) > 0 {
+					addrs = strings.Join(ls.Network.Addrs, "\n            ")
+				}
+				fmt.Fprintf(w, "addresses:  %s\n", addrs)
+				if ls.Network.Serving {
+					fmt.Fprintf(w, "network:    serving, %d peers connected\n", ls.Network.Peers)
+				} else {
+					fmt.Fprintf(w, "network:    not serving (no host in this build; shared content is available only while a holder is online)\n")
+				}
 			}
 			if !ls.Running {
 				fmt.Fprintf(w, "daemon:     not running\n")

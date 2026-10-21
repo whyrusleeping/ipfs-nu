@@ -156,22 +156,89 @@ var cmdLs = &command{
 
 var cmdGet = &command{
 	name:    "get",
-	args:    "<target> [-o path]",
-	summary: "fetch a CID or link to disk (not available in this build)",
+	args:    "[-o path] <cid-or-link>",
+	summary: "write a CID or share link to disk (a file, or a directory for a tree)",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
-		fs.String("o", "", "output path")
+		out := fs.String("o", "", "output path (default: the content's name or CID in the current directory)")
+		noWait := fs.Bool("no-wait", false, "print the operation and return instead of following it")
 		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
-		if _, err := oneTarget(fs.Args()); err != nil {
+		t, err := oneTarget(fs.Args())
+		if err != nil {
 			return err
 		}
-		if _, err := e.nodeOrLocal(ctx); err != nil {
+		req := apiv0.GetRequest{Target: t.Raw}
+		if *out != "" {
+			if req.Output, err = filepath.Abs(*out); err != nil {
+				return err
+			}
+		} else if req.Dir, err = os.Getwd(); err != nil {
 			return err
 		}
-		return apiv0.NotImplemented("get")
+		n, err := e.nodeOrLocal(ctx)
+		if err != nil {
+			return err
+		}
+		op, err := n.Get(ctx, req)
+		if err != nil {
+			return err
+		}
+		return finishOperation(e, ctx, n, op, *noWait, func(w io.Writer, res apiv0.GetResult) {
+			switch res.Kind {
+			case "dir":
+				fmt.Fprintf(w, "wrote %s to %s (%d files, %s)\n", res.CID, res.Output, res.Files, humanBytes(res.Bytes))
+			default:
+				fmt.Fprintf(w, "wrote %s to %s (%s)\n", res.CID, res.Output, humanBytes(res.Bytes))
+			}
+			for _, s := range res.Skipped {
+				fmt.Fprintf(w, "skipped %s\n", s)
+			}
+		})
 	},
+}
+
+var cmdShare = &command{
+	name:    "share",
+	args:    "<cid>",
+	summary: "print the share link for held content and serve it until interrupted",
+	run: func(ctx context.Context, e *env, args []string) error {
+		fs := e.flags()
+		if err := parseFlags(fs, args); err != nil {
+			return err
+		}
+		t, err := oneTarget(fs.Args())
+		if err != nil {
+			return err
+		}
+		n, err := e.nodeOrLocal(ctx)
+		if err != nil {
+			return err
+		}
+		res, err := n.Share(ctx, apiv0.ShareRequest{Target: t.Raw})
+		if err != nil {
+			return err
+		}
+		if err := e.emit(res, func(w io.Writer) { fmt.Fprintln(w, res.Link) }); err != nil {
+			return err
+		}
+		if res.Serving {
+			return nil // the daemon serves it; nothing to wait for
+		}
+		return e.serveForeground(ctx, n)
+	},
+}
+
+// serveForeground is where a daemonless `share` keeps the in-process node serving until
+// interrupted. Without a libp2p host (this build) there is nothing to serve with, so it
+// explains and returns; when the host arrives it starts here and blocks on ctx.
+func (e *env) serveForeground(ctx context.Context, n node.Node) error {
+	if !e.json {
+		fmt.Fprintf(e.stderr, "%s: content is available only while a holder is online; this build cannot serve it yet "+
+			"(run `%s daemon` once networking lands, and keep it running while others fetch)\n", nu.Name, nu.Name)
+	}
+	return nil
 }
 
 // oneTarget parses the single target argument and requires a supported form.

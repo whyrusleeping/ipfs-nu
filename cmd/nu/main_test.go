@@ -14,7 +14,9 @@ import (
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node/daemon"
+	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
 // The CLI follows an operation through the client and exits with the error category.
@@ -59,8 +61,9 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 		{[]string{"--nu-path", r.Root(), "operations", "wait", f.ID()}, apiv0.ExitNotFound},
 		{[]string{"--nu-path", r.Root(), "cat", "alice.example.com/site"}, apiv0.ExitNotSupported},
 		{[]string{"--nu-path", r.Root(), "cat", "not a target"}, apiv0.ExitUsage},
-		{[]string{"--nu-path", r.Root(), "cat", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, apiv0.ExitUsage}, // dag-pb: not a DASL CID
-		{[]string{"--nu-path", r.Root(), "get", "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"}, apiv0.ExitNotImplemented},
+		{[]string{"--nu-path", r.Root(), "cat", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, apiv0.ExitUsage},       // dag-pb: not a DASL CID
+		{[]string{"--nu-path", r.Root(), "get", "nu://bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity/"}, apiv0.ExitUsage}, // malformed link
+		{[]string{"--nu-path", r.Root(), "share", "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"}, apiv0.ExitNotFound},
 		{[]string{"--nu-path", t.TempDir(), "--json", "operations"}, apiv0.ExitUnavailable},
 		{[]string{"--nu-path", r.Root(), "bogus"}, apiv0.ExitUsage},
 	}
@@ -126,11 +129,55 @@ func TestAddSiteAndBrowse(t *testing.T) {
 	if !strings.Contains(errb.String(), "shared when a node runs") {
 		t.Fatalf("no daemonless note: %q", errb.String())
 	}
-	fields := strings.Fields(out.String())
-	if len(fields) != 3 || fields[0] != "added" || fields[2] != "site" {
+	addLines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	fields := strings.Fields(addLines[0])
+	if len(addLines) != 2 || len(fields) != 3 || fields[0] != "added" || fields[2] != "site" || !strings.HasPrefix(addLines[1], "share: nu://"+fields[1]) {
 		t.Fatalf("add output: %q", out.String())
 	}
 	cid := fields[1]
+
+	// share prints a link naming this repo's PeerId; get of that link (and of the CID with
+	// -o) reproduces the directory; a file inside the tree lands under its own name.
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "share", cid}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("share: exit %d: %s", code, errb.String())
+	}
+	shareLink, err := link.Parse(strings.TrimSpace(out.String()))
+	if err != nil || shareLink.CID.String() != cid || len(shareLink.Providers) != 1 {
+		t.Fatalf("share link %q: %v", out.String(), err)
+	}
+	key, err := wire.LoadNodeKey(filepath.Join(root, repo.KeyFile))
+	if err != nil || shareLink.Providers[0].Peer != key.Public().PeerID() {
+		t.Fatalf("share link peer %s is not the repo's key (%v)", shareLink.Providers[0].Peer.Base36(), err)
+	}
+	if !strings.Contains(errb.String(), "available only while a holder is online") {
+		t.Fatalf("share without a daemon did not explain serving: %q", errb.String())
+	}
+	dest := filepath.Join(t.TempDir(), "copy")
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "get", "-o", dest, shareLink.String()}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("get: exit %d: %s", code, errb.String())
+	}
+	if !strings.HasPrefix(out.String(), "wrote "+cid+" to "+dest+" (2 files, 20 B)") {
+		t.Fatalf("get output: %q", out.String())
+	}
+	for p, want := range map[string]string{"index.html": "<h1>hello</h1>", "sub/style.css": "body{}"} {
+		if b, err := os.ReadFile(filepath.Join(dest, p)); err != nil || string(b) != want {
+			t.Fatalf("extracted %s: %q %v", p, b, err)
+		}
+	}
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "--json", "get", "-o", filepath.Join(dest, "css"), cid + "/sub/style.css"}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("get file: exit %d: %s", code, errb.String())
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "css")); err != nil || string(b) != "body{}" {
+		t.Fatalf("extracted file: %q %v", b, err)
+	}
+	// Not-held content asks the fetcher, which this build does not have.
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "get", "-o", filepath.Join(dest, "x"), "bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity"}, &out, &errb); code != apiv0.ExitNotImplemented {
+		t.Fatalf("get missing: exit %d: %s", code, errb.String())
+	}
 
 	// --json streams the events and ends with the done event carrying the result.
 	out.Reset()
@@ -194,9 +241,23 @@ func TestAddSiteAndBrowse(t *testing.T) {
 	if res.StatusCode != 404 {
 		t.Fatalf("missing path: %s", res.Status)
 	}
-	// With the daemon running, status reports the store and the CLI goes through it.
+	// With the daemon running, status reports the store and identity and the CLI goes
+	// through it; the daemon writes get output itself.
 	out.Reset()
-	if code := run([]string{"--nu-path", root, "--json", "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), `"pins": 1`) {
+	if code := run([]string{"--nu-path", root, "--json", "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), `"pins": 1`) ||
+		!strings.Contains(out.String(), `"peer_id": "`+key.Public().PeerID().Base36()+`"`) {
 		t.Fatalf("status: exit %d: %s", code, out.String())
+	}
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "status"}, &out, &errb); code != apiv0.ExitOK || !strings.Contains(out.String(), " B, 1 pins") {
+		t.Fatalf("status text: exit %d: %s", code, out.String())
+	}
+	dest2 := filepath.Join(t.TempDir(), "copy2")
+	out.Reset()
+	if code := run([]string{"--nu-path", root, "get", "-o", dest2, cid}, &out, &errb); code != apiv0.ExitOK {
+		t.Fatalf("get via daemon: exit %d: %s", code, errb.String())
+	}
+	if b, err := os.ReadFile(filepath.Join(dest2, "sub", "style.css")); err != nil || string(b) != "body{}" {
+		t.Fatalf("daemon get: %q %v", b, err)
 	}
 }

@@ -165,3 +165,11 @@ func humanCount(n int64, unit string) string {
 	}
 	return fmt.Sprint(n)
 }
+
+// humanBytes is humanCount with a unit: "180 B", "1.5K", "2.0M".
+func humanBytes(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return humanCount(n, "bytes")
+}

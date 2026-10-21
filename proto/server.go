@@ -27,9 +27,13 @@ type ServerConfig struct {
 	RequestTimeout time.Duration
 	// StallTimeout resets a response the peer stops reading for this long (default 30s).
 	StallTimeout time.Duration
+	// TreeFrames and TreeBytes are the /nu/tree/1 response budget: data frames and their
+	// bytes (DefaultTreeFrames, DefaultTreeBytes). A response always carries one frame.
+	TreeFrames int
+	TreeBytes  int
 }
 
-// Server answers /nu/bytes/1 and /nu/have/1 from a store.
+// Server answers /nu/bytes/1, /nu/have/1 and /nu/tree/1 from a store.
 type Server struct {
 	st     *store.Store
 	cfg    ServerConfig
@@ -68,6 +72,12 @@ func NewServer(st *store.Store, cfg ServerConfig) *Server {
 	if cfg.StallTimeout <= 0 {
 		cfg.StallTimeout = 30 * time.Second
 	}
+	if cfg.TreeFrames <= 0 {
+		cfg.TreeFrames = DefaultTreeFrames
+	}
+	if cfg.TreeBytes <= 0 {
+		cfg.TreeBytes = DefaultTreeBytes
+	}
 	return &Server{st: st, cfg: cfg, active: make(map[string]int), peers: make(map[peerProto]int)}
 }
 
@@ -78,20 +88,25 @@ func (s *Server) Register(h *host.Host) error {
 	if err := h.Handle(BytesID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(BytesID, st.Conn().PeerID(), st) }); err != nil {
 		return err
 	}
-	return h.Handle(HaveID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(HaveID, st.Conn().PeerID(), st) })
+	if err := h.Handle(HaveID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(HaveID, st.Conn().PeerID(), st) }); err != nil {
+		return err
+	}
+	return h.Handle(TreeID, s.HandlerLimit(), func(st *host.Stream) { s.Serve(TreeID, st.Conn().PeerID(), st) })
 }
 
 // HandlerLimit is the per-protocol concurrency Register passes to the host.
 func (s *Server) HandlerLimit() int { return 2 * s.cfg.MaxRequests }
 
-// Serve answers one request stream of protocol (BytesID or HaveID) from peer; Register
-// installs it on a host, and harnesses may call it with a wrapped stream.
+// Serve answers one request stream of protocol (BytesID, HaveID or TreeID) from peer;
+// Register installs it on a host, and harnesses may call it with a wrapped stream.
 func (s *Server) Serve(protocol string, peer wire.PeerID, st ServerStream) {
 	switch protocol {
 	case BytesID:
 		s.serve(BytesID, peer, st, s.serveBytes)
 	case HaveID:
 		s.serve(HaveID, peer, st, s.serveHave)
+	case TreeID:
+		s.serve(TreeID, peer, st, s.serveTree)
 	default:
 		st.Reset()
 	}

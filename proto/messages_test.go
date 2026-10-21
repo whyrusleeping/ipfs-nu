@@ -37,6 +37,19 @@ func TestVectors(t *testing.T) {
 			if qs, err = ParseHaveRequest(b); err == nil {
 				out, err = MarshalHaveRequest(qs)
 			}
+		case "tree-request":
+			var r TreeRequest
+			if r, err = ParseTreeRequest(b); err == nil {
+				out, err = r.Marshal()
+			}
+		case "tree-frame":
+			t := &treeRead{r: bytes.NewReader(b)}
+			var tag byte
+			var payload []byte
+			if tag, payload, err = t.frame(); err == nil && tag == frameEnd {
+				_, err = t.trailer(payload)
+			}
+			out = b
 		case "bytes-header":
 			var h bytesHeader
 			if err = drisl.Unmarshal(b, &h); err == nil {

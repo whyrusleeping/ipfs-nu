@@ -98,6 +98,9 @@ type Options struct {
 	Size uint64
 	// Peers are extra candidates for this fetch (link hints), tried with the Providers.
 	Peers []Peer
+	// Have lists complete trees the store already holds (an older version of the target),
+	// so peers send only what changed (/nu/tree/1 have diff).
+	Have []cid.CID
 	// Progress, if set, is called (serialized) whenever progress changes.
 	Progress func(Progress)
 }
@@ -144,9 +147,10 @@ func (f *Fetcher) Get(ctx context.Context, c cid.CID, o GetOptions) (Result, err
 }
 
 // Fetch fetches c and everything its nu-tree walk reaches (header → directories → entries →
-// blobs; MASL file node → blob; a raw blob alone), level by level over /nu/bytes/1, then the
-// blobs in parallel across peers. Objects already held are not fetched again, and partial
-// blobs resume from their verified groups.
+// blobs; MASL file node → blob; a raw blob alone). Structure and small blobs come first over
+// /nu/tree/1 from peers that support it; then a layer-1 walk fetches what is still missing
+// level by level over /nu/bytes/1, and the blobs in parallel across peers. Objects already
+// held are not fetched again, and partial blobs resume from their verified groups.
 func (f *Fetcher) Fetch(ctx context.Context, c cid.CID, o Options) (Result, error) {
 	r := &run{f: f, st: f.cfg.Store, opts: o, sw: &swarm{index: map[wire.PeerID]*peer{}}}
 	r.stage(StageProviders)
@@ -326,6 +330,10 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		frontier = append(frontier, root)
 	}
 	r.update(func(p *Progress) { p.ObjectsTotal++; p.BytesTotal += int64(size) })
+	if len(frontier) > 0 {
+		r.stage(StageStructure)
+		r.treeSync(ctx, root)
+	}
 	for len(frontier) > 0 {
 		r.stage(StageStructure)
 		if err := parallel(ctx, frontier, r.f.cfg.Structure, func(ctx context.Context, c cid.CID) error {

@@ -226,8 +226,6 @@ therefore providers, across datasets.
   (MST inversion suggests so), so they can serve as proofs; verify against indigo.
 - Swarm-key encoding and its acceptance by Amino, together with
   [Q2](../spec.md#open-decisions-and-verification).
-- Batched node request limits in `/nu/tree/1`, and whether `have` accepts subtree roots
-  below the tree root.
 - Completeness-mark storage cost at 10M entries, and crash-consistency of the atomic switch.
 - Defaults for retained structure, poll interval and PDS fallback delay, set from measurements.
 

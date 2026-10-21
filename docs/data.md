@@ -118,8 +118,10 @@ Nu. Different names can produce different file nodes referring to the same blob.
 `nu add --raw` returns the blob CID instead. Tree entries keep their own `mime`; the
 gateway applies the MASL header allowlist in D21.
 
-The intended `scope: entry` tree response includes the file node and its blob, inlining small
-blobs. Its relationship to large-blob streaming needs to be made explicit in D14's framing.
+A `/nu/tree/1` response for a file node with `scope: entry` carries the node and inlines
+its blob when the blob fits in one 16 KiB group. Larger blobs are never streamed in tree
+responses: the verified node or entry authenticates their CID and size, and they are fetched
+over `/nu/bytes/1` (D14).
 
 ### Type discovery
 
@@ -182,29 +184,72 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
 ### `/nu/tree/1`
 
 ```text
-{ root, path?, name_range?, limit?, scope: node|entry|subtree,
-  have?: [roots], inline_max?: bytes, cursor? }
+{ root, profile?, path?: [name…], name_range?: [start, end], limit?, scope: node|entry|subtree,
+  have?: [roots], inline_max?: bytes, cursor?: {path?: [name…], key?, link, after?} }
+{ nodes: [cid…], scope: node, limit?, inline_max? }
 ```
 
-- Stream DRISL nodes in fixed pre-order: the directory/MST chain along `path`, then the
-  requested subtree. Verify each node by hash as it arrives.
-- `have` supplies existing roots. Walk the requested and existing trees side by side,
-  skipping identical directories or MST subtrees. If the server lacks the existing tree,
-  the client descends itself and fetches only changed nodes.
-- `name_range` and `limit` provide sorted pagination and allow parallel range requests to
-  different peers. Ranges carry boundary proofs.
-- `inline_max` allows blobs of at most one 16 KiB group inline, checked by hashing them whole.
-- Responses stop at a node/byte budget and return a cursor. Resume is stateless across
-  connections and peers; the planned cursor is path + last name, derived from verified
-  progress. Traversal is fixed, not an arbitrary IPLD selector.
-- `nodes: [cid…]` with `scope: node` returns a bounded batch of structure nodes. This is used
-  for client-driven diffs when the server lacks the client's old tree. Publishers and seeds
-  retain recent targets' structure so they can answer `have` diffs directly
-  ([D19](follow.md#delta-sync)).
-- The root's walk profile selects the traversal. `nu-tree` walks a Nu tree. `atrepo` walks
-  commit → MST → records; `path` and `name_range` become repo-path keys, and `have` takes
-  held commits. This is how state repositories and atproto datasets sync
-  ([D21](dasl.md#walk-profiles)).
+- `root` is a tree header, a directory MST root or a MASL file node. `profile` selects the
+  walk and defaults to `nu-tree`, the only profile so far; others get status 3. `path`
+  names the target below the root directory, `scope` how much of it to send:
+  - `node`: the path chain and the target directory's root MST node;
+  - `entry`: the chain, then for a directory all of its MST nodes (a listing; entries' meta
+    records and inline blobs, no subdirectories), for a file or symlink its inline blob,
+    and the target entry's meta record;
+  - `subtree`: everything the nu-tree walk reaches below the target.
+- The response header is `{status, error?}` as for `/nu/bytes/1`; a root the server does not
+  hold gets status 1. The body is a sequence of frames `<uvarint len> <tag> <payload>`, each
+  at most 1 MiB + 1 byte, then FIN:
+  - `0` end trailer, DRISL `{more?: true}`, always last;
+  - `1` data: the bytes of the next item, a structure node or an inline blob;
+  - `2` have: the next item is in one of the `have` trees; it is not descended;
+  - `3` missing: the server does not hold the next item; it is not descended.
+- Items follow one fixed pre-order: the root; for a header its root directory; per MST node
+  the node, its left subtree, then per entry its target (subdirectory or inline blob), its
+  meta record and its right subtree. Along `path` only the search path of each name is
+  walked; it proves presence or absence. Each item is sent once per response (a repeated CID
+  is skipped). Both sides run the same walk, so every frame is checked against the CID its
+  verified parent links: a hash mismatch, an inline blob over `inline_max`, an unknown tag,
+  a payload on a marker or a frame after the end is corrupt. MST nodes are also checked
+  against their parent's key range and layer.
+- `have` lists up to 16 tree headers or directory roots of complete trees the client holds.
+  The server walks them side by side with the requested tree, by name, and sends a have
+  marker instead of an entry target or meta record equal to the old entry's, and instead of
+  an MST subtree that lies on the old directory's search path for its first name. Have
+  roots the server lacks are ignored, so it sends more, never less. The client descends
+  nothing behind a marker. If no peer can diff, it walks itself with `nodes` requests.
+- `name_range` (`[start, end)`, `""` open; needs `scope` entry or subtree) restricts the
+  target directory's entries. The walk still sends every MST node whose key range meets the
+  range, which proves the listing complete at its boundaries.
+- `inline_max` (capped at 16 KiB) inlines file and symlink blobs whose entry size is at most
+  that, checked by hashing them whole. Larger blobs are fetched over `/nu/bytes/1`.
+- Budgets: `limit` caps data frames; servers also stop at their own frame/byte budget
+  (defaults 4096 frames, 16 MiB) and then end with `{more: true}`. Every response carries at
+  least one data frame.
+- Cursors: every item has a location, the link that reached it: `link` 0 the root, 1 the
+  root MST node of directory `path`, 2 the left subtree of the MST node whose first entry is
+  `key`, 3 the blob of entry `key`, 4 its meta record, 5 its right subtree, 6 the blob of a
+  MASL root. `path` is the directory from the root directory, empty for links 0 and 6; `key`
+  is absent for 0, 1 and 6. A location is unique in a tree. The client's cursor is the
+  location of the last item it handled, with `after` when that item was a blob or marker
+  (resume after its subtree) rather than a received node (resume with its descendants). A
+  repeated request with the cursor resumes at the next item at any peer holding the tree:
+  the server seeks along the cursor's path without sending, and the client follows it
+  through its own verified nodes. Nothing verified is lost and no item before the cursor
+  is sent again (a CID that recurs later in the tree may be); a cut frame is resent. A cursor that is not a location of the walk gets status 3, and one whose
+  path the server does not hold gets status 1.
+- `nodes` (at most 256 CIDs) returns each in order as a data or missing frame (raw blobs up
+  to 16 KiB inline). A budget stop answers a prefix; the client asks again for the rest.
+  Publishers and seeds retain recent targets' structure so they can answer `have` diffs
+  directly ([D19](follow.md#delta-sync)).
+- Walk profiles: `atrepo` (commit → MST → records, `path`/`name_range` as repo-path keys,
+  held commits as `have`) is the next profile; locations of its layered empty intermediate
+  nodes are specified with it. State repositories and atproto datasets sync by `/nu/bytes/1`
+  walks until then ([D21](dasl.md#walk-profiles)).
+- The fetcher asks peers for `scope: subtree` with 16 KiB inlining first, resuming at the
+  next peer from the cursor on failure, and finishes with the layer-1 walk, which fetches
+  large blobs and anything the tree responses did not deliver. Peers without the protocol
+  are skipped.
 
 ### `/nu/have/1`
 
@@ -235,7 +280,7 @@ Send only to candidate peers (name context, providers or hints), not to every co
 → multistream-select: /nu/bytes/1
 → <uvarint len> DRISL {mh, ranges: [[0, 64]]}
 ← <uvarint len> DRISL {status: 0, size: …}
-← body: Bao slices or ordered DRISL node stream; FIN
+← body: Bao slices, or /nu/tree/1 frames; FIN
 ```
 
 Use optimistic multistream-select and one stream per request: the client sends the
@@ -244,8 +289,8 @@ maps with minimal uvarint length prefixes. Ignore unknown keys; breaking changes
 new protocol ID. Either side cancels with a reset; QUIC per-stream flow control supplies
 backpressure. A server that fails mid-body resets the stream.
 
-Fixed limits: requests ≤ 16 KiB, `/nu/bytes/1` headers ≤ 4 KiB, `/nu/have/1` responses
-≤ 2 MiB. Larger messages are protocol violations (servers answer status 3). Servers bound
+Fixed limits: requests ≤ 16 KiB, `/nu/bytes/1` and `/nu/tree/1` headers ≤ 4 KiB,
+`/nu/tree/1` frames ≤ 1 MiB + 1 byte, `/nu/have/1` responses ≤ 2 MiB. Larger messages are protocol violations (servers answer status 3). Servers bound
 concurrent requests per protocol (default 64) and per peer and protocol (default 16) with
 status 4, read the request within 10 s and reset a response the peer has not read for 30 s;
 these defaults are local policy. Vectors are in `testdata/vectors/nu-proto/`.
@@ -343,8 +388,8 @@ not depend on Amino; a routing fallback is not a second content model.
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes extraction rules (filenames, case, symlinks on export) and tree
-proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
+precision work includes extraction rules (filenames, case, symlinks on export) and the
+`atrepo` profile of `/nu/tree/1`. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Logical size,
 unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches
 and export compatibility remain to specify. Benchmarks must validate

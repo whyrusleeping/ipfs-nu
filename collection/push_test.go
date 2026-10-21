@@ -19,6 +19,7 @@ import (
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/collection"
 	"github.com/whyrusleeping/nu/httpsrc"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/nutest"
@@ -269,4 +270,28 @@ func apiCode(err error) apiv0.Code {
 		return ae.Code
 	}
 	return ""
+}
+
+// URL egress by network mode: isolated never fetches, private only ingest.hosts (none
+// when unset), public any public host unless ingest.hosts narrows it.
+func TestEgressHosts(t *testing.T) {
+	listed := &cluster.Dataset{Source: cluster.Source{Local: true, Ingest: &cluster.Ingest{Hosts: []string{"scenes.test"}}}}
+	bare := &cluster.Dataset{Source: cluster.Source{Local: true}}
+	for _, c := range []struct {
+		mode  string
+		d     *cluster.Dataset
+		hosts []string
+		ok    bool
+	}{
+		{cluster.ModeIsolated, listed, nil, false},
+		{cluster.ModePrivate, listed, []string{"scenes.test"}, true},
+		{cluster.ModePrivate, bare, []string{}, true},
+		{cluster.ModePublic, bare, nil, true},
+		{cluster.ModePublic, listed, []string{"scenes.test"}, true},
+	} {
+		hosts, ok := collection.EgressHosts(c.mode, c.d)
+		if ok != c.ok || (hosts == nil) != (c.hosts == nil) || strings.Join(hosts, ",") != strings.Join(c.hosts, ",") {
+			t.Errorf("%s %+v: %v %v", c.mode, c.d.Source.Ingest, hosts, ok)
+		}
+	}
 }

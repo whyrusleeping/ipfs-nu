@@ -26,6 +26,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
@@ -87,7 +88,9 @@ func Open(dir string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{dir: dir, db: db, opts: opts, now: time.Now, profiles: map[string]LinksFunc{
-		"nu-tree": tree.Links,
+		"nu-tree":      tree.Links,
+		"atrepo":       atrepo.Links,
+		"atrepo+blobs": atrepo.LinksWithBlobs,
 	}}
 	return s, nil
 }

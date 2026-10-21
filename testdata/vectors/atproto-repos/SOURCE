@@ -1,0 +1,14 @@
+Real com.atproto.sync.getRepo / getRecord responses, fetched 2026-10-21 with curl,
+unmodified. Public repository data; kept small on purpose (a few KB each).
+
+file                                         PDS (implementation)                DID / signing key (DID document publicKeyMultibase)
+ts-pds-odfsmykcwlxgdaozogi7x4u2.car          https://blacksky.app (reference TS PDS 1.14)  did:plc:odfsmykcwlxgdaozogi7x4u2  zQ3shMvSkxvkPvEMBj62C69RrVvxwDpeWa5gGUZ53nhJxvGhW
+ts-pds-rpozqnrysnmae4hegfralite.car          https://blacksky.app (reference TS PDS 1.14)  did:plc:rpozqnrysnmae4hegfralite  zQ3shoQrpowBZqq8SftAybKcpjnrFcvLbhaCxvnzFHRXRDiqY
+ts-pds-rpozqnrysnmae4hegfralite.getRecord-like-3lvwmxcdh2s27.car
+                                             getRecord for app.bsky.feed.like/3lvwmxcdh2s27 at the same commit
+cocoon-a3ucdy4frc42wqq4oqkwrp6k.car          https://cocoon.hailey.at (cocoon v0.13, Go)   did:plc:a3ucdy4frc42wqq4oqkwrp6k  zQ3shZB4ipxkuhwFnG8TqaCLYTNtUPWPXSA5CQqYaMzSY8EbR
+cocoon-idigcrknb3idfulkp4moaxik.car          https://cocoon.hailey.at (cocoon v0.13, Go)   did:plc:idigcrknb3idfulkp4moaxik  zQ3sheV3vpzbdCAUssk8vG24eWfVxjQTS3fgC1tYpAJU7jphr
+
+Notes: the TS repos contain empty intermediate MST nodes; the cocoon CARs carry extra
+unreferenced blocks; cocoon-idigcrkn... has a record with a float (outside the atproto
+data model), which Nu keeps and reports. Used by core/atrepo.

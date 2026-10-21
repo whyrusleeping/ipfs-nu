@@ -1,7 +1,7 @@
 ---
 id: "0028"
 title: '0c: Networked first share: get/share between nodes, share links, daemonless get, local API security'
-status: todo
+status: in_progress
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

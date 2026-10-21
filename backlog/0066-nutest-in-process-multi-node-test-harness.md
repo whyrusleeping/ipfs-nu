@@ -1,7 +1,7 @@
 ---
 id: "0066"
 title: 'nutest: in-process multi-node test harness'
-status: todo
+status: in_progress
 priority: 1
 created: "2026-10-21"
 updated: "2026-10-21"

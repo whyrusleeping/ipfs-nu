@@ -168,8 +168,48 @@ Nu implements atproto repository format v3 exactly, on top of the same DRISL/CAR
 One MST implementation serves both profiles. Depth hash, bits per level, node schema and
 value form are parameters: the atproto profile uses links to records, while the
 [Nu directory profile](data.md#d3-directory-trees) uses inline entries at fanout 16. The
-atproto profile must match interop vectors byte-for-byte. Nu uses indigo's atproto packages
-where they fit and cross-checks them against its own core in tests.
+atproto profile must match interop vectors byte-for-byte. Nu uses indigo's `atcrypto` (keys,
+signatures) and `syntax` packages; its own MST, commits, proofs and diffs are cross-checked
+against indigo's `atproto/repo` in the `experiments/` module, because that package pulls a
+large IPFS module graph (including go-libp2p) into any module importing it.
+
+Profile details (core/atrepo):
+
+- **Nodes.** `l` and `t` are always present (`null` when absent) and must be SHA-256 DRISL
+  CIDs; `v` is any DASL CID; `p` must be the full common prefix with the previous key (the
+  first entry has `p: 0`). A link never skips a layer: a node at layer L links to layer L−1,
+  through empty nodes holding only `l` where layers are missing. The root is never such a
+  node; an empty node without `l` is only the root of an empty repo. Nodes are accepted only
+  if they re-encode to the same bytes, so a tree that loads is the canonical tree of its keys.
+- **Keys** are 1–1024 bytes when read. Records Nu writes use `<NSID>/<record key>` paths.
+- **Commits** must carry exactly the six v3 fields (`prev` present, normally `null`), a
+  valid DID and TID `rev`, and a signature of at most 128 bytes. Signatures are 64-byte
+  compact low-S ECDSA over SHA-256 of the unsigned commit. Revs more than 5 minutes ahead of
+  the local clock are refused. Keys come from a `did:key` or a DID document
+  `publicKeyMultibase` (Multikey).
+- **Limits on untrusted repos:** 256 entries per node (honest nodes follow a geometric
+  distribution, P(≥ n) ≈ (3/4)ⁿ; the largest seen in real repos was 67), key layer ≤ 32,
+  node ≤ 1 MiB, record ≤ 1,000,000 bytes, CAR blocks ≤ 1 MiB, 2²⁴ blocks per repo CAR and
+  512 per record-proof CAR. Nu refuses to produce trees beyond the node limits as well.
+- **Records** must be DRISL maps within the size limit. Records that break the atproto data
+  model (for example floats, which exist in real repos) are kept byte-exactly and reported
+  as non-conforming; they do not fail repo verification. Records Nu writes must conform.
+- **Proofs** are what `com.atproto.sync.getRecord` serves: commit, the MST nodes on the key's
+  search path (including empty intermediate nodes) and the record if present. A path that
+  ends without the key proves absence.
+- **CAR slices** (diffs and firehose `blocks`) carry the new commit, every MST node of the
+  new tree that the old tree lacks, every node operation inversion reads, and created or
+  updated records. Inversion of a `#commit` applies the ops in reverse (each must match the
+  tree) over the slice alone and must reproduce `prevData`.
+- **`getRepo?since=`** is applied by diffing the held verified tree against the new one over
+  the held blocks plus the diff: every node that differs is validated, a subtree shared with
+  the held tree is accepted only inside the key range and layer bound it had there, and
+  every created or updated record must be present. A missing block means the chain broke;
+  Nu then falls back to a full export.
+- **Export** uses streamable order: commit, then each MST node followed by its slots in
+  order (`l` subtree, then each entry's record and `t` subtree), each block once. Deployed
+  PDSes do not emit this order, so a re-export keeps every block byte-identical but
+  reorders the file and drops unreferenced blocks.
 
 ### Walk profiles
 
@@ -178,12 +218,15 @@ Pins, CAR export, `/nu/tree/1` and completeness marks share explicit walk profil
 | Profile | Follows | Complete when |
 |---|---|---|
 | `nu-tree` | tree header → directory MST → entry metadata, file nodes → blobs | [D3](data.md#d3-directory-trees) |
-| `atrepo` | commit → MST → records; blob refs only with `blobs` | all structure and records present; blobs if selected |
+| `atrepo` (`atrepo+blobs`) | commit → MST → records; blob refs only in `atrepo+blobs` | all structure and records present; blobs if selected |
 | `drisl` | every tag-42 link, within bounds | every reachable block present |
 | `direct` | nothing | the object itself is present |
 
 Links out of an `atrepo` walk (other repos' records, unselected blobs) are expected to
-dangle. They are reported and do not make the pin incomplete.
+dangle. They are reported and do not make the pin incomplete. The walk classifies blocks
+by shape: a v3 commit links to `data`, an atproto MST node to its subtrees and records, and
+anything else is a record whose links are not followed (with `atrepo+blobs`, its
+`{$type: "blob"}` and legacy `{cid, mimeType}` refs to raw CIDs are).
 
 ### Using atproto data
 

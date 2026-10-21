@@ -1,0 +1,10 @@
+https://github.com/bluesky-social/atproto-interop-tests
+commit 056e5741bb330757205d6b16db5266fffcae937b
+files: mst/{common_prefix.json,key_heights.json,example_keys.txt} (unmodified), LICENSE-CC0
+
+known-maps.json is transcribed from the root-CID cases shared by the atproto reference
+implementation's MST tests and indigo's atproto/repo/mst/mst_interop_test.go
+(github.com/bluesky-social/indigo commit ff87442ff936): every value is
+bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454; "then" steps are applied in
+order, each followed by the expected root.
+Used by core/atrepo.

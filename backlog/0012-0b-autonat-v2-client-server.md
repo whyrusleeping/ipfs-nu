@@ -1,10 +1,10 @@
 ---
 id: "0012"
 title: '0b: AutoNAT v2 client + server'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0010"
 spec_refs:
@@ -25,3 +25,4 @@ AutoNAT v2 (`/libp2p/autonat/2/dial-request`, `/dial-back`), client and server.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Implemented on track/net (cb922b2, merged c0d41e8): p2p/proto/autonat client+server, amplification protection, nonce checks, rate limits, private-mode refusal. Evidence: loopback tests (direct, cross-IP paid, filtered UDP → Unreachable), fuzz seeds, experiments/TestAutoNATv2 vs go-libp2p v0.50.0 both directions. Remaining: NAT-lab classification acceptance (needs 0003); publishing confirmed addresses into identify/peer records and scheduling (daemon integration).

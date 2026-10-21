@@ -1,7 +1,7 @@
 ---
 id: "0051"
 title: '0c: atproto repo core: v3 commits, proofs, diffs/inversion, streamable CAR, P-256/k256 signing'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-30"
 updated: "2026-10-21"
@@ -34,3 +34,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/data (2f27fd9, 631086d, 3e81453; merged). core/atrepo + Layered MST profile option + MaxEntries/MaxLayer limits; store registers atrepo and atrepo+blobs walk profiles. Evidence: atproto-interop-tests MST/crypto/firehose vectors (vendored), 4 real getRepo CARs from the TS PDS (blacksky.app) and cocoon verify with blocks byte-identical and stable re-export (~60 more repos up to 174k records checked manually); proof blocks equal getRecord output; experiments/atrepo_indigo_test.go: indigo verifies a P-256 did:key repo and agrees on roots over randomized trees; FuzzDecodeCommit/FuzzMSTNode/FuzzCARSlice; TestKeyMinedLimit. Deviation: whole-file byte identity with getRepo CARs is impossible because PDSes don't emit streamable order; we match per block and drop unreferenced blocks (spec says so). Policy decisions in docs/dasl.md: non-conforming records (e.g. floats) are kept byte-exactly and flagged, not rejected; node entry limit 256. Main module uses only indigo atcrypto + syntax (indigo atproto/repo would pull go-libp2p).

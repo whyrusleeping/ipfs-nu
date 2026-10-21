@@ -106,6 +106,17 @@ type Options struct {
 	// Catalog fetches only a collection catalog (the nu-catalog walk profile: header,
 	// container directories and item metadata records, not item contents), layer 1 only.
 	Catalog bool
+	// Source is an optional HTTPS whole-object source (D15: RASL hints, later FISL
+	// locations) asked for each object in parallel with the peers; the first verified
+	// copy wins. It is the only source when there are no peers.
+	Source Source
+}
+
+// Source is a non-peer source of whole objects (package rasl implements it over
+// httpsrc). FetchObject makes c held and verified in the fetcher's store, or returns an
+// error; size is the authenticated size when known, 0 otherwise.
+type Source interface {
+	FetchObject(ctx context.Context, c cid.CID, size uint64) error
 }
 
 // Result summarizes a fetch.
@@ -161,7 +172,7 @@ func (f *Fetcher) Fetch(ctx context.Context, c cid.CID, o Options) (Result, erro
 		r.sw.add(p)
 	}
 	if f.cfg.Providers != nil {
-		if err := f.cfg.Providers.Find(ctx, c, r.sw.add); err != nil && len(r.sw.live()) == 0 {
+		if err := f.cfg.Providers.Find(ctx, c, r.sw.add); err != nil && len(r.sw.live()) == 0 && o.Source == nil {
 			return r.result(), err
 		}
 	}
@@ -288,30 +299,65 @@ func (r *run) timeout(ctx context.Context) (context.Context, context.CancelFunc)
 	return context.WithTimeout(ctx, r.f.cfg.RequestTimeout)
 }
 
-// whole fetches one whole object from the first live peer that has it.
+// whole fetches one whole object from the first live peer that has it, racing the HTTPS
+// source (if any) alongside the peers.
 func (r *run) whole(ctx context.Context, c cid.CID) error {
+	return r.wholeSized(ctx, c, 0)
+}
+
+func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 	if info, ok, err := r.st.Has(c); err != nil || (ok && info.Complete) {
 		return err
+	}
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var srcErr chan error
+	if r.opts.Source != nil {
+		srcErr = make(chan error, 1)
+		go func() {
+			err := r.opts.Source.FetchObject(ctx, c, size)
+			if err == nil {
+				cancel() // the peers can stop
+			}
+			srcErr <- err
+		}()
 	}
 	peers := r.sw.live()
 	start := int(r.next.Add(1))
 	var errs []error
+	won := false
 	for i := range peers {
 		p := peers[(start+i)%len(peers)]
 		if !r.sw.usable(p) {
 			continue
 		}
-		rctx, cancel := r.timeout(ctx)
+		rctx, rcancel := r.timeout(ctx)
 		err := proto.FetchWhole(rctx, p.Open, r.st, c)
-		cancel()
+		rcancel()
 		if err == nil {
-			return nil
+			won = true
+			cancel() // the source can stop
+			break
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			break // cancelled, or the source won
 		}
 		r.sw.report(ctx, p, err)
 		errs = append(errs, fmt.Errorf("%s: %w", p.ID(), err))
+	}
+	if srcErr != nil {
+		if err := <-srcErr; err == nil {
+			return nil
+		} else if !won {
+			errs = append(errs, err)
+		}
+	}
+	if won {
+		return nil
+	}
+	if err := parent.Err(); err != nil {
+		return err
 	}
 	return fmt.Errorf("%w: %s: %w", ErrNoProvider, c, errors.Join(errs...))
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sort"
 	"strings"
@@ -22,6 +23,8 @@ import (
 const Protocol = "/ipfs/kad/1.0.0"
 const ProviderTTL = 48 * time.Hour
 const RepublishInterval = 22 * time.Hour
+
+var ErrNoPeers = errors.New("kad: no Amino routing peers available")
 
 type Config struct {
 	Host                  *host.Host
@@ -184,9 +187,12 @@ func (s *Service) Close() error {
 	s.wg.Wait()
 	return nil
 }
+
+const MaxMessagesPerStream = 64
+
 func (s *Service) handle(st *host.Stream) {
-	defer st.Close()
-	_ = st.SetDeadline(time.Now().Add(s.cfg.RequestTimeout))
+	// Amino peers may pipeline multiple delimited RPCs on a single stream. Keep
+	// the stream open until clean EOF; Host's dispatcher owns the final Close.
 	peer := st.Conn().PeerID()
 	select {
 	case s.requests <- struct{}{}:
@@ -211,53 +217,70 @@ func (s *Service) handle(st *host.Stream) {
 		}
 		s.mu.Unlock()
 	}()
-	msg, err := readMessage(st)
-	if err != nil {
-		st.Reset()
-		return
+	reader := bufio.NewReader(st)
+	for messages := 0; messages < MaxMessagesPerStream; messages++ {
+		_ = st.SetDeadline(time.Now().Add(s.cfg.RequestTimeout))
+		msg, err := readMessageBuffered(reader)
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if err != nil {
+			if s.ctx.Err() == nil && st.Conn().Context().Err() == nil {
+				slog.Warn("kad: rejected malformed request", "peer", peer, "err", err)
+				st.Reset()
+			}
+			return
+		}
+		resp, reply, err := s.handleMessage(peer, msg)
+		if err != nil {
+			slog.Warn("kad: rejected request", "peer", peer, "type", msg.Type, "err", err)
+			st.Reset()
+			return
+		}
+		if reply {
+			_ = st.SetDeadline(time.Now().Add(s.cfg.RequestTimeout))
+			if err = writeMessage(st, resp); err != nil {
+				slog.Warn("kad: response write failed", "peer", peer, "type", msg.Type, "err", err)
+				st.Reset()
+				return
+			}
+		}
 	}
+	st.Reset()
+}
+
+func (s *Service) handleMessage(peer wire.PeerID, msg Message) (Message, bool, error) {
 	resp := Message{Type: msg.Type, Key: msg.Key, ClusterLevel: msg.ClusterLevel}
 	s.table.Add(PeerInfo{ID: peer, Addrs: s.peerAddresses(peer)})
 	switch msg.Type {
 	case FindNode:
-		if _, err := wire.PeerIDFromBytes(msg.Key); err != nil {
-			st.Reset()
-			return
+		// FIND_NODE also routes arbitrary provider keys, not only PeerIds.
+		if len(msg.Key) == 0 || len(msg.Key) > MaxKey {
+			return Message{}, false, wire.ErrLimit
 		}
-	case GetProviders, AddProvider:
-		if _, err := cid.DecodeMultihash(msg.Key); err != nil {
-			st.Reset()
-			return
-		}
-	}
-	switch msg.Type {
-	case FindNode:
 		resp.Closer = s.closestPeerRecords(msg.Key, peer)
 	case GetProviders:
+		if _, err := cid.DecodeMultihash(msg.Key); err != nil {
+			return Message{}, false, err
+		}
 		resp.Closer = s.closestPeerRecords(msg.Key, peer)
 		resp.Providers = s.getProviders(msg.Key)
 	case AddProvider:
-		if len(msg.Providers) == 0 || len(msg.Providers) > 1 || msg.Providers[0].ID != peer {
-			st.Reset()
-			return
+		if _, err := cid.DecodeMultihash(msg.Key); err != nil {
+			return Message{}, false, err
 		}
-		if !s.validProvider(msg.Providers[0]) {
-			st.Reset()
-			return
+		if len(msg.Providers) != 1 || msg.Providers[0].ID != peer {
+			return Message{}, false, ErrMessage
 		}
-		if !s.storeProvider(msg.Key, msg.Providers[0]) {
-			st.Reset()
-			return
+		if !s.validProvider(msg.Providers[0]) || !s.storeProvider(msg.Key, msg.Providers[0]) {
+			return Message{}, false, wire.ErrLimit
 		}
-		return // Amino ADD_PROVIDER is a one-way message; servers send no response.
+		return Message{}, false, nil // Amino ADD_PROVIDER is one-way.
 	case Ping:
 	default:
-		st.Reset()
-		return
+		return Message{}, false, ErrMessage
 	}
-	if err := writeMessage(st, resp); err != nil {
-		st.Reset()
-	}
+	return resp, true, nil
 }
 func (s *Service) peerAddresses(id wire.PeerID) [][]byte {
 	for _, p := range s.table.Peers() {
@@ -363,8 +386,8 @@ func (s *Service) getProviders(key []byte) []Peer {
 	return append([]Peer(nil), v...)
 }
 
-func readMessage(r io.Reader) (Message, error) {
-	br := bufio.NewReader(r)
+func readMessage(r io.Reader) (Message, error) { return readMessageBuffered(bufio.NewReader(r)) }
+func readMessageBuffered(br *bufio.Reader) (Message, error) {
 	n, e := varint.Read(br)
 	if e != nil {
 		return Message{}, e
@@ -450,9 +473,30 @@ func (s *Service) call(ctx context.Context, id wire.PeerID, m Message) (Message,
 		return Message{}, err
 	}
 	if m.Type == AddProvider {
-		return Message{}, st.CloseWrite()
+		return Message{}, closeRequestStream(st)
 	}
-	return readMessage(st)
+	resp, err := readMessage(st)
+	if err != nil {
+		return Message{}, err
+	}
+	if err = st.CloseWrite(); err != nil {
+		return Message{}, err
+	}
+	_, err = io.Copy(io.Discard, st)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Message{}, err
+	}
+	return resp, nil
+}
+func closeRequestStream(st *host.Stream) error {
+	if err := st.CloseWrite(); err != nil {
+		return err
+	}
+	_, err := io.Copy(io.Discard, st)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
 }
 func (s *Service) ensureConnected(ctx context.Context, id wire.PeerID) error {
 	if _, ok := s.cfg.Host.Connection(id); ok {
@@ -508,6 +552,10 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 		known[p.ID] = p
 	}
 	queried := map[wire.PeerID]bool{}
+	targetID, targetIsPeer := wire.PeerID(""), false
+	if id, err := wire.PeerIDFromBytes(target); err == nil {
+		targetID, targetIsPeer = id, true
+	}
 	var errs []error
 	for rounds := 0; rounds < 16; rounds++ {
 		if err := ctx.Err(); err != nil {
@@ -540,7 +588,7 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 		for range candidates {
 			r := <-ch
 			if r.e != nil {
-				errs = append(errs, r.e)
+				errs = append(errs, fmt.Errorf("%s: %w", r.id, r.e))
 				continue
 			}
 			s.addPeers(r.m.Closer)
@@ -548,6 +596,11 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 				if usable, ok := s.usablePeer(p); ok {
 					known[usable.ID] = PeerInfo(usable)
 				}
+			}
+		}
+		if op == FindNode && targetIsPeer {
+			if _, found := known[targetID]; found {
+				break
 			}
 		}
 	}
@@ -576,6 +629,11 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 	}
 	queried := make(map[wire.PeerID]bool)
 	providers := make(map[wire.PeerID]Peer)
+	for _, p := range s.getProviders(key) {
+		if usable, ok := s.usablePeer(p); ok {
+			providers[usable.ID] = usable
+		}
+	}
 	var errs []error
 	for rounds := 0; rounds < 16; rounds++ {
 		if err := ctx.Err(); err != nil {
@@ -670,20 +728,26 @@ func (s *Service) Provide(ctx context.Context, key []byte, addrs []wire.Multiadd
 	}
 	s.storeProvider(key, p)
 	targets, err := s.iterative(ctx, key, FindNode)
-	if err != nil && len(targets) == 0 {
-		return err
+	if len(targets) == 0 {
+		return errors.Join(ErrNoPeers, err)
 	}
 	msg := Message{Type: AddProvider, Key: key, Providers: []Peer{p}}
 	var errs []error
+	sent := 0
 	for _, target := range targets {
 		if target.ID == p.ID {
 			continue
 		}
 		if _, e := s.call(ctx, target.ID, msg); e != nil {
-			errs = append(errs, e)
+			errs = append(errs, fmt.Errorf("%s: %w", target.ID, e))
+		} else {
+			sent++
 		}
 	}
-	return errors.Join(errs...)
+	if sent > 0 {
+		return nil
+	}
+	return errors.Join(err, errors.Join(errs...))
 }
 func (s *Service) ProvideAndRepublish(ctx context.Context, key []byte, addrs []wire.Multiaddr) error {
 	if err := s.Provide(ctx, key, addrs); err != nil {
@@ -720,13 +784,12 @@ func (s *Service) String() string { return fmt.Sprintf("kad(%s)", s.cfg.Host.ID(
 // Lookup implements p2p/lookup.Source using iterative FIND_NODE.
 func (s *Service) Lookup(ctx context.Context, id wire.PeerID, emit func(lookup.Address) bool) error {
 	peers, err := s.FindNode(ctx, id)
-	if err != nil {
-		return err
-	}
+	found := false
 	for _, p := range peers {
 		if p.ID != id {
 			continue
 		}
+		found = true
 		for _, raw := range p.Addrs {
 			a, e := wire.MultiaddrFromBytes(raw, 1024)
 			if e != nil {
@@ -737,5 +800,8 @@ func (s *Service) Lookup(ctx context.Context, id wire.PeerID, emit func(lookup.A
 			}
 		}
 	}
-	return nil
+	if found {
+		return nil
+	}
+	return err
 }

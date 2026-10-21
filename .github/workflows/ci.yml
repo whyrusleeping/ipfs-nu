@@ -1,0 +1,52 @@
+name: ci
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: dependency guard
+        run: ./scripts/depguard.sh
+      - name: vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: test
+        run: go test ./...
+      - name: test (race)
+        # The race detector needs cgo.
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: build
+        run: |
+          export GOOS=${TARGET%/*} GOARCH=${TARGET#*/}
+          go build -trimpath -o /tmp/nu ./cmd/nu
+          if [ "$GOOS" = linux ]; then file /tmp/nu | grep -q 'statically linked'; fi
+        env:
+          TARGET: ${{ matrix.target }}

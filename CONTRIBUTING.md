@@ -73,10 +73,10 @@ will churn; tests that pin down internals make every change slower.
 - `go test ./...` runs without root or network and stays under about a minute in total.
   Each test should take well under a second.
 - Anything slower (multi-GB files, long property runs, soak, benchmarks) is opt-in: skip
-  unless `NU_SLOW=1`. Keep the default sizes small (MiB, not GiB) and the iterations bounded.
+  unless `NU_SLOW=1` (call `slow.Skip(t)` from `nutest/slow`). Keep the default sizes small (MiB, not GiB) and the iterations bounded.
 - No `time.Sleep` waits. Wait on conditions with timeouts.
 - Fuzz targets are written for decoders of network or file input, but only their seed
-  corpora run in `go test`. Fuzzing campaigns, benchmarks, cross-implementation checks and
+  corpora run in `go test` (template: `core/varint`). Fuzzing campaigns, benchmarks, cross-implementation checks and
   scale tests deferred from v0 live in backlog task 0068.
 
 **While iterating**

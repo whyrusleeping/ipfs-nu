@@ -1,0 +1,20 @@
+# Opt-in slow tests (NU_SLOW=1): multi-GB files, long property runs, soak. On demand only.
+name: slow
+on:
+  workflow_dispatch:
+
+env:
+  CGO_ENABLED: "0"
+  NU_SLOW: "1"
+
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test -timeout 110m ./...
+# NAT-lab scenarios (build tag `natlab`, need root/netns) get their own workflow in task 0003.

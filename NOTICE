@@ -1,0 +1,9 @@
+Nu is licensed under the MIT License (see LICENSE).
+
+Code adapted from other projects keeps its original license. Each adapted file carries a
+header naming its origin and license, and is listed here.
+
+Tailscale (BSD-3-Clause, Copyright (c) Tailscale Inc & AUTHORS)
+  https://github.com/tailscale/tailscale
+  Planned: p2p/portmap and p2p/netmon adapt Tailscale's portmapper and netmon packages.
+  Adapted files will be listed here with the full BSD-3-Clause text.

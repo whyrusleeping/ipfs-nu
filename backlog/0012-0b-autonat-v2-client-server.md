@@ -1,7 +1,7 @@
 ---
 id: "0012"
 title: '0b: AutoNAT v2 client + server'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-24"
 updated: "2026-10-21"

@@ -1,7 +1,7 @@
 ---
 id: "0013"
 title: '0b: Circuit relay v2 (client, STOP, hop server `nu relay` with full-service admission)'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
 updated: "2026-10-21"

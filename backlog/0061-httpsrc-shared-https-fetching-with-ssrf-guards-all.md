@@ -21,3 +21,4 @@ Acceptance: SSRF tests (private IPs, DNS rebinding, redirect chains to unlisted 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/http (b419679, merged). httpsrc: dial-time IP checks (SSRF, rebinding), redirect re-checks/cap, per-call host allowlists, size/time bounds, Range+If-Range resume on strong validators, per-origin demotion, streaming Sink. Evidence: TestSSRF, TestRebindingRedirectsAndAllowlist, TestResume, TestBoundsAndDemotion, TestStreamingStore. Allowlist enforcement shown in-process by asserting no dial attempts; the packet-capture evidence is deferred to the private-mode exit (0063). Behaviour documented in docs/operations.md.

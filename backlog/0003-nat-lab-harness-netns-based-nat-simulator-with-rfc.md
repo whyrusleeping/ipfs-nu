@@ -1,7 +1,7 @@
 ---
 id: "0003"
 title: 'NAT lab harness: netns-based NAT simulator with RFC 4787 matrix + network-change scripting'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-24"
 updated: "2026-10-21"

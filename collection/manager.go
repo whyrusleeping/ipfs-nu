@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
+	"github.com/whyrusleeping/nu/httpsrc"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/store"
 )
@@ -63,7 +65,15 @@ type Config struct {
 	MaxLog       int           // holdings-log bound per collection
 	Workers      int           // concurrent item fetches
 	// GC sweeps released content (a store GC); nil disables sweeping.
-	GC     func(ctx context.Context)
+	GC func(ctx context.Context)
+	// HTTP fetches item URL files (nil: pushes with URL files are refused); IngestDir
+	// keeps partial URL downloads across restarts; IngestWorkers bounds concurrent pushes
+	// being stored and IngestBackoff is the first retry delay (doubling to 10 min).
+	HTTP          *httpsrc.Client
+	IngestDir     string
+	IngestWorkers int
+	IngestBackoff time.Duration
+
 	Now    func() time.Time
 	Logger *slog.Logger
 }
@@ -88,6 +98,11 @@ type Manager struct {
 	inflight  map[string]bool
 	gcPending bool
 	lastFlush map[string]time.Time
+	// pmu serializes push-row updates; pushCh is closed (and replaced) on push changes;
+	// ikick wakes the ingest loop.
+	pmu    sync.Mutex
+	pushCh chan struct{}
+	ikick  chan struct{}
 	// ownKeys overrides heldKeys in tests.
 	ownKeys func() map[string]bool
 }
@@ -109,6 +124,15 @@ func Open(cfg Config) (*Manager, error) {
 	if cfg.Workers <= 0 {
 		cfg.Workers = DefaultWorkers
 	}
+	if cfg.IngestWorkers <= 0 {
+		cfg.IngestWorkers = DefaultIngestWorkers
+	}
+	if cfg.IngestBackoff <= 0 {
+		cfg.IngestBackoff = DefaultIngestBackoff
+	}
+	if cfg.IngestDir == "" {
+		cfg.IngestDir = filepath.Join(filepath.Dir(cfg.DBPath), "ingest")
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -120,7 +144,8 @@ func Open(cfg Config) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{cfg: cfg, db: db, epoch: epoch, log: cfg.Logger.With("component", "collections"),
-		kick: make(chan struct{}, 1), fkick: make(chan struct{}, 1), inflight: map[string]bool{}, lastFlush: map[string]time.Time{}}
+		kick: make(chan struct{}, 1), fkick: make(chan struct{}, 1), inflight: map[string]bool{}, lastFlush: map[string]time.Time{},
+		pushCh: make(chan struct{}), ikick: make(chan struct{}, 1)}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	return m, nil
 }
@@ -128,9 +153,10 @@ func Open(cfg Config) (*Manager, error) {
 // Start runs reconciliation (on cluster changes and every interval) and item fetches.
 func (m *Manager) Start() {
 	m.cfg.Cluster.OnChange(m.Kick)
-	m.wg.Add(2)
+	m.wg.Add(3)
 	go m.loop()
 	go m.fetchLoop()
+	go m.ingestLoop()
 	m.Kick()
 }
 

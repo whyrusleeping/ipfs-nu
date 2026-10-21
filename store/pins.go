@@ -30,12 +30,15 @@ const (
 	SourceCollectionSelect   = "collection-select"
 	SourceCollectionManual   = "collection-manual"
 	SourceCollectionConflict = "collection-conflict"
+	// SourceCollectionPush protects the metadata and files of an item push until the
+	// item is in the writer head (or the push failed).
+	SourceCollectionPush = "collection-push"
 )
 
 var sources = map[string]bool{
 	SourceExplicit: true, SourceFollow: true, SourceMyNames: true, SourceCluster: true,
 	SourceClusterSurplus: true, SourceCollectionSelect: true, SourceCollectionManual: true,
-	SourceCollectionConflict: true,
+	SourceCollectionConflict: true, SourceCollectionPush: true,
 }
 
 // Pin protects an object, and for recursive pins everything its walk profile reaches, from

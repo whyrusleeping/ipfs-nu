@@ -20,15 +20,16 @@ The first end-to-end runnable product, with no networking: everything later plug
 - `node/` assembly and `nu daemon` (API :5171, gateway :8171, libp2p UDP :4171 reserved for later tasks).
 - API skeleton per spec.md "Local API, gateway and browsers": versioned JSON + OpenAPI, the error envelope with stable codes → CLI exit categories, cursor paging with `resync`, and the **operation** resource (ID, target, stage, progress, NDJSON events, `wait`). Baseline loopback protections (Host must be a loopback name, no CORS, Origin rejection for state-changing requests); 0028 completes them per 0035.
 - `client/` Go package; the CLI uses only it. `--json` on every command; TTY progress rendered from operation events.
-- Local commands: `add` (file nodes, `--raw`, `--hash sha256`, `-r` with import cache, `--nocopy`), `cat`, `ls`, `pin add|rm|ls`, `dag get|put`, `car import|export`, `tree edit`, `status` (daemon/store summary; later tasks add sections), basic `doctor`.
+- Local commands: `add` (file nodes, `--raw`, `--hash sha256`, `-r` with import cache, `--nocopy`), `cat`, `ls`, `pin add|rm|ls`, `dag get|put`, `status` (daemon/store summary; later tasks add sections), basic `doctor`.
+- Not in v0: `car import|export` (lands with 0051/0053 walk profiles) and `tree edit` (with 0045/0047 publishing).
 - Target parsing per spec.md "Targets" (CIDs and paths now; names, datasets and links return a clear "not yet supported" error).
 - Loopback gateway: `/tree/<cid>/…`, `/blob/<cid>`, file nodes with name/mime, directory listings with selected-root metadata, non-active fallback for active content.
 
-**Acceptance**
-- From a fresh machine (Linux and macOS): `nu add -r ./site` then browse it in the local gateway, with no prior `init`.
+**Acceptance (v0 cut; deferred evidence is in 0068)**
+- From a fresh machine: `nu add -r ./site`, then browse it in the local gateway, with no prior `init` (checked by an end-to-end test on CI's Linux and macOS runners).
 - Every command has `--json` output and documented exit codes; errors include an `action`.
 - An operation started via API can be followed by `nu … --wait`, and its events stream as NDJSON.
-- A 10 GB add/cat runs in constant memory with progress.
+- Add/cat stream in bounded memory with progress (64 MiB test; multi-GB under `NU_SLOW`).
 
 ## Acceptance criteria
 

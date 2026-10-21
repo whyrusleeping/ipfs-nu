@@ -2,7 +2,7 @@
 id: "0046"
 title: Cluster placement, structure sync, readiness and waits (on 0062 state core)
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-20"
 depends_on:

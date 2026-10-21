@@ -2,7 +2,7 @@
 id: "0033"
 title: 'Align product design and release plan: IPFS magic with integrated archival and operations'
 status: done
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-09-29"
 depends_on: []

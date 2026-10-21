@@ -20,9 +20,9 @@ spec_refs:
 - Helpers to wait for conditions with timeouts and dump node status/operation events on failure.
 - Deterministic seeds for anything random.
 
-**Acceptance**
+**Acceptance (v0 cut; deferred evidence is in 0068)**
 - Example tests: 3-node add → get with one node restarted mid-transfer; a partition/heal scenario; a corrupt-provider scenario.
-- `go test ./nutest/...` runs without root in CI in under a few minutes.
+- Starting a 3-node network takes well under a second; the harness's own tests finish in seconds without root.
 - Documented in CONTRIBUTING.md (already referenced there).
 
 ## Acceptance criteria

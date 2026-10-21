@@ -2,7 +2,7 @@
 id: "0049"
 title: 'Production v1 acceptance: magic, versioned archives, reach, migration and operations'
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-09-29"
 depends_on:

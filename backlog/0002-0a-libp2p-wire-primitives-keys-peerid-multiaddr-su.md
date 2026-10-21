@@ -4,7 +4,7 @@ title: '0a: libp2p wire primitives: keys, PeerId, multiaddr subset, signed peer 
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0001"
 spec_refs:
@@ -20,9 +20,9 @@ The encoding layer of the libp2p subset (`p2p/wire`). No networking yet.
 - Signed envelopes + peer records (libp2p RFC 0002/0003).
 - Hand-rolled or minimal protobuf for the messages we need.
 
-**Acceptance**
+**Acceptance (v0 cut; deferred evidence is in 0068)**
 - Round-trip and spec test vectors (from the libp2p specs / go-libp2p test data) pass.
-- A fuzz target for every decoder; no panics after 10 min of fuzzing each.
+- Fuzz targets with seed corpora for decoders of network input (key protobuf, multiaddr bytes, signed envelope); seeds run in `go test`.
 
 ## Acceptance criteria
 

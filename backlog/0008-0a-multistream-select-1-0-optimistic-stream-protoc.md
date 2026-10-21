@@ -4,7 +4,7 @@ title: '0a: multistream-select 1.0 (optimistic) + stream/protocol routing'
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0005"
 spec_refs:
@@ -18,9 +18,9 @@ Protocol negotiation and stream routing on the host.
 - Protocol handler registry and stream routing; per-protocol concurrency limits; stream reset semantics.
 - Uvarint-length-prefixed message helpers (for protobuf and DRISL framing).
 
-**Acceptance**
-- Interop with go-libp2p and rust-libp2p negotiation, including optimistic select and rejection paths.
-- Fuzz the multistream reader.
+**Acceptance (v0 cut; deferred evidence is in 0068)**
+- One smoke test in `experiments/`: negotiation with go-libp2p, including optimistic select and an `na` rejection. (rust-libp2p: 0011.)
+- Fuzz target with seeds for the multistream reader.
 
 ## Acceptance criteria
 

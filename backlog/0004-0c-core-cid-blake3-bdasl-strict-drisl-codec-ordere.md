@@ -4,7 +4,7 @@ title: '0c: core DASL/BDASL CIDs, strict DRISL codec, DASL CAR'
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-29"
+updated: "2026-10-21"
 depends_on:
     - "0001"
 spec_refs:
@@ -21,11 +21,10 @@ spec_refs:
 - JSON: atproto `$link`/`$bytes` conventions both ways.
 - CAR v1 (DASL CAR): streaming reader/writer, verifying every block as it arrives. Full header metadata exposed (MASL-compatible headers). Tolerate duplicates and arbitrary order; report unreferenced blocks. Reject CARv2 with an explanation. Ordering helpers for Nu tree pre-order and atproto streamable order.
 
-**Acceptance**
-- The DASL test suite (hyphacoop/dasl-testing) passes for CID/DRISL/CAR, including BDASL cases. The atproto-interop-tests data-model vectors pass. Record results in the DASL compliance matrix format where possible.
-- Round-trip property tests; non-canonical encodings rejected.
-- Fuzz targets for the CID parser, DRISL decoder, JSON converter and CAR reader.
-- Cross-check: blocks decode with an independent DAG-CBOR decoder (go-ipld-prime) and indigo's atproto data packages.
+**Acceptance (v0 cut; deferred evidence is in 0068)**
+- CID and DRISL vectors from dasl-testing (BDASL cases included) and the atproto data-model vectors pass, vendored under `testdata/vectors/`.
+- Non-canonical encodings are rejected (table tests); a small round-trip property test.
+- Fuzz targets with seeds for the DRISL decoder and CAR reader.
 
 ## Acceptance criteria
 

@@ -2,7 +2,7 @@
 id: "0044"
 title: Linux/macOS distribution, store upgrades, backup/export and clean-machine recovery
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
 depends_on:

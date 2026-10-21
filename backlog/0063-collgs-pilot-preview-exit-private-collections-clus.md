@@ -2,10 +2,11 @@
 id: "0063"
 title: 'CollGS pilot preview exit: private collections cluster usable by vmx'
 status: todo
-priority: 1
+priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"
 depends_on:
+    - "0068"
     - "0057"
     - "0059"
 spec_refs:

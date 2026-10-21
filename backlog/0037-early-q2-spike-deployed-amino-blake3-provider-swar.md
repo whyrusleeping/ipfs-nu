@@ -2,7 +2,7 @@
 id: "0037"
 title: 'Early Q2 spike: deployed Amino BLAKE3 provider/swarm keys and routing citizenship'
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
 depends_on:

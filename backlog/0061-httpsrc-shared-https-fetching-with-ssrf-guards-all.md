@@ -2,7 +2,7 @@
 id: "0061"
 title: 'httpsrc: shared HTTPS fetching with SSRF guards, allowlists and resume'
 status: todo
-priority: 1
+priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"
 depends_on:

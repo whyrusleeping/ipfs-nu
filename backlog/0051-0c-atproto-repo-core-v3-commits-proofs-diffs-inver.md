@@ -2,7 +2,7 @@
 id: "0051"
 title: '0c: atproto repo core: v3 commits, proofs, diffs/inversion, streamable CAR, P-256/k256 signing'
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-30"
 updated: "2026-09-30"
 depends_on:
@@ -18,7 +18,7 @@ spec_refs:
 `core/` atproto repository profile (D21), with no I/O. Used by name proofs (D6), `at://` record fetch, repo snapshots, atproto archive datasets and cluster state repos (D20).
 
 - Commit v3 `{did, version: 3, data, rev, prev: null, sig}`: build, sign and verify with P-256 and secp256k1 (`did:key` and DID-document keys). Reject future revs beyond the drift window.
-- Uses the atproto MST profile from 0007: record lookup, inclusion and absence proofs, proof CAR build/verify, repo diffs ("CAR slices" with the blocks needed for inversion), op inversion against `prevData`, and applying a `getRepo?since=` diff to reach a verified new `data`.
+- Adds the **atproto v3 MST profile** to 0007's parameterized MST (SHA-256 depth in 2-bit units, `{l, e:[{p,k,v,t}]}`, mandatory prefix compression, canonical empty-node pruning, values are links), byte-exact with atproto, passing the atproto-interop-tests MST vectors and agreeing with indigo on randomized trees. On it: record lookup, inclusion and absence proofs, proof CAR build/verify, repo diffs ("CAR slices" with the blocks needed for inversion), op inversion against `prevData`, and applying a `getRepo?since=` diff to reach a verified new `data`.
 - Full-repo verification: rebuild the MST from a CAR, check it equals `data`, and validate every record under the atproto data model. Records may keep foreign/legacy CIDs as opaque links.
 - Streamable CAR export order (commit, then MST pre-order with records interleaved); import tolerates any order and duplicates.
 - `atrepo` walk profile (commit → MST → records, optional blob refs, expected dangling links).

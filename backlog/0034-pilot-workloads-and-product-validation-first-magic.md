@@ -2,7 +2,7 @@
 id: "0034"
 title: 'Pilot workloads and product validation: first magic plus smaller archive/mirror teams'
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
 depends_on: []

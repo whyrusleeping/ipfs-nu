@@ -4,7 +4,7 @@ title: '0c: Bao blobs: BLAKE3 hashing, 16 KiB-group outboards, verified range sl
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0004"
 spec_refs:
@@ -20,10 +20,9 @@ spec_refs:
 - Blobs ≤ 16 KiB: plain whole-blob hash check, no outboard.
 - Bao applies only to BLAKE3 blobs. SHA-256 raw blobs (`--hash sha256`, atproto/DASL imports) have no outboard; they are verified whole and limited to 8 MiB (D21).
 
-**Acceptance**
-- Bao spec test vectors pass. **Cross-check vectors with iroh's `bao-tree` at 16 KiB groups** and record whether the encodings are byte-identical (outcome goes into docs/validation.md).
-- A corrupted byte in any chunk group is detected within that group.
-- Benchmark: hashing and outboard throughput on amd64 and arm64 (target: close to raw BLAKE3 speed).
+**Acceptance (v0 cut; deferred evidence is in 0068)**
+- Bao spec test vectors pass.
+- A corrupted byte in a chunk group is detected within that group.
 
 ## Acceptance criteria
 

@@ -2,7 +2,7 @@
 id: "0043"
 title: Secure public HTTPS seed/gateway and browser sharing journey
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-09-29"
 depends_on:

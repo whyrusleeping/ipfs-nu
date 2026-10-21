@@ -4,7 +4,7 @@ title: '0a: QUIC-v1 host with libp2p TLS handshake on stock quic-go'
 status: todo
 priority: 1
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0002"
 spec_refs:
@@ -20,10 +20,10 @@ spec_refs:
 - Connection manager basics: one connection per peer preferred, explicit limits per peer / per connection / global (no resource-manager model).
 - Keep the socket abstraction pluggable, because magicsock (task "magicsock") will wrap it.
 
-**Acceptance**
+**Acceptance (v0 cut; deferred evidence is in 0068)**
 - Two Nu nodes connect and authenticate each other; a wrong PeerId is rejected.
-- Connects to a go-libp2p node and a rust-libp2p node over QUIC-v1 (handshake + open a stream).
-- Fuzz the certificate extension parser.
+- One smoke test in the `experiments/` module: handshake + stream with a go-libp2p node over QUIC-v1. (rust/js interop: 0011.)
+- Fuzz target with seeds for the certificate extension parser.
 
 ## Acceptance criteria
 

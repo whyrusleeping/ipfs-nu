@@ -2,12 +2,13 @@
 id: "0026"
 title: '0c: Sync layer 2: `/nu/tree/1` (paths, have-diffs, name ranges, inline, resumable)'
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-24"
 updated: "2026-09-24"
 depends_on:
     - "0022"
     - "0007"
+    - "0027"
 spec_refs:
     - docs/data.md#D14. Transfer protocols
     - docs/data.md#D3. Directory trees
@@ -22,6 +23,7 @@ Layer 2 of the sync protocols (D14): the optional accelerator. Never needed for 
 - Bounded responses (node/byte budget); resume without server state (the client computes the cursor from the last verified node).
 - Walk profiles: `nu-tree`, and `atrepo` (commit → MST → records; `have` = held commits; repo-path paging), used by cluster state repos and atproto datasets (D21).
 - Extend the protocol spec document.
+- Plug into the fetcher (0027) as the preferred tree path when the peer supports it, keeping the layer-1 walk as fallback.
 
 **Acceptance**
 - A lookup in a 1M-entry directory with `scope: entry` transfers O(log n) nodes in one request.

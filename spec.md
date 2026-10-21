@@ -283,8 +283,18 @@ promise. [Validation](docs/validation.md) owns reproducible measurements and pil
 Existing backlog `0a/0b/0b+/0c` prefixes name technical workstreams, not a serial product
 release order. Sharing and keeping must reuse foundations but have independent thin slices.
 
+**v0 is the first target and comes before everything else.** It means add, share, get and
+browse between two machines that can reach each other directly (same LAN, routed, or public
+addresses): the core formats and store, direct QUIC sessions with mDNS and hints,
+`/nu/bytes/1`, a multi-peer fetcher, and the local CLI/API/loopback gateway, including a
+recipient with no daemon. It leaves out relays, NAT traversal, DHT, names, clusters, history,
+public HTTPS and atproto. v0 tasks carry a reduced "v0 cut" of evidence. Fuzzing campaigns,
+cross-implementation checks, benchmarks and scale tests follow in a hardening task, which
+gates the gate-1 and gate-2a exits below but not v0.
+
 | Gate | Scope | Exit criteria |
 |---|---|---|
+| **v0 — First runnable share** | Backlog p1 tasks: 0001, 0002, 0004–0010, 0022, 0027, 0028, 0040, 0060, 0065, 0066 | Two machines on one LAN or routed network: `nu add -r`, share link, `nu get` (also with no daemon running) and browsing in the local gateway; the fast test suite is green |
 | **0 — Foundations and risk retirement** | Scaffold, Linux/macOS, canonical DASL formats/store and atproto repo core, local walking skeleton (CLI/API/gateway on the core store, in-process multi-node harness), libp2p wire, security contracts, Q2/Nu-path spikes, pilot selection | Fuzz/vector/interop evidence, including DASL test suite and atproto interop vectors; bounded discovery/path experiments; defined browser and readiness mechanisms before dependent features ship |
 | **1 — First magic preview** | Hint/LAN/direct + bounded development relay retrieval, bytes/trees, resumable fetch, CLI/local gateway (incl. RASL, `dag`/`car`), explicitly operated preview HTTPS seed | Fresh users add/share/get/browse without an account on declared networks; two laptops share 10 GB/10k-file tree; 3-peer verified download and restart; HTTPS via a supplied preview seed or operator's domain/TLS, not automatic project hosting; no DHT/hard-NAT prerequisite |
 | **2a — CollGS pilot preview** | Thin private-mode slice parallel with 1, for the [CollGS pilot](docs/validation.md#pilot-candidates): direct/mDNS sessions, signed membership/dataset/writer-head state, collections with `replicas: 0` (selection, rescue, union heads, holdings index), item push API and URL import, versioned index/push JSON API. Excludes placement, readiness evidence, history, public networking, names and RASL | CollGS pilot criteria on a multi-host private deployment with vmx's producer and dashboard; published preview limits (trusted members, no guaranteed copies, measured throughput/catalog/index figures) |

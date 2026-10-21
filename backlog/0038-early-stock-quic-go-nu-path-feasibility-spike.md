@@ -2,7 +2,7 @@
 id: "0038"
 title: Early stock-quic-go Nu-path feasibility spike
 status: todo
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
 depends_on:

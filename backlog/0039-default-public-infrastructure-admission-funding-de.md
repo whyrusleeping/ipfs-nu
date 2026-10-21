@@ -2,7 +2,7 @@
 id: "0039"
 title: 'Default public infrastructure: admission, funding, deployment and operations'
 status: blocked
-priority: 1
+priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
 depends_on: []

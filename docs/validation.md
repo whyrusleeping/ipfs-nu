@@ -2,10 +2,94 @@
 
 [Spec overview](../spec.md) · [Product brief](product.md) · [Operations](operations.md) · [Networking](networking.md)
 
-**No field connectivity or scale results are recorded yet.** Specification figures are
+**No field NAT-traversal or scale results are recorded yet.** Specification figures are
 hypotheses and sizing targets, not measured capabilities. Record reproducible results here
 (or link reports indexed here), including negative results. Synthetic regression tests do
 not establish field success.
+
+## Libp2p container interop (2026-10-21)
+
+Task 0011; [runner, contract, exact source/image pins and reproduction](../interop/README.md).
+**Phase 0a remains open:** the pinned upstream js-libp2p transport test plan does
+not support QUIC-v1. Its two matrix entries are `unsupported`, never counted as
+passes; the JS CI job and complete matrix deliberately return failure.
+
+Local environment: Linux 5.15.0-176-generic x86_64, Docker 29.4.1, no sudo.
+Nu base `43ffedc` plus this interop worktree; Nu image built with Go 1.26.0.
+Upstream unified-testing `4ade567bfea81d291278a272825a7d35e73b40dd`, using its
+actual transport test binaries and contract patches: go-v0.47-pre
+`dd26469c52a7ba555095df0f8088ae1fff8c7627`, rust-v0.56
+`70082df7e6181722630eabc5de5373733aac9a21`. The bounded runner executes the
+Nu-only submatrix rather than the upstream multi-thousand-pair shell harness.
+All available components built and ran locally; none were deferred for image size.
+
+| Dialer → listener | Local result | Handshake + first ping (ms) | Ping RTT (ms) |
+|---|---|---:|---:|
+| Nu → go-libp2p | pass | 7.065 | 0.290 |
+| go-libp2p → Nu | pass | 5.942 | 0.315 |
+| Nu → rust-libp2p | pass | 4.414 | 0.255 |
+| rust-libp2p → Nu | pass | 3.669 | 0.285 |
+| Nu → js-libp2p v3.x | unsupported: upstream QUIC implementation commented out | — | — |
+| js-libp2p v3.x → Nu | unsupported: upstream QUIC implementation commented out | — | — |
+
+These are single smoke samples on local Docker networks, **not performance
+benchmarks**. Both modern uppercase env/Redis coordination and YAML latency
+fields are exercised. A separate Nu↔Nu Docker smoke passed using lowercase legacy
+env vars, the `listenerAddr` Redis key and the exact two-key single-line JSON
+result contract. Calling the public runner without `--public` was rejected before
+starting any containers.
+
+| Black-box target | Local evidence |
+|---|---|
+| Kubo v0.40.0 (`kubo/0.40.0/882b7d2`) | QUIC connect, authenticated Ed25519 identity, identify, `/ipfs/ping/1.0.0`; ping 0.185 ms |
+| Lighthouse v8.0.1 (`Lighthouse/v8.0.1-ced49dd/x86_64-linux`) | QUIC connect, authenticated **secp256k1** key type asserted, identify, Ethereum `/eth2/beacon_chain/req/ping/1/ssz_snappy`; ping 0.848 ms |
+
+Lighthouse does **not** advertise IPFS ping. Its native Ping/Pong uses an SSZ
+uint64 metadata sequence and snappy framing; this is not an IPFS-ping pass or
+Ethereum consensus participation. Both black-box containers use disposable
+state and an internal Docker network. Lighthouse starts from its bundled genesis
+with a deliberately absent execution engine; expected execution warnings do not
+prevent its P2P service from answering. No validator or public chain sync runs.
+
+Public Amino was separately opted into locally: all three pinned identities in
+[`interop/amino.json`](../interop/amino.json) connected and identified, with no
+outgoing ping or DHT query. The pins came from bootstrap DNS TXT records on this
+date, not an unbounded peer discovery walk:
+
+| Pinned endpoint | Resolved IPv4 / UDP | Observed agent | Result |
+|---|---|---|---|
+| lith-1.bootstrap.ipni.io | 46.166.169.131:4001 | kubo/0.43.1/acc53c0/bootstrap.ipni.io | pass |
+| chic-1-b.bootstrap.ipni.io | 84.32.48.211:4011 | kubo/0.43.1/acc53c0/bootstrap.ipni.io | pass |
+| chic-1.bootstrap.ipni.io | 84.32.48.211:4001 | kubo/0.43.1/acc53c0/bootstrap.ipni.io | pass |
+
+Reproduce from the repository root:
+
+```sh
+python3 interop/run.py transport --impl all --out interop/results/transport
+# Expected exit 1 until the unsupported JS pairs can be exercised.
+python3 interop/run.py blackbox --out interop/results/blackbox
+python3 interop/run.py amino --public --out interop/results/amino
+```
+
+Local raw evidence remains in ignored `interop/results/final-transport/`,
+`final-blackbox/`, and `amino/` (results JSON, per-container logs, identity/protocol
+JSON and build logs). `.github/workflows/interop.yml` runs these commands nightly
+and on demand, uploading results even on failure; public Amino on manual dispatch
+requires its explicit input. **Remote CI execution/artifact publication has not
+yet been observed**, because this branch has not been pushed.
+
+No Nu `p2p/` bug was found or fixed. One harness mismatch was fixed: upstream Go
+emits four-space YAML while Rust/Nu emit two-space YAML (the upstream shell
+extractor only accepts two). No main-module dependencies changed. Pre-commit
+`go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`
+passed, as did the separate interop module's vet/staticcheck/build checks and
+Python compilation. Root tests remain network/Docker independent.
+
+Deferred/unmet: a supported JS QUIC-v1 test-plan pin and both JS directions;
+remote CI execution; no claim of standard IPFS ping on Lighthouse, reverse
+black-box client dialing, NAT traversal, sustained Ethereum sessions or data
+exchange. The upstream JS capability gap must be resolved before marking 0011
+or the full Phase 0a matrix green; it is not waived here.
 
 ## Linux NAT lab smoke (2026-10-21)
 

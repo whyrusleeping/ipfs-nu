@@ -1,0 +1,68 @@
+name: libp2p interop
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_amino:
+        description: Contact the pinned public Amino bootstrap peers (identify only)
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  transport:
+    name: QUIC-v1 / ${{ matrix.impl }} / both directions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        impl: [go, rust, js]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pinned unified-testing transport binaries
+        run: python3 interop/run.py transport --impl '${{ matrix.impl }}'
+      # JS currently reports unsupported and fails rather than silently passing
+      # an empty QUIC matrix. See interop/README.md; Phase 0a remains open.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop-transport-${{ matrix.impl }}
+          path: interop/results/
+          if-no-files-found: error
+          retention-days: 30
+
+  blackbox:
+    name: Kubo and Lighthouse
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 interop/run.py blackbox
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop-blackbox
+          path: interop/results/
+          if-no-files-found: error
+          retention-days: 30
+
+  amino:
+    name: Public Amino (connect and identify only)
+    if: github.event_name == 'schedule' || inputs.public_amino
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 interop/run.py amino --public
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop-amino
+          path: interop/results/
+          if-no-files-found: error
+          retention-days: 30

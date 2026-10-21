@@ -197,13 +197,14 @@ type localStatus struct {
 	Running bool                `json:"running"`
 	Daemon  *apiv0.Daemon       `json:"daemon,omitempty"`
 	Ops     map[apiv0.State]int `json:"operations,omitempty"`
+	Store   *apiv0.StoreStatus  `json:"store,omitempty"`
 	// Error explains why the daemon could not be reached.
 	Error *apiv0.Error `json:"error,omitempty"`
 }
 
 var cmdStatus = &command{
 	name:    "status",
-	summary: "one summary: daemon, version, paths (later: reachability, shares, datasets)",
+	summary: "one summary: daemon, version, paths, store (later: reachability, shares, datasets)",
 	run: func(ctx context.Context, e *env, args []string) error {
 		if err := parseFlags(e.flags(), args); err != nil {
 			return err
@@ -218,10 +219,22 @@ var cmdStatus = &command{
 		} else if st, err := n.Status(ctx); err != nil {
 			ls.Error = toAPIError(err)
 		} else {
-			ls.Running, ls.Daemon, ls.Ops, ls.Version = true, &st.Daemon, st.Operations, st.Version
+			ls.Running, ls.Daemon, ls.Ops, ls.Store, ls.Version = true, &st.Daemon, st.Operations, st.Store, st.Version
+		}
+		if !ls.Running {
+			// Read the store in-process when nothing holds the repo lock.
+			if n, release, err := e.local(r); err == nil {
+				if st, err := n.Status(ctx); err == nil {
+					ls.Store = st.Store
+				}
+				release()
+			}
 		}
 		return e.emit(ls, func(w io.Writer) {
 			fmt.Fprintf(w, "%s %s\nrepo:       %s\n", nu.Name, ls.Version, ls.Paths.Root)
+			if ls.Store != nil {
+				fmt.Fprintf(w, "store:      %d objects, %s, %d pins\n", ls.Store.Objects, humanCount(ls.Store.Bytes, "bytes"), ls.Store.Pins)
+			}
 			if !ls.Running {
 				fmt.Fprintf(w, "daemon:     not running\n")
 				if ls.Error != nil && ls.Error.Action != "" {

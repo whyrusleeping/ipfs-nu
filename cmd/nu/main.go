@@ -1,7 +1,7 @@
 // Command nu is the Nu CLI and daemon.
 //
 // The CLI talks to a node only through the node.Node interface, implemented over HTTP by
-// the client package (and later in-process for daemonless commands). Every command accepts
+// the client package and in-process by node.Local for daemonless commands. Every command accepts
 // --json; errors print their message and action and exit with the code's category
 // (apiv0.ExitCode).
 package main
@@ -213,18 +213,26 @@ func (e *env) openRepo() (*repo.Repo, error) {
 }
 
 // node returns the daemon found through the repo (or --api). Commands that need the
-// daemon (add, pin, operations) use it; they fail with unavailable when none runs.
+// daemon (operations) use it; they fail with unavailable when none runs.
 func (e *env) node(ctx context.Context) (node.Node, error) {
-	return e.connect(ctx, false)
+	return e.connect(ctx, "")
 }
 
-// nodeOrLocal is node for get/cat/ls/share: when no daemon runs, it starts an in-process
-// node for the duration of the command, holding the repo lock.
+// nodeOrLocal is node for get/cat/ls/dag get: when no daemon runs, it starts an
+// in-process node for the duration of the command, holding the repo lock.
 func (e *env) nodeOrLocal(ctx context.Context) (node.Node, error) {
-	return e.connect(ctx, true)
+	return e.connect(ctx, "using an in-process node for this command")
 }
 
-func (e *env) connect(ctx context.Context, localOK bool) (node.Node, error) {
+// nodeOrLocalWrite is nodeOrLocal for add/pin/dag put: the content lands in the store
+// now and is served and announced once a node runs.
+func (e *env) nodeOrLocalWrite(ctx context.Context) (node.Node, error) {
+	return e.connect(ctx, "working in-process; the content will be shared when a node runs (`"+nu.Name+" daemon` or `"+nu.Name+" share`)")
+}
+
+// connect finds the daemon; with a non-empty localNote it falls back to an in-process
+// node, printing the note on stderr.
+func (e *env) connect(ctx context.Context, localNote string) (node.Node, error) {
 	if e.apiAddr != "" {
 		return client.New(e.apiAddr), nil
 	}
@@ -233,7 +241,7 @@ func (e *env) connect(ctx context.Context, localOK bool) (node.Node, error) {
 		return nil, err
 	}
 	c, derr := client.Discover(r)
-	if !localOK {
+	if localNote == "" {
 		return c, derr
 	}
 	if derr == nil {
@@ -243,24 +251,38 @@ func (e *env) connect(ctx context.Context, localOK bool) (node.Node, error) {
 			return nil, err
 		}
 	}
-	// No daemon answered. Take the repo lock to be sure none is alive.
+	n, release, err := e.local(r)
+	if err != nil {
+		return nil, err
+	}
+	e.cleanup = append(e.cleanup, release)
+	if !e.json {
+		fmt.Fprintf(e.stderr, "%s: no daemon running; %s\n", nu.Name, localNote)
+	}
+	return n, nil
+}
+
+// local opens an in-process node under the repo lock. The returned release closes the
+// node and releases the lock.
+func (e *env) local(r *repo.Repo) (*node.Local, func(), error) {
+	// Take the repo lock to be sure no daemon is alive.
 	lock, err := r.Lock()
 	if err != nil {
 		if errors.Is(err, repo.ErrLocked) {
-			return nil, apiv0.Errorf(apiv0.CodeUnavailable, "%v, but its API is not answering", err).
+			return nil, nil, apiv0.Errorf(apiv0.CodeUnavailable, "%v, but its API is not answering", err).
 				WithAction("wait for it to finish starting, or stop it and run `" + nu.Name + " daemon` again")
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	// Stale address files from a crashed daemon would mislead the next command.
 	_ = r.RemoveAddrFile(repo.APIFile)
 	_ = r.RemoveAddrFile(repo.GatewayFile)
-	n := node.NewLocal(r)
-	e.cleanup = append(e.cleanup, func() { n.Close(); lock.Release() })
-	if !e.json {
-		fmt.Fprintf(e.stderr, "%s: no daemon running; using an in-process node for this command\n", nu.Name)
+	n, err := node.NewLocal(r)
+	if err != nil {
+		lock.Release()
+		return nil, nil, err
 	}
-	return n, nil
+	return n, func() { n.Close(); lock.Release() }, nil
 }
 
 // emit writes v as JSON in --json mode, else calls text.

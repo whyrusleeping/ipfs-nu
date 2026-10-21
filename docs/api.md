@@ -16,7 +16,7 @@ optional). Files are 0600, directories 0700.
 |---|---|
 | `config.toml` | Configuration; dotted keys, edited by `nu config get\|set <key> [value]`. `set` parses the value as TOML (`30`, `true`, `["a"]`, `"quoted"`) and falls back to a string. A running daemon applies changes after restart. |
 | `node.key` | libp2p identity key (reserved; written by the networking layer) |
-| `nu.db`, `blobs/` | SQLite database and blob directory (reserved for the store) |
+| `nu.db`, `blobs/`, `partial/`, `staging/` | The store ([D17](data.md#d17-store-and-replication)): SQLite (DRISL blocks, inline blobs, pins, import cache; schema version in `PRAGMA user_version`), complete blobs with Bao outboards, partially fetched blobs, in-progress writes |
 | `api`, `gateway` | URL of the running daemon's listeners, written at start and removed at clean shutdown; clients discover the daemon through `api` |
 | `daemon.lock` | flock held by the running daemon, containing its PID; a second daemon fails with `conflict` |
 | `version` | layout version (`1`) |
@@ -94,9 +94,48 @@ GET    /api/v0/dag?target=                 atproto-style JSON
 POST   /api/v0/dag        JSON body        → {cid}
 ```
 
-`add` passes a local path: API and daemon run as the same user on loopback, so the
-daemon reads the file itself. Content routes answer `not_implemented` until the store
-lands. GET never changes state.
+`add` passes an absolute local path: API and daemon run as the same user on loopback, so
+the daemon reads the file itself. GET never changes state.
+
+## Content commands (v0)
+
+`node.Local` implements the content methods on the store (`store/`), with resolution in
+`node/content`; the daemon serves the same object over the API.
+
+- **`add <file>`** streams the file into a blob (BLAKE3 by default; `--hash sha256` for
+  a core-DASL blob of at most 8 MiB, refused up front with `invalid_argument` otherwise)
+  and returns a single-mode MASL file node `{src, "io.ipfs.nu": {size, name, mode?}}`
+  ([D3a](data.md#d3a-single-file-nodes)); no `content-type` is recorded (type guessing is
+  machine-dependent; the gateway falls back to the name's extension). `--raw` returns the
+  blob CID instead. **`add -r <dir>`** builds the tree with `tree.BuildFS` and returns the
+  `io.ipfs.nu.tree` header CID; unsupported entries (devices, sockets, FIFOs) are listed
+  in `AddResult.skipped` and logged as operation events. `--nocopy` references files in
+  place (`store.AddNoCopy`, BLAKE3 only). The result is pinned (`explicit`, `recursive`
+  under the `nu-tree` profile; `direct` for a raw blob) unless `pin` is false.
+  **Import cache:** the store records `(path, hash) → (size, mtime, inode, cid)` for every
+  file it adds; an unchanged file whose blob is still held is not re-hashed on re-add (a
+  `--nocopy` reference is only reused by another `--nocopy` add). The operation reports
+  stages `scanning` (directories), `adding`, `pinning` and byte progress; a cancelled
+  operation stops at the next read.
+- **`cat <cid[/path]>`** streams a file node's blob, a raw blob, or a file inside a tree;
+  a directory is `invalid_argument`. **`ls`** lists a directory (tree header, a directory
+  MST node, or a path to one) as `{name, cid, type: file|dir|symlink, size}` in name
+  order; for a file node or blob it returns that one entry. Content that is not held is
+  `not_found` with an action.
+- **`pin add <cid>`** is an operation (stage `checking` walks the content, `pinning`
+  records it); content that is not fully held fails with `not_found` until fetching
+  arrives. **`pin rm`** removes every explicit pin of the CID; **`pin ls`** lists
+  `{cid, name?, mode, source}` for all sources.
+- **`dag get <cid[/path]>`** prints a DRISL object as atproto-style JSON (`$link`,
+  `$bytes`); a path selects map keys and array indexes and follows links on the way, and a
+  final link is printed as `{"$link"}`. A raw CID is `invalid_argument` (use `cat`).
+  **`dag put`** parses atproto-style JSON (strict DRISL; foreign links refused), stores
+  the SHA-256 DRISL object and prints its CID; it is not pinned.
+- **`status`** carries a `store` section `{objects, bytes, pins}` (`store.Stats`): held
+  objects, bytes on disk excluding `--nocopy` sources, and pins. The CLI reads it from the
+  daemon or, when none runs and the repo lock is free, from the store directly.
+- No GC runs in this build; when it does, the node passes `node.GCGrace` so unpinned
+  objects of in-progress adds survive.
 
 ## Loopback protections
 
@@ -113,8 +152,9 @@ non-loopback exposure.
 ## Gateway (v0 baseline)
 
 The loopback gateway (`gateway.listen`, default `127.0.0.1:8171`) serves held content
-through the `gateway.Content` interface (`Resolve(root, path)`, `Open`, `List`), which the
-store implements. These rules are the v0 baseline; the full
+through the `gateway.Content` interface (`Resolve(root, path)`, `Open`, `List`), which
+`node/content` implements on the store: tree headers and directory nodes list and resolve
+paths, file nodes and tree entries supply name, MIME type and mode, raw blobs are bytes. These rules are the v0 baseline; the full
 [security contract](operations.md#api-gateway-and-public-exposure) comes before any
 non-loopback exposure.
 
@@ -163,24 +203,28 @@ directories. The report counts files, directories and bytes and lists skipped en
 
 ## Daemonless commands
 
-`get`, `cat` and `ls` try the daemon first (address file, then a status ping). When none
-answers they take the repo lock, remove stale address files, and run an in-process node
-for the duration of the command, saying so on stderr. If another process holds the lock
-but its API does not answer, they fail with `unavailable` and the action to wait or
-restart the daemon. `add`, `pin` and `operations` require the daemon, since content added
-without one would have no node to serve or announce it.
+Content commands (`add`, `cat`, `ls`, `get`, `pin`, `dag`) try the daemon first (address
+file, then a status ping). When none answers they take the repo lock, remove stale
+address files, and run an in-process node (`node.Local`, which opens the store) for the
+duration of the command, saying so on stderr; `add`, `pin add` and `dag put` add that the
+content will be shared once a node runs (`nu daemon` or `nu share`), like `ipfs add`
+offline. If another process holds the lock but its API does not answer, they fail with
+`unavailable` and the action to wait or restart the daemon. `operations` requires the
+daemon, since operations live in its memory.
 
 ## Targets
 
 `get`, `cat`, `ls` and `dag get` parse their argument with `node/target` per the
 [Targets table](../spec.md#user-experience): `nu://`, `at://`, `rasl://` links; a `b…`
-base32 CIDv1 with optional `/path`; `<handle-or-did>/<name>[/path]`; or
-`<dataset>[@<version>][/path]`. Anything else is `invalid_argument` listing the forms.
-Forms this build cannot act on are `not_supported` with an action.
+DASL CID (`core/cid`: raw or DRISL, SHA-256 or BLAKE3, canonical lowercase base32) with
+optional `/path`; `<handle-or-did>/<name>[/path]`; or `<dataset>[@<version>][/path]`.
+A CID-length string that does not parse (for example a dag-pb CID) is `invalid_argument`
+naming the accepted forms; so is anything else. Forms this build cannot act on are
+`not_supported` with an action.
 
 ## CLI
 
 `nu [--json] [--nu-path <dir>] [--api <host:port>] <command> …`. `--json` is accepted
 before or after the command and switches every command's stdout to JSON (errors stay on
-stderr). The CLI uses only the `client` package (`node.Node` seam) to reach the daemon;
-daemonless commands will plug an in-process node into the same seam.
+stderr). The CLI reaches the daemon only through the `client` package (`node.Node` seam);
+daemonless commands plug `node.Local` into the same seam.

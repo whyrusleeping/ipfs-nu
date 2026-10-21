@@ -4,10 +4,11 @@ title: 'Collection item push API and URL import'
 status: todo
 priority: 2
 created: "2026-10-20"
-updated: "2026-10-20"
+updated: "2026-10-21"
 depends_on:
     - "0057"
     - "0061"
+    - "0035"
 spec_refs:
     - docs/collections.md#Ingest
     - docs/data.md#D17. Store and replication

@@ -9,7 +9,10 @@ transferring only what changed. ("Dataset" avoids confusion with atproto record 
 
 This extends [D7](names.md#d7-updates-and-following) and
 [D17](data.md#d17-store-and-replication) from small personal sites to large, frequently
-updated trees. No new record type is needed. A plain follow tracks current state, not
+updated trees. No new record type is needed. A follow is stored as a mirror-preset dataset
+with a `name` source in the daemon's [local cluster](cluster.md#d20-clusters), so follows and
+datasets share one listing and status model; D19 is the sync engine behind both. A plain
+follow tracks current state, not
 archival history: it may keep old bytes as a safeguard, but offers no history lookup.
 [Archive datasets](cluster.md#version-history), including the simple one-node case, preserve
 selected versions explicitly. CID access still works for any old content that remains held.

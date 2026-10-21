@@ -15,6 +15,9 @@ item metadata ([D3](data.md#d3-directory-trees)), holdings chosen by members, un
 for several ingest writers, an item push API for producers, and item-level holdings
 reports.
 
+"Collection" here has the STAC sense. atproto record collections are always called NSIDs
+in Nu's interfaces (for example the `atrepo` source's `nsids` filter).
+
 ## D22. Collections
 
 ### Design target

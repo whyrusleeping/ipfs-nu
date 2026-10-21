@@ -91,11 +91,16 @@ paths. This, plus delta sync of large changing trees, is specified in
 nu://alice.example.com/site/docs/intro.html
 nu://did:plc:abc…/site
 nu://bafyrei…/docs/intro.html
-nu://bafyrei…?via=did:plc:abc…&peer=/p2p/<peerid>&relay=<circuit multiaddr>
+nu://bafyrei…?peer=<peerid>&addr=<multiaddr>…&via=did:plc:abc…
 rasl://bafkr4i…/?hint=host.example
 at://alice.example.com/app.bsky.feed.post/3k…        # any atproto record (D21)
 https://seed.example/tree/<cid>/docs/intro.html
 ```
+
+`nu share` prints the shortest link that works for the recipient: the CID plus the sharer's
+base36 PeerId, adding `addr=` multiaddrs (direct or relay circuit) only when no lookup source
+(dnsaddr, routing v1, mDNS) can supply them. Links are meant to be pasted into chat, so
+hints stay few and the CID comes first.
 
 HTTPS share links require an explicitly serving public seed/gateway with configured TLS;
 they are not automatic uploads or a project hosting guarantee. Nu-aware links carry provider

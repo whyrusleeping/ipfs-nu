@@ -92,11 +92,12 @@ names have no history; dataset archives have explicit history/availability seman
 ## User experience
 
 ```text
-nu init                              # ed25519 node key, ~/.nu store and config
-nu daemon                            # local API :5171, gateway :8171
+nu init                              # optional: any command initializes $NU_PATH on first use
+nu daemon                            # libp2p UDP :4171, local API :5171, gateway :8171
+nu status                            # one summary: daemon, reachability, shares, datasets, cluster
 nu doctor                            # plain-language reachability and recovery actions
 
-nu add photo.jpg                     # MASL file node with metadata → BLAKE3 raw blob
+nu add photo.jpg                     # MASL file node with metadata → BLAKE3 raw blob; prints CID + share link
 nu add --raw photo.jpg               # whole-file blob CID
 nu add --hash sha256 photo.jpg       # core-DASL blob ≤ 8 MiB (browser/atproto-verifiable, no Bao)
 nu add -r ./dir                      # tree CID; unchanged files not rehashed
@@ -108,7 +109,7 @@ nu cat <cid>
 nu get <cid-or-link> [-o path]
 nu ls <tree-cid>[/sub/path]
 nu pin add|rm|ls <cid>
-nu share <cid>                       # peer/relay hints; HTTPS/rasl:// link when a public seed serves it
+nu share <cid>                       # short link with peer hints; HTTPS/rasl:// link when a public seed serves it
 
 nu dag get <cid>[/path] | dag put    # DRISL ↔ atproto-style JSON ($link/$bytes)
 nu car import|export <cid|file> [--profile nu-tree|atrepo|drisl]
@@ -124,12 +125,14 @@ nu resolve alice.example.com/<name>
 nu get alice.example.com/<name>[/path]
 nu names | unpublish
 nu follow alice.example.com[/name] [--path p] [--lazy] [--max-size n] [--no-announce]
-nu follow ls | nu unfollow <name>    # observed/syncing/held, mode, lag and blockers
+nu follow ls | nu unfollow <name>    # a follow is a local mirror dataset: observed/syncing/held, lag, blockers
 nu devices
 
-nu cluster init|invite|join|status   # integrated; a one-node archive needs no PDS
-nu cluster dataset create|add|edit|update|status <ds>   # sources: local, Nu name, atproto account
-nu cluster dataset versions|diff|label|rollback <ds>
+nu dataset create <ds> --archive|--mirror [--source …]  # one-node datasets: no cluster setup, no PDS
+nu dataset add|edit|update|status|versions|diff|label|rollback <ds>  # sources: local, Nu name, atproto account
+
+nu cluster init|invite|join|status   # multi-machine: same dataset verbs as `nu cluster dataset …`
+nu cluster dataset create|add|edit|update|status|versions|diff|label|rollback <ds>
 nu cluster collection items|rules|where <ds>        # item metadata, local selection, copies per item
 nu cluster collection put <ds> <path> --meta m.json … # producer pushes an item (upload, path or URL)
 nu cluster export|import             # verified content bundles; keys backed up separately
@@ -142,6 +145,24 @@ runs and machine-readable results; precise new flag/API syntax is implementation
 work, not settled by this inventory. First share must not require cluster administration.
 See [product journeys](docs/product.md#progressive-experience) and [links](docs/names.md#links).
 
+**First run.** Any command initializes `$NU_PATH` (default `~/.nu`) if absent. When no daemon
+is running, `get`, `cat`, `ls` and `share` run an in-process node for the duration of the
+command, so a recipient can install the binary and immediately `nu get <link>`. A
+foreground `nu share` keeps serving until interrupted and says so; the shared content is
+available only while some holder is online.
+
+**Targets.** `get`, `cat` and `ls` parse their argument in this order:
+
+| Form | Meaning |
+|---|---|
+| `nu://…`, `at://…`, `rasl://…` | Link, atproto record/repo, RASL fetch |
+| `b…` CID, then optional `/path` | Immutable content |
+| `<handle-or-did>/<name>[/path]` | Public name; the first segment contains a `.` or starts with `did:` |
+| `<dataset>[@<version>][/path]` | This daemon's dataset; dataset names match `[a-z0-9-]+`, so never contain `.` |
+
+Anything else is an error that lists these forms. `nu add` alone accepts local paths and
+`https://` URLs.
+
 ## Architecture
 
 Two independent planes:
@@ -151,7 +172,7 @@ Two independent planes:
 - **Data plane:** libp2p sessions carry verified bytes, trees and cluster-local signed state.
   Fetchers locate providers through hints, publisher nodes, LAN and optional routing services.
 
-The CLI talks to the daemon API. The daemon composes naming, networking, fetching, local
+The CLI talks to the daemon API, or to an in-process node when no daemon runs. The daemon composes naming, networking, fetching, local
 storage, history and replication; the gateway serves verified retrieved content. Cached
 names and CID retrieval work during atproto outages. Seeds retain published content; an
 exact-target wait, not a publication write, tells a laptop when it may sleep.
@@ -163,11 +184,25 @@ connectivity can therefore develop in parallel rather than one waiting for the o
 
 - API: `127.0.0.1:5171`, versioned JSON HTTP/OpenAPI; non-loopback requires authentication.
   No Kubo API compatibility. Stable errors, exit categories and structured status.
+- API conventions, shared by every endpoint and CLI command: one error envelope
+  `{error: {code, message, action?, details?}}` with stable codes mapped to CLI exit
+  categories; `--json` on every command; list endpoints page with opaque cursors (`?since=`,
+  `?cursor=`) and answer `resync` rather than an empty delta when a cursor has expired;
+  long-running work (fetch, follow sync, add/import, item push, migration, bundles) is an
+  **operation** resource with an ID, exact target, stage, progress, NDJSON event stream and
+  `wait` with timeout. The CLI shows TTY progress from the same events and is built only on
+  the public Go `client` package.
 - Gateway: loopback by default, port `8171`; `/nu/<handle>/<name>/<path>`, `/tree/<cid>/…`,
   `/blob/<cid>`, `/c/<dataset>[@<version>]/<path>`, `/at/<did>[@<rev>]/…` (held atproto
   snapshots, inert rendering) and `/.well-known/rasl/<cid>`. Active untrusted content
   (including MASL bundles) needs isolated origins or a safe non-active fallback, not
-  unrestricted same-origin path hosting.
+  unrestricted same-origin path hosting. The planned local mechanism is one origin per
+  root, `http://<cid>.localhost:8171/` (a 36-byte CID is 59 base32 characters, within a
+  DNS label); the [security contract](docs/operations.md#api-gateway-and-public-exposure)
+  must verify it in each browser, including Safari, before path routes render active content.
+- Local layout: `$NU_PATH` (default `~/.nu`) holds `config.toml`, the node key, the SQLite
+  database and the blob directory. Config keys are dotted TOML paths (`gc.release_delay`);
+  `nu config get|set` edits them. Linux servers use `NU_PATH=/var/lib/nu`.
 - Public seed/gateway: explicit HTTPS serving, listings/downloads and `Range` early enough
   for browser magic. Convenience browser reads trust gateway/TLS; Nu-aware clients verify
   hashes/proofs. Verified HTTP range/proof mapping is separately specified before claiming it.
@@ -198,6 +233,11 @@ access policy.
 
 ## D18. Implementation layout
 
+Module `github.com/whyrusleeping/nu`. Packages are ordinary importable packages; the project
+does not use Go `internal/` directories. Wire and store formats, not Go APIs, are the stable
+contracts until a package is declared stable; the HTTP API and `client` are the supported
+programmatic surface.
+
 ```text
 cmd/nu/                 CLI + daemon
 core/                   CID (DASL/BDASL), DRISL, profiled MST (nu-dir, atproto v3), CAR,
@@ -218,16 +258,20 @@ cluster/                state repos, membership, placement, history, handoff, re
 collection/             facets, selection rules, union heads, holdings log and index,
                         item push API
 store/ names/ fetch/ node/ api/ gateway/ client/
+nutest/                 in-process multi-node test harness (temp stores, loopback QUIC,
+                        partitions, restarts, clock skew)
 atproto/                record fetch, repo snapshot/diff sync, atrepo dataset source (indigo)
 httpsrc/                RASL/FISL HTTPS retrieval and URL import with SSRF guards, shared by
                         fetch/names/ingest
 relay/                  circuit HOP + dnsaddr/routing server
 bridge/                 later IPFS import: Bitswap, UnixFS; enabled in standard Linux/macOS
                         production distribution, optional/build-tagged for minimal embedders
+experiments/            separate Go module for spikes; may use go-libp2p/Kubo, never imported
 ```
 
 Dependencies: stock `quic-go`, `indigo`, `lukechampine.com/blake3`, `go-cid`/`go-multiaddr`
-leaf modules, bbolt or `modernc.org/sqlite`, `miekg/dns`, Prometheus client. Adapt Tailscale's
+leaf modules, `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
+`miekg/dns`, `BurntSushi/toml`, Prometheus client. Adapt Tailscale's
 BSD-3 portmapper/netmon instead of importing `tailscale.com`. WSS/Noise/yamux, when needed
 for reach, belong to networking rather than an import-only build tag. Retain stock QUIC/TLS;
 own security-critical code requires parser fuzzing, interop, NAT lab and independent review.
@@ -241,7 +285,7 @@ release order. Sharing and keeping must reuse foundations but have independent t
 
 | Gate | Scope | Exit criteria |
 |---|---|---|
-| **0 — Foundations and risk retirement** | Scaffold, Linux/macOS, canonical DASL formats/store and atproto repo core, libp2p wire, security contracts, Q2/Nu-path spikes, pilot selection | Fuzz/vector/interop evidence, including DASL test suite and atproto interop vectors; bounded discovery/path experiments; defined browser and readiness mechanisms before dependent features ship |
+| **0 — Foundations and risk retirement** | Scaffold, Linux/macOS, canonical DASL formats/store and atproto repo core, local walking skeleton (CLI/API/gateway on the core store, in-process multi-node harness), libp2p wire, security contracts, Q2/Nu-path spikes, pilot selection | Fuzz/vector/interop evidence, including DASL test suite and atproto interop vectors; bounded discovery/path experiments; defined browser and readiness mechanisms before dependent features ship |
 | **1 — First magic preview** | Hint/LAN/direct + bounded development relay retrieval, bytes/trees, resumable fetch, CLI/local gateway (incl. RASL, `dag`/`car`), explicitly operated preview HTTPS seed | Fresh users add/share/get/browse without an account on declared networks; two laptops share 10 GB/10k-file tree; 3-peer verified download and restart; HTTPS via a supplied preview seed or operator's domain/TLS, not automatic project hosting; no DHT/hard-NAT prerequisite |
 | **2a — CollGS pilot preview** | Thin private-mode slice parallel with 1, for the [CollGS pilot](docs/validation.md#pilot-candidates): direct/mDNS sessions, signed membership/dataset/writer-head state, collections with `replicas: 0` (selection, rescue, union heads, holdings index), item push API and URL import, versioned index/push JSON API. Excludes placement, readiness evidence, history, public networking, names and RASL | CollGS pilot criteria on a multi-host private deployment with vmx's producer and dashboard; published preview limits (trusted members, no guaranteed copies, measured throughput/catalog/index figures) |
 | **2 — Real users pilot** | Trusted archive track parallel with 1: one-node mirror/archive presets, clusters, basic history, policy readiness, repair/drain, capacity and restore, atproto-account datasets, collection floor placement. Public seed track adds OAuth/names/follow and `at://` record fetch after gate 1 connectivity and naming security | Linux/macOS one-node archive/update/historical read/restore (including APFS crash/sleep/filename tests); 3+ Linux storage members enforce copies/zones and honest unknown/degraded status; repair with surviving data/capacity/authority, crash/disk/partition/key-restore tests. Separately, named publication + exact-seed wait survives laptop sleep |
@@ -260,6 +304,12 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
   Nu Kademlia protocol ID if needed. Hint/local retrieval is independent of the outcome.
 - **Public infrastructure:** operators, funding, admission/abuse/quotas, regional deployment
   and domain control before default-service promises; account-free sharing remains a goal.
+  A share-link HTTPS gateway (streaming from an online sharer, download-only on a sandbox
+  domain, capped, uncached) would give browser recipients the first-share magic without
+  hosting obligations; it is a proposal with abuse/cost questions, not a commitment.
+- **Name:** the product/binary name `nu` is provisional and clashes with Nushell's `nu`
+  executable. Keep the name in few places (`cmd/nu`, one constant, `NU_` env prefix) so a
+  rename stays mechanical.
 - **Operational mechanisms:** exact-version confirmations, freshness/epoch binding and safe
   release during partitions; retention availability, conflict handling and budget accounting.
   Product contracts do not substitute for these wire/store rules.
@@ -276,8 +326,8 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
 - **Migration:** supported UnixFS/DAG profile, installation adapters and provenance manifest.
 - **Lifecycle/portability:** DID-wide following, quotas for future names, macOS metadata,
   filename/symlink safety, export stability, upgrades and key/state recovery procedures.
-- **Embedded DB:** bbolt versus pure-Go SQLite. PDS file serving remains deferred/disfavored;
-  upstream QUIC multipath may be reconsidered without requiring a quic-go fork.
+- **Deferred:** PDS file serving remains deferred/disfavored; upstream QUIC multipath may be
+  reconsidered without requiring a quic-go fork.
 
 Protocol references live with the relevant technical docs. Unresolved mechanisms have
 backlog tasks and feature gates; neither new documents nor a green task status constitute

@@ -4,10 +4,11 @@ title: 'First magic preview exit: different NATs, 10 GB/10k-file tree, browser a
 status: todo
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0028"
-    - "0024"
+    - "0020"
+    - "0003"
     - "0011"
 spec_refs:
     - Milestones

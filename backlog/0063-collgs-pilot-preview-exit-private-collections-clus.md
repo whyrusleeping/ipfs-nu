@@ -8,7 +8,6 @@ updated: "2026-10-21"
 depends_on:
     - "0057"
     - "0059"
-    - "0034"
 spec_refs:
     - Milestones
     - docs/validation.md#Pilot candidates

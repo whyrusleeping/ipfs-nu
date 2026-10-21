@@ -4,11 +4,11 @@ title: Linux/macOS distribution, store upgrades, backup/export and clean-machine
 status: todo
 priority: 1
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-21"
 depends_on:
     - "0009"
     - "0035"
-    - "0036"
+    - "0064"
 spec_refs:
     - docs/operations.md#Authority, administration and recovery
     - docs/operations.md#Acceptance scenarios

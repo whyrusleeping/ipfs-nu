@@ -72,7 +72,8 @@ project hosts content indefinitely.
 
 ### Keep versions
 
-Create a dataset with a visible `mirror` or `archive` preset. Mirror tracks a current usable
+Create a dataset with a visible `mirror` or `archive` preset (`nu dataset create`, with no
+cluster setup; a follow is a mirror dataset). Mirror tracks a current usable
 version plus its update safeguard; archive enables explicit retention and historical access.
 Neither preset requires understanding how MSTs or signed repositories work. A one-storage-
 member archive preset explicitly selects `replicas: 1` with no spread requirement and displays “ready at one copy,”

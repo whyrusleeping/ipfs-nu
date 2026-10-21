@@ -1,10 +1,10 @@
 ---
 id: "0031"
 title: 'Spec D19: following large, changing datasets (pin + track updates)'
-status: in_review
+status: done
 priority: 3
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-21"
 depends_on: []
 spec_refs:
     - docs/follow.md#D19. Following large, changing trees

@@ -4,11 +4,10 @@ title: '0b: Circuit relay v2 (client, STOP, hop server `nu relay` with full-serv
 status: todo
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0010"
     - "0012"
-    - "0035"
 spec_refs:
     - docs/networking.md#D10. Home relays
 ---

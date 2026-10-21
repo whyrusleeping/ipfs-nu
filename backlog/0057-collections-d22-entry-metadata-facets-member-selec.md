@@ -4,10 +4,11 @@ title: 'Collections (D22): entry metadata/facets, member-selected and rolling ho
 status: todo
 priority: 2
 created: "2026-10-20"
-updated: "2026-10-20"
+updated: "2026-10-21"
 depends_on:
     - "0007"
-    - "0028"
+    - "0065"
+    - "0027"
     - "0062"
 spec_refs:
     - docs/collections.md#D22. Collections

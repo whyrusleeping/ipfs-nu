@@ -4,11 +4,10 @@ title: '0b: disco `/nu/path/1`: candidates, authenticated probes, path selection
 status: todo
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0015"
     - "0010"
-    - "0035"
 spec_refs:
     - docs/networking.md#D11. Nu-path
     - docs/networking.md#D11c. NAT traversal and relay optimization
@@ -24,8 +23,8 @@ The disco layer of nu-path (D11 steps 3–6, baseline part of D11c steps 2–3).
 
 **Acceptance (NAT lab)**
 - Every pair where both sides are EIM, or one side is public/IPv6/mapped, goes direct, with time to direct reported.
-- **A 1 GB transfer survives an interface flap and a Wi-Fi → hotspot style address change without the QUIC connection closing.**
-- Forged/replayed probes and unauthorized destinations are rejected under the specified 0035 contract, not only a MAC check. Safe limits and negative tests precede shipping.
+- A 1 GB transfer survives an interface flap and a Wi-Fi → hotspot style address change with verified progress preserved. Report whether the inner QUIC connection stayed open (the D11 goal); the no-reconnect requirement is enforced by the 0024 networking exit, not here, so first share (0029) is not gated on it.
+- Specify the probe security contract first (in docs/networking.md, moved here from 0035): replay resistance, destination authorization, rate limits; include the extensions 0021 needs for prediction/spraying. Forged/replayed probes and unauthorized destinations are rejected under it, not only by a MAC check. Safe limits and negative tests precede shipping; request independent review.
 
 ## Acceptance criteria
 

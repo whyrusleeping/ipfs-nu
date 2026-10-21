@@ -11,7 +11,7 @@ milestones are acceptance gates, not claims of measured results.
 
 | Area | Initial QUIC profile |
 |---|---|
-| Transport | QUIC-v1 only |
+| Transport | QUIC-v1 only; default listen UDP 4171 on all interfaces (configurable; relays use 443) |
 | Security | libp2p TLS 1.3 inside QUIC |
 | Multiplexing | QUIC streams |
 | Negotiation | multistream-select 1.0, including optimistic/lazy select |
@@ -204,7 +204,7 @@ than importing the full module.
 Run sources in parallel and start dialing as soon as addresses arrive:
 
 1. Recent address cache.
-2. Link hints (`peer`, `relay` circuit multiaddrs).
+2. Link hints (`peer`, and `addr` direct or relay-circuit multiaddrs).
 3. The publisher's `nu.node` records.
 4. dnsaddr: upload a signed libp2p peer record to a lookup server, which verifies it and
    publishes TXT records at `_dnsaddr.<peerid-base36>.peers.nu.ipfs.io`. Dial with

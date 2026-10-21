@@ -1,10 +1,10 @@
 ---
 id: "0032"
 title: 'Spec D20: clusters (IPFS Cluster successor) incl. private/isolated networks'
-status: in_review
+status: done
 priority: 3
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-21"
 depends_on: []
 spec_refs:
     - docs/cluster.md#D20. Clusters

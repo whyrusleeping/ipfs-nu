@@ -212,7 +212,7 @@ A cluster or one-node dataset may use an atproto account as its source (see
 [D20 sources](cluster.md#datasets-and-updates)):
 
 ```text
-source: { atrepo: "<did>", collections?: [<nsid>…], blobs?: bool }
+source: { atrepo: "<did>", nsids?: [<nsid>…], blobs?: bool }
 head:   { target: "<commit cid>", kind: "atrepo", rev, … }
 ```
 
@@ -222,8 +222,7 @@ head:   { target: "<commit cid>", kind: "atrepo", rev, … }
   a tree equal to `data`. It falls back to a full export when the chain breaks, on `#sync`
   events or after a migration. A signed firehose `#commit` can be applied directly after
   MST-inversion validation.
-- **Versions** are verified commits (by `rev`) in the dataset's version tree. `collections`
-  scopes which records count as the dataset. Unchanged records and MST subtrees are shared
+- **Versions** are verified commits (by `rev`) in the dataset's version tree. `nsids` scopes which record collections count as the dataset. Unchanged records and MST subtrees are shared
   between versions.
 - **Redistribution limits:** atproto expects mirrors to honour deletions and account status
   promptly and not to redistribute static snapshots in bulk. For accounts the dataset owner

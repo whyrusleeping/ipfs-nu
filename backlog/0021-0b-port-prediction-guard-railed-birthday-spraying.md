@@ -4,11 +4,10 @@ title: '0b+: Port prediction + guard-railed birthday spraying for hard NATs'
 status: todo
 priority: 3
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0017"
     - "0018"
-    - "0035"
 spec_refs:
     - docs/networking.md#D11c. NAT traversal and relay optimization
 ---

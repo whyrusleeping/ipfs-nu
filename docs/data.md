@@ -208,8 +208,10 @@ not depend on Amino; a routing fallback is not a second content model.
   limit, while `--hash sha256` imports keep the 8 MiB whole-object limit. The add result
   records the URL, validators and size as provenance, and `--meta` can carry them into a
   tree entry.
-- Use an embedded DB (bbolt or pure-Go SQLite) for DRISL blocks, pins, name cache, follow state,
-  and peer/address caches. Files in `~/.nu` have mode `0600`.
+- Use embedded SQLite (`modernc.org/sqlite`, pure Go) for DRISL blocks, pins, name cache,
+  follow/dataset state, collection indexes and peer/address caches; blobs and outboards are
+  files. The schema carries a version and forward migrations from the first release. Files
+  in `$NU_PATH` have mode `0600`.
 - Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster,
   cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)), or collection-select,
   collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk

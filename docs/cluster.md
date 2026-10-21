@@ -13,6 +13,16 @@ A node following a dataset ([D19](follow.md)) is the one-node case. A cluster ad
 shared state, membership, placement across members, handoff and repair. Members reuse D19's
 delta sync, completeness marks and atomic switches, restricted to the blobs they own.
 
+**Local cluster.** Every daemon has an implicit one-member **local cluster**, created on first
+use with its own root/admin key in `$NU_PATH`. It has no network exposure, so it coexists with
+any mode. `nu dataset …` operates on it with the same verbs, records, presets, history and
+status as `nu cluster dataset …`; follows are mirror-preset datasets in it with a `name`
+source. A one-node archive is therefore `nu dataset create photos --archive`, with no cluster
+administration. A daemon additionally belongs to at most one networked cluster in v1.
+Dataset names match `[a-z0-9-]+` and are unique per daemon across its local and networked
+cluster, so `<dataset>@<version>` and `/c/<dataset>` are unambiguous. Moving a local dataset
+into a networked cluster is an explicit export/import of its versions, not a merge of authorities.
+
 ## D20. Clusters
 
 ### Design target
@@ -107,7 +117,7 @@ concurrent snapshots subject to explicit retention and content availability.
 |---|---|
 | `{local: true}` | The merged `head/<name>` record, written by admins or listed writers |
 | `{name: "at://…/io.ipfs.nu.name/<n>"}` | An external Nu name, followed as in D19; requires name-plane access or [bundles](#air-gap-bundles) |
-| `{atrepo: "<did>", collections?, blobs?}` | The latest verified commit of an atproto account ([D21](dasl.md#atproto-accounts-as-archive-datasets)); third-party history is private by default |
+| `{atrepo: "<did>", nsids?, blobs?}` | The latest verified commit of an atproto account ([D21](dasl.md#atproto-accounts-as-archive-datasets)); third-party history is private by default |
 | `{local: true, ingest?: {hosts, limits}}` | A collection's union head, fed by producers pushing items to writer members ([D22](collections.md#ingest)) |
 
 A fixed CID pin is a local dataset whose head never changes: `nu cluster pin <cid>`.
@@ -411,7 +421,7 @@ Neither mode sends any traffic, even encrypted, through third parties.
   the TLS handshake and learn its PeerId, but cannot open streams. Deployments needing
   concealment rely on network isolation, which isolated mode assumes, or a VPN.
 - **Connectivity:** private and isolated modes assume no NAT between members. Storage members
-  must be directly reachable from each other on one UDP port, over a flat or routed network,
+  must be directly reachable from each other on one UDP port (default 4171), over a flat or routed network,
   a VPN, or public addresses restricted by firewall. Clients need only outbound reachability,
   because members answer on the connection a client opens. These modes do not run relays,
   circuit reservations, AutoNAT, port mapping, nu-path or hole punching. Members dial the
@@ -482,7 +492,8 @@ nu cluster export | import
 ```
 
 The local API adds `/v1/cluster/…`. The gateway serves cluster datasets at
-`/c/<dataset>[@<version>]/<path>`.
+`/c/<dataset>[@<version>]/<path>`. `nu dataset …` and `/v1/datasets/…` are the same commands
+and endpoints applied to the [local cluster](#d20-clusters).
 
 ### Out of scope
 

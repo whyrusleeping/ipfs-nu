@@ -1,7 +1,7 @@
 ---
 id: "0057"
 title: 'Collections (D22): entry metadata/facets, member-selected and rolling holdings, rescue, union heads, holdings index'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-20"
 updated: "2026-10-21"

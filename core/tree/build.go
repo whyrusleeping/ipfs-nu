@@ -22,6 +22,10 @@ type BlobSink interface {
 type BuildOptions struct {
 	Blobs BlobSink
 	Nodes mst.Store // receives directory MST nodes and the header
+	// AddFile, when set, stores regular files instead of Blobs.AddBlob: it receives the
+	// file's path within fsys, the open file and its FileInfo, and returns the blob CID. A
+	// node uses it for --nocopy references and its import cache.
+	AddFile func(path string, f fs.File, fi fs.FileInfo) (cid.CID, error)
 }
 
 // BuildResult describes a built tree.
@@ -122,7 +126,12 @@ func (b *builder) file(p string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	c, err := b.o.Blobs.AddBlob(f, st.Size())
+	var c cid.CID
+	if b.o.AddFile != nil {
+		c, err = b.o.AddFile(p, f, st)
+	} else {
+		c, err = b.o.Blobs.AddBlob(f, st.Size())
+	}
 	if err != nil {
 		return Entry{}, fmt.Errorf("%s: %w", p, err)
 	}

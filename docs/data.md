@@ -252,12 +252,23 @@ not depend on Amino; a routing fallback is not a second content model.
   follow/dataset state, collection indexes and peer/address caches; blobs and outboards are
   files. The schema carries a version and forward migrations from the first release. Files
   in `$NU_PATH` have mode `0600`.
+- Local layout (schema version 1, `PRAGMA user_version` with forward migrations): raw
+  blobs of at most 16 KiB and DRISL blocks live in the database; larger blobs are files
+  `blobs/<xx>/<multihash hex>` with the outboard beside them as `.obao`. Writes stream
+  through `staging/` and are synced and renamed into place before their row commits, so
+  objects appear atomically and a crash leaves only orphan files, which GC removes. A partial
+  BLAKE3 blob keeps sparse data and outboard files plus a bitmap of verified groups that is
+  saved only after the data is synced; fetching resumes from it after a restart.
+- `--nocopy` blobs store only the outboard and the source's path, size and mtime. Each use
+  checks size and mtime; on a mismatch the file is re-hashed, and if it no longer matches
+  its row is dropped, so it is neither advertised nor served until re-added or fetched.
 - Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster,
   cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)), or collection-select,
   collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk
   profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
   links count and when the pin is complete.
-  GC is mark-and-sweep with a size watermark. Explicit releases (unfollow, unpin, collection
+  GC is mark-and-sweep with a size watermark; unpinned objects younger than a grace period
+  survive so in-progress adds and fetches are not collected before they are pinned. Explicit releases (unfollow, unpin, collection
   release) may also trigger an incremental sweep of the released content.
 - `nu follow` pins newly resolved targets according to policy. Retain the previous pinned
   target as a replication safeguard, not as publication history. Large, frequently updated
@@ -280,8 +291,8 @@ The design above selects the format and protocol families, not yet every wire by
 precision work includes extraction rules (filenames, case, symlinks on export), Bao
 multi-range framing, and tree proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Logical size,
-unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches,
-export compatibility and no-copy invalidation remain to specify. Benchmarks must validate
+unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches
+and export compatibility remain to specify. Benchmarks must validate
 fanout/node-size behavior and actual archive update/storage costs.
 
 ## References

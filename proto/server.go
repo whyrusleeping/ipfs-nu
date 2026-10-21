@@ -27,9 +27,13 @@ type ServerConfig struct {
 	RequestTimeout time.Duration
 	// StallTimeout resets a response the peer stops reading for this long (default 30s).
 	StallTimeout time.Duration
+	// TreeFrames and TreeBytes are the /nu/tree/1 response budget: data frames and their
+	// bytes (DefaultTreeFrames, DefaultTreeBytes). A response always carries one frame.
+	TreeFrames int
+	TreeBytes  int
 }
 
-// Server answers /nu/bytes/1 and /nu/have/1 from a store.
+// Server answers /nu/bytes/1, /nu/have/1 and /nu/tree/1 from a store.
 type Server struct {
 	st     *store.Store
 	cfg    ServerConfig
@@ -65,6 +69,12 @@ func NewServer(st *store.Store, cfg ServerConfig) *Server {
 	if cfg.StallTimeout <= 0 {
 		cfg.StallTimeout = 30 * time.Second
 	}
+	if cfg.TreeFrames <= 0 {
+		cfg.TreeFrames = DefaultTreeFrames
+	}
+	if cfg.TreeBytes <= 0 {
+		cfg.TreeBytes = DefaultTreeBytes
+	}
 	return &Server{st: st, cfg: cfg, active: make(map[string]int), peers: make(map[peerProto]int)}
 }
 
@@ -75,7 +85,10 @@ func (s *Server) Register(h *host.Host) error {
 	if err := h.Handle(BytesID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(BytesID, st.Conn().PeerID(), st, s.serveBytes) }); err != nil {
 		return err
 	}
-	return h.Handle(HaveID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(HaveID, st.Conn().PeerID(), st, s.serveHave) })
+	if err := h.Handle(HaveID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(HaveID, st.Conn().PeerID(), st, s.serveHave) }); err != nil {
+		return err
+	}
+	return h.Handle(TreeID, 2*s.cfg.MaxRequests, func(st *host.Stream) { s.serve(TreeID, st.Conn().PeerID(), st, s.serveTree) })
 }
 
 // Active reports the number of requests being served.

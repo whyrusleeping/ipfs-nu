@@ -481,7 +481,7 @@ request a non-member or non-admin may not make). Requests naming another cluster
   a CARv1: the atproto repo diff from the `since` tree to the head (or to `commit`, for a
   revocation cutoff), or a full export when the server lacks the `since` tree. The client
   verifies it as a `getRepo?since` response against the tree it holds (at most 100k blocks).
-- `heartbeat {hb: {peer, seq, time, free, used, addrs?, sig}}` answers `{status}`; `sig` is the
+- `heartbeat {hb: {peer, seq, time (Unix ms), free, used, addrs?, sig}}` answers `{status}`; `sig` is the
   member's node-key signature over `"nu.cluster.heartbeat.v1\0" ‖ DRISL(hb without sig)`.
   Members send one to every connected member each interval (30 s).
 - `join {invite, proof, addrs?}` and, between members, `admit {invite, proof, peer, addrs?}`

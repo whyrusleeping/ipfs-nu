@@ -1,0 +1,8 @@
+bao_test_vectors.json: https://github.com/oconnor663/bao tests/test_vectors.json
+  commit 3466bb34287f10f746d29d899d92429b81cf4302 (unmodified; CC0-1.0 OR Apache-2.0)
+  Standard Bao, 1 KiB chunks (group log 0).
+abao_test_vectors.json: https://github.com/n0-computer/abao tests/test_vectors.json
+  commit 9b756ec8097afc782d76f7aec0a5ac9f4b82329a (unmodified; CC0-1.0 OR Apache-2.0)
+  Same generator with 16 KiB chunk groups (group log 4), Nu's outboard granularity.
+Input bytes: 4-byte little-endian counter starting at 1, truncated to input_len.
+Used by core/blob.

@@ -30,6 +30,16 @@ space overhead. Use `lukechampine.com/blake3/bao`; cross-check encoding vectors 
 `bao-tree` at the same group size. BLAKE3 roots match iroh-blobs, but Nu uses its own
 transfer protocol and does not depend on iroh-blobs.
 
+- The outboard is a standard Bao outboard at group log 4: the blob size as 8 bytes little
+  endian, then each parent node (left and right chaining values, 64 bytes) in pre-order.
+  Blobs of at most 16 KiB have no outboard and are verified whole.
+- Ranges are half-open chunk-group ranges `[start, end)`. A range is sent as a standard Bao
+  slice (size header, then the parents on the path and the range's groups in pre-order),
+  checked group by group as it arrives; receivers keep the parents they verify, so they can
+  serve the groups they hold.
+- A byte range `[a, b)` maps to groups `[⌊a / 16384⌋, ⌈min(b, size) / 16384⌉)`. An empty or
+  past-the-end byte range maps to the single group holding its (clamped) start.
+
 Downloads support independently verified ranges, resume and multiple providers. Verify data
 before exposing or serving it; drop peers that supply invalid data. Completed ranges can be
 served onward before the whole blob is present.
@@ -57,6 +67,36 @@ header: { $type: "io.ipfs.nu.tree", v: 1, root: <dir cid>, files, bytes, collect
 directory point directly to raw blobs; their entries carry the metadata. A directory can
 span multiple MST nodes. Tree transfer streams path proofs in one request and skips shared
 subtrees during updates.
+
+**Encoding (nu-dir profile, v1).** A key's layer is the number of leading zero bits of
+SHA-256(name) divided by 4. The tree for a set of names is one node holding, in name order
+(bytewise), the names of the highest layer present, with the trees of the remaining names
+in each gap before, between and after them; empty gaps have no subtree. No empty nodes exist
+except the root of an empty directory, so the root CID depends only on the entries. Nodes
+are SHA-256 DRISL:
+
+```text
+node:  { e: [ { k: <name>, v: <entry>, t?: <right subtree cid> } … ], l?: <left subtree cid> }
+```
+
+Decoders accept only the canonical encoding (no unknown keys) and check on every load that
+names are sorted, share one layer below the parent's, and lie inside the parent gap. A node
+over 1 MiB is not produced: the add fails and names the directory. Vectors are in
+`testdata/vectors/nu-tree/`.
+
+**Entries.** Names are non-empty UTF-8 of at most 255 bytes without `/` or NUL, not `.` or
+`..`, kept byte-exact (no Unicode normalization); others are refused on import with a
+"rename or exclude" message. Devices, sockets and FIFOs are skipped and reported.
+- `file`: `cid` is the raw blob, `size` its length. `mode` is `0o755` when the owner-execute
+  bit is set and absent otherwise; other permission bits and times are not recorded, so
+  trees are reproducible across umasks.
+- `dir`: `cid` is the directory's MST root; `size` is the sum of its entries' sizes.
+- `symlink`: `cid` is a raw blob of the target bytes, `size` their length. Symlinks are
+  recorded, never followed.
+- The importer sets no `mime` (type guessing is machine-dependent). In the header, `files`
+  counts file entries in the whole tree and `bytes` is the root directory's `size`.
+- nu-tree walk and CAR pre-order: header → root; directory node → left subtree, then per
+  entry its target, its `meta` and its right subtree; file node → `src`.
 
 `meta` links a file or directory entry to an application metadata record: generic SHA-256
 DRISL of at most 64 KiB, such as a STAC item subset or a catalogue record. Metadata is
@@ -212,12 +252,23 @@ not depend on Amino; a routing fallback is not a second content model.
   follow/dataset state, collection indexes and peer/address caches; blobs and outboards are
   files. The schema carries a version and forward migrations from the first release. Files
   in `$NU_PATH` have mode `0600`.
+- Local layout (schema version 1, `PRAGMA user_version` with forward migrations): raw
+  blobs of at most 16 KiB and DRISL blocks live in the database; larger blobs are files
+  `blobs/<xx>/<multihash hex>` with the outboard beside them as `.obao`. Writes stream
+  through `staging/` and are synced and renamed into place before their row commits, so
+  objects appear atomically and a crash leaves only orphan files, which GC removes. A partial
+  BLAKE3 blob keeps sparse data and outboard files plus a bitmap of verified groups that is
+  saved only after the data is synced; fetching resumes from it after a restart.
+- `--nocopy` blobs store only the outboard and the source's path, size and mtime. Each use
+  checks size and mtime; on a mismatch the file is re-hashed, and if it no longer matches
+  its row is dropped, so it is neither advertised nor served until re-added or fetched.
 - Pins are recursive or direct and tagged by source: explicit, follow, my-names, cluster,
   cluster-surplus ([D20](cluster.md#sync-handoff-and-repair)), or collection-select,
   collection-manual or collection-conflict ([D22](collections.md#selection)). Recursive pins name a walk
   profile (`nu-tree`, `atrepo`, `drisl`; [D21](dasl.md#walk-profiles)) that defines which
   links count and when the pin is complete.
-  GC is mark-and-sweep with a size watermark. Explicit releases (unfollow, unpin, collection
+  GC is mark-and-sweep with a size watermark; unpinned objects younger than a grace period
+  survive so in-progress adds and fetches are not collected before they are pinned. Explicit releases (unfollow, unpin, collection
   release) may also trigger an incremental sweep of the released content.
 - `nu follow` pins newly resolved targets according to policy. Retain the previous pinned
   target as a replication safeguard, not as publication history. Large, frequently updated
@@ -237,12 +288,11 @@ not depend on Amino; a routing fallback is not a second content model.
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes canonical MST/node encoding and overflow behavior, filename and
-symlink rules, exact `size` semantics, Bao multi-range framing, and tree proof/cursor
-validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
+precision work includes extraction rules (filenames, case, symlinks on export), Bao
+multi-range framing, and tree proof/cursor validation and progress rules. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Logical size,
-unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches,
-export compatibility and no-copy invalidation remain to specify. Benchmarks must validate
+unique physical attribution, enforced transfer budgets, crash-consistent pin/held switches
+and export compatibility remain to specify. Benchmarks must validate
 fanout/node-size behavior and actual archive update/storage costs.
 
 ## References

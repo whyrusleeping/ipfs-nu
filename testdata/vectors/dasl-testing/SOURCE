@@ -1,0 +1,6 @@
+https://github.com/hyphacoop/dasl-testing
+commit fe880a1ef6891c22af02695d1d76430b9d8bfc91
+files: fixtures/cbor/*.json (unmodified), LICENSE (MIT)
+Used by core/drisl (DRISL + DASL/BDASL CID cases). Nu applies cases tagged
+dag-cbor, basic or dasl-cid; cases tagged only rfc8949/CBOR-Core/dCBOR/CDE
+describe other CBOR profiles.

@@ -1,0 +1,134 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Nu local API",
+    "version": "0",
+    "description": "Loopback-only JSON API of the Nu daemon. Every error is {\"error\": {code, message, action?, details?}}; codes are stable and map to CLI exit categories (see api/apiv0). List endpoints page with opaque cursors and answer resync:true when a cursor expired. Long-running work is an operation with an ID, exact target, stage, progress, NDJSON event stream and wait. Requests must carry a loopback Host with this listener's port; state-changing requests with a foreign Origin or a cross-site Sec-Fetch-Site are rejected; no CORS headers are ever sent."
+  },
+  "servers": [{"url": "http://127.0.0.1:5171/api/v0"}],
+  "paths": {
+    "/status": {
+      "get": {"summary": "Daemon summary: version, process, paths, operation counts", "responses": {"200": {"$ref": "#/components/responses/Status"}}}
+    },
+    "/openapi.json": {
+      "get": {"summary": "This document", "responses": {"200": {"description": "OpenAPI document"}}}
+    },
+    "/operations": {
+      "get": {"summary": "List retained operations, oldest first", "parameters": [{"$ref": "#/components/parameters/cursor"}, {"$ref": "#/components/parameters/limit"}],
+        "responses": {"200": {"$ref": "#/components/responses/OperationPage"}, "400": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/operations/{id}": {
+      "get": {"summary": "Get one operation", "parameters": [{"$ref": "#/components/parameters/id"}],
+        "responses": {"200": {"$ref": "#/components/responses/Operation"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/operations/{id}/events": {
+      "get": {"summary": "Stream events as NDJSON (one Event per line) from seq `since`, ending after the done event",
+        "parameters": [{"$ref": "#/components/parameters/id"}, {"name": "since", "in": "query", "schema": {"type": "integer", "minimum": 0}, "description": "last seq already seen; 0 replays everything"}],
+        "responses": {"200": {"description": "NDJSON stream", "content": {"application/x-ndjson": {"schema": {"$ref": "#/components/schemas/Event"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/operations/{id}/wait": {
+      "get": {"summary": "Block until the operation finishes or the timeout elapses (default 30s, max 5m)",
+        "parameters": [{"$ref": "#/components/parameters/id"}, {"name": "timeout", "in": "query", "schema": {"type": "string"}, "description": "Go duration, e.g. 30s"}],
+        "responses": {"200": {"$ref": "#/components/responses/Operation"}, "408": {"description": "timeout; details.operation holds the current snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/operations/{id}/cancel": {
+      "post": {"summary": "Cancel a running operation", "parameters": [{"$ref": "#/components/parameters/id"}],
+        "responses": {"200": {"$ref": "#/components/responses/Operation"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/add": {
+      "post": {"summary": "Start an add operation (result: AddResult). Not implemented in this build.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddRequest"}}}},
+        "responses": {"202": {"$ref": "#/components/responses/Operation"}, "400": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/cat": {
+      "get": {"summary": "Stream the bytes of a CID target. Not implemented in this build.", "parameters": [{"$ref": "#/components/parameters/target"}],
+        "responses": {"200": {"description": "content bytes", "content": {"application/octet-stream": {}}}, "400": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/ls": {
+      "get": {"summary": "List a directory target. Not implemented in this build.", "parameters": [{"$ref": "#/components/parameters/target"}],
+        "responses": {"200": {"description": "listing", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Listing"}}}}, "400": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/pins": {
+      "get": {"summary": "List pins. Not implemented in this build.", "parameters": [{"$ref": "#/components/parameters/cursor"}, {"$ref": "#/components/parameters/limit"}],
+        "responses": {"200": {"description": "page of pins", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PinPage"}}}}, "501": {"$ref": "#/components/responses/Error"}}},
+      "post": {"summary": "Start a pin operation (result: Pin). Not implemented in this build.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PinRequest"}}}},
+        "responses": {"202": {"$ref": "#/components/responses/Operation"}, "400": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/pins/{cid}": {
+      "delete": {"summary": "Remove a pin. Not implemented in this build.", "parameters": [{"name": "cid", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "removed"}, "400": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/dag": {
+      "get": {"summary": "Get a DRISL object as atproto-style JSON. Not implemented in this build.", "parameters": [{"$ref": "#/components/parameters/target"}],
+        "responses": {"200": {"description": "JSON document", "content": {"application/json": {}}}, "400": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}},
+      "post": {"summary": "Store atproto-style JSON as one DRISL object. Not implemented in this build.",
+        "requestBody": {"required": true, "content": {"application/json": {}}},
+        "responses": {"200": {"description": "stored", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DagPutResult"}}}}, "501": {"$ref": "#/components/responses/Error"}}}
+    }
+  },
+  "components": {
+    "parameters": {
+      "id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
+      "cursor": {"name": "cursor", "in": "query", "schema": {"type": "string"}, "description": "opaque cursor from next_cursor"},
+      "limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 1000}, "description": "page size (default 100)"},
+      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path; other target forms answer not_supported"}
+    },
+    "responses": {
+      "Error": {"description": "error envelope", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
+      "Status": {"description": "status", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Status"}}}},
+      "Operation": {"description": "operation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Operation"}}}},
+      "OperationPage": {"description": "page of operations", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OperationPage"}}}}
+    },
+    "schemas": {
+      "Error": {
+        "type": "object", "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "enum": ["failed", "invalid_argument", "not_found", "not_supported", "not_implemented", "conflict", "timeout", "unavailable", "forbidden", "cancelled"]},
+          "message": {"type": "string"},
+          "action": {"type": "string", "description": "what to do next, in plain language"},
+          "details": {"type": "object", "additionalProperties": true}
+        }
+      },
+      "Envelope": {"type": "object", "required": ["error"], "properties": {"error": {"$ref": "#/components/schemas/Error"}}},
+      "Progress": {"type": "object", "properties": {"done": {"type": "integer"}, "total": {"type": "integer", "description": "0 when unknown"}, "unit": {"type": "string"}}},
+      "Operation": {
+        "type": "object", "required": ["id", "kind", "target", "state", "progress", "created", "updated"],
+        "properties": {
+          "id": {"type": "string"}, "kind": {"type": "string"}, "target": {"type": "string", "description": "exact target (CID, path, link), never a name"},
+          "state": {"type": "string", "enum": ["running", "succeeded", "failed", "cancelled"]},
+          "stage": {"type": "string"}, "progress": {"$ref": "#/components/schemas/Progress"},
+          "created": {"type": "string", "format": "date-time"}, "updated": {"type": "string", "format": "date-time"},
+          "result": {"description": "kind-specific, present when succeeded"}, "error": {"$ref": "#/components/schemas/Error"}
+        }
+      },
+      "Event": {
+        "type": "object", "required": ["seq", "time", "type"],
+        "properties": {
+          "seq": {"type": "integer"}, "time": {"type": "string", "format": "date-time"},
+          "type": {"type": "string", "enum": ["stage", "progress", "log", "done"]},
+          "stage": {"type": "string"}, "progress": {"$ref": "#/components/schemas/Progress"}, "message": {"type": "string"},
+          "operation": {"$ref": "#/components/schemas/Operation", "description": "final snapshot on the done event"}
+        }
+      },
+      "OperationPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Operation"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean", "description": "cursor expired: list again from the start"}}},
+      "PinPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Pin"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean"}}},
+      "Status": {
+        "type": "object", "required": ["version", "daemon", "paths", "operations"],
+        "properties": {
+          "version": {"type": "string"},
+          "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"}}},
+          "paths": {"type": "object", "properties": {"root": {"type": "string"}, "config": {"type": "string"}, "key": {"type": "string"}, "db": {"type": "string"}, "blobs": {"type": "string"}, "api_file": {"type": "string"}}},
+          "operations": {"type": "object", "additionalProperties": {"type": "integer"}}
+        }
+      },
+      "AddRequest": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "local path the daemon reads"}, "recursive": {"type": "boolean"}, "raw": {"type": "boolean"}, "hash": {"type": "string", "enum": ["", "sha256"]}, "nocopy": {"type": "boolean"}, "no_announce": {"type": "boolean"}, "pin": {"type": "boolean"}}},
+      "AddResult": {"type": "object", "required": ["cid", "size"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "size": {"type": "integer"}, "link": {"type": "string"}}},
+      "Entry": {"type": "object", "required": ["name", "cid", "type"], "properties": {"name": {"type": "string"}, "cid": {"type": "string"}, "type": {"type": "string", "enum": ["file", "dir", "blob"]}, "size": {"type": "integer"}}},
+      "Listing": {"type": "object", "required": ["target", "entries"], "properties": {"target": {"type": "string"}, "entries": {"type": "array", "items": {"$ref": "#/components/schemas/Entry"}}}},
+      "Pin": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
+      "PinRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
+      "DagPutResult": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}}
+    }
+  }
+}

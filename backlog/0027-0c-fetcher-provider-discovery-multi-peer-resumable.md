@@ -1,7 +1,7 @@
 ---
 id: "0027"
 title: '0c: Fetcher: provider discovery, multi-peer resumable blob download, tree fetch'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

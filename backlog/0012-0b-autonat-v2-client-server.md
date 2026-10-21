@@ -1,10 +1,10 @@
 ---
 id: "0012"
 title: '0b: AutoNAT v2 client + server'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-21"
 depends_on:
     - "0010"
 spec_refs:

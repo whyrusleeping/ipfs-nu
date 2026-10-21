@@ -20,6 +20,14 @@ milestones are acceptance gates, not claims of measured results.
 | Routing | Amino Kademlia client; server when publicly reachable, with limits |
 | Resources | Per-peer, per-protocol and per-connection limits |
 
+The Kademlia implementation is currently only a bounded Amino protobuf codec and
+XOR routing-table primitive in `kad/`; it does **not** yet register
+`/ipfs/kad/1.0.0`, perform network lookups, serve/store provider records, bootstrap,
+or select server mode. The codec caps messages at 64 KiB, keys at 128 bytes,
+peer lists at 20 and addresses per peer at 8 (1024 bytes each); the table uses
+k=20 and alpha=3 constants. No public-node or private-cluster DHT behavior is
+claimed until the host service and owner policy are wired and tested.
+
 Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, Helia and
 Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus
 participation. Joining Amino does not imply UnixFS/Bitswap data support.

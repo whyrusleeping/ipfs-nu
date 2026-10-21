@@ -219,6 +219,16 @@ address-change publisher lifecycle, public TLS/authoritative-DNS deployment and 
 admission/rate policy. DNSSEC and persistent lookup-directory anti-replay are not claimed.
 Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
 
+## Kademlia Amino codec and routing-table primitives (0023, partial)
+
+`go test ./kad` covers Amino message encode/decode round-trip, malformed/truncated
+input rejection, bounds, and a small randomized-peer XOR-table check. `kad.FuzzDecode`
+has fixed seeds and is exercised as part of the normal package test suite. These
+checks validate only the standalone codec/table primitives; there is no DHT host
+service yet. The in-process provide/find network, go-libp2p interop in both
+provider directions, live `NU_AMINO=1` verification, bootstrap and address-mode
+behavior have **not** been run or implemented. The DHT task remains incomplete.
+
 ## Early experiments
 
 | Experiment | Decision/evidence required |

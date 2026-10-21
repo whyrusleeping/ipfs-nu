@@ -1,0 +1,79 @@
+[
+  {
+    "comment": "empty map",
+    "keys": [],
+    "root": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"
+  },
+  {
+    "comment": "no depth, single entry",
+    "keys": ["com.example.record/3jqfcqzm3fo2j"],
+    "root": "bafyreibj4lsc3aqnrvphp5xmrnfoorvru4wynt6lwidqbm2623a6tatzdu"
+  },
+  {
+    "comment": "single layer=2 entry",
+    "keys": ["com.example.record/3jqfcqzm3fx2j"],
+    "root": "bafyreih7wfei65pxzhauoibu3ls7jgmkju4bspy4t2ha2qdjnzqvoy33ai"
+  },
+  {
+    "comment": "pretty simple, but with some depth",
+    "keys": [
+      "com.example.record/3jqfcqzm3fp2j",
+      "com.example.record/3jqfcqzm3fr2j",
+      "com.example.record/3jqfcqzm3fs2j",
+      "com.example.record/3jqfcqzm3ft2j",
+      "com.example.record/3jqfcqzm4fc2j"
+    ],
+    "root": "bafyreicmahysq4n6wfuxo522m6dpiy7z7qzym3dzs756t5n7nfdgccwq7m"
+  },
+  {
+    "comment": "trims top of tree on delete",
+    "keys": [
+      "com.example.record/3jqfcqzm3fn2j",
+      "com.example.record/3jqfcqzm3fo2j",
+      "com.example.record/3jqfcqzm3fp2j",
+      "com.example.record/3jqfcqzm3fs2j",
+      "com.example.record/3jqfcqzm3ft2j",
+      "com.example.record/3jqfcqzm3fu2j"
+    ],
+    "root": "bafyreifnqrwbk6ffmyaz5qtujqrzf5qmxf7cbxvgzktl4e3gabuxbtatv4",
+    "then": [
+      {"del": "com.example.record/3jqfcqzm3fs2j", "root": "bafyreie4kjuxbwkhzg2i5dljaswcroeih4dgiqq6pazcmunwt2byd725vi"}
+    ]
+  },
+  {
+    "comment": "handles insertion that splits two layers down",
+    "keys": [
+      "com.example.record/3jqfcqzm3fo2j",
+      "com.example.record/3jqfcqzm3fp2j",
+      "com.example.record/3jqfcqzm3fr2j",
+      "com.example.record/3jqfcqzm3fs2j",
+      "com.example.record/3jqfcqzm3ft2j",
+      "com.example.record/3jqfcqzm3fz2j",
+      "com.example.record/3jqfcqzm4fc2j",
+      "com.example.record/3jqfcqzm4fd2j",
+      "com.example.record/3jqfcqzm4ff2j",
+      "com.example.record/3jqfcqzm4fg2j",
+      "com.example.record/3jqfcqzm4fh2j"
+    ],
+    "root": "bafyreiettyludka6fpgp33stwxfuwhkzlur6chs4d2v4nkmq2j3ogpdjem",
+    "then": [
+      {"put": "com.example.record/3jqfcqzm3fx2j", "root": "bafyreid2x5eqs4w4qxvc5jiwda4cien3gw2q6cshofxwnvv7iucrmfohpm"},
+      {"del": "com.example.record/3jqfcqzm3fx2j", "root": "bafyreiettyludka6fpgp33stwxfuwhkzlur6chs4d2v4nkmq2j3ogpdjem"}
+    ]
+  },
+  {
+    "comment": "handles new layers that are two higher than existing",
+    "keys": [
+      "com.example.record/3jqfcqzm3ft2j",
+      "com.example.record/3jqfcqzm3fz2j"
+    ],
+    "root": "bafyreidfcktqnfmykz2ps3dbul35pepleq7kvv526g47xahuz3rqtptmky",
+    "then": [
+      {"put": "com.example.record/3jqfcqzm3fx2j", "root": "bafyreiavxaxdz7o7rbvr3zg2liox2yww46t7g6hkehx4i4h3lwudly7dhy"},
+      {"del": "com.example.record/3jqfcqzm3fx2j", "root": "bafyreidfcktqnfmykz2ps3dbul35pepleq7kvv526g47xahuz3rqtptmky"},
+      {"put": "com.example.record/3jqfcqzm3fx2j", "root": "bafyreiavxaxdz7o7rbvr3zg2liox2yww46t7g6hkehx4i4h3lwudly7dhy"},
+      {"put": "com.example.record/3jqfcqzm4fd2j", "root": "bafyreig4jv3vuajbsybhyvb7gggvpwh2zszwfyttjrj6qwvcsp24h6popu"},
+      {"del": "com.example.record/3jqfcqzm4fd2j", "root": "bafyreiavxaxdz7o7rbvr3zg2liox2yww46t7g6hkehx4i4h3lwudly7dhy"}
+    ]
+  }
+]

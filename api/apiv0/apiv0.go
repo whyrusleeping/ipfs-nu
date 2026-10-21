@@ -1,0 +1,343 @@
+// Package apiv0 defines the wire types of local API version 0: the error envelope with its
+// stable codes and CLI exit categories, cursor pages, operations and their events, and the
+// request/response bodies of the content endpoints. The server (api), the Go client (client)
+// and the node seam (node) share these types; the package has no I/O.
+package apiv0
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// Prefix is the URL prefix of every v0 route.
+const Prefix = "/api/v0"
+
+// OpenAPIPath is the stable path of the OpenAPI document describing this version.
+const OpenAPIPath = Prefix + "/openapi.json"
+
+// Code is a stable error code. Codes are the contract for scripts and the CLI's exit
+// categories; messages and actions are free text and may change.
+type Code string
+
+const (
+	// CodeFailed is an unclassified failure (internal error, failed operation).
+	CodeFailed Code = "failed"
+	// CodeInvalidArgument covers malformed input: bad target syntax, bad flags, bad JSON.
+	CodeInvalidArgument Code = "invalid_argument"
+	// CodeNotFound: the target, operation or route does not exist.
+	CodeNotFound Code = "not_found"
+	// CodeNotSupported: valid input that this version cannot act on yet (for example a
+	// name target before names ship).
+	CodeNotSupported Code = "not_supported"
+	// CodeNotImplemented: the endpoint exists but is not implemented in this build.
+	CodeNotImplemented Code = "not_implemented"
+	// CodeConflict: the request conflicts with current state (daemon already running,
+	// operation already finished).
+	CodeConflict Code = "conflict"
+	// CodeTimeout: a wait expired before the operation finished.
+	CodeTimeout Code = "timeout"
+	// CodeUnavailable: no daemon is reachable, or it is shutting down.
+	CodeUnavailable Code = "unavailable"
+	// CodeForbidden: the request failed the loopback/origin protections or authentication.
+	CodeForbidden Code = "forbidden"
+	// CodeCancelled: the operation was cancelled or the command interrupted.
+	CodeCancelled Code = "cancelled"
+)
+
+// Exit categories. Every CLI command exits with one of these; a code's category is
+// ExitCode(code). Flag parsing errors exit with ExitUsage like Go's flag package.
+const (
+	ExitOK             = 0
+	ExitFailed         = 1
+	ExitUsage          = 2
+	ExitNotFound       = 3
+	ExitNotSupported   = 4
+	ExitConflict       = 5
+	ExitTimeout        = 6
+	ExitUnavailable    = 7
+	ExitForbidden      = 8
+	ExitCancelled      = 9
+	ExitNotImplemented = 10
+)
+
+// ExitCode maps an error code to the CLI exit category. Unknown codes map to ExitFailed.
+func ExitCode(c Code) int {
+	switch c {
+	case CodeInvalidArgument:
+		return ExitUsage
+	case CodeNotFound:
+		return ExitNotFound
+	case CodeNotSupported:
+		return ExitNotSupported
+	case CodeNotImplemented:
+		return ExitNotImplemented
+	case CodeConflict:
+		return ExitConflict
+	case CodeTimeout:
+		return ExitTimeout
+	case CodeUnavailable:
+		return ExitUnavailable
+	case CodeForbidden:
+		return ExitForbidden
+	case CodeCancelled:
+		return ExitCancelled
+	}
+	return ExitFailed
+}
+
+// HTTPStatus maps an error code to the HTTP status the server answers with.
+func HTTPStatus(c Code) int {
+	switch c {
+	case CodeInvalidArgument:
+		return 400
+	case CodeNotFound:
+		return 404
+	case CodeNotSupported:
+		return 422
+	case CodeNotImplemented:
+		return 501
+	case CodeConflict:
+		return 409
+	case CodeTimeout:
+		return 408
+	case CodeUnavailable:
+		return 503
+	case CodeForbidden:
+		return 403
+	case CodeCancelled:
+		return 409
+	}
+	return 500
+}
+
+// Error is the single error shape of the API and the CLI. Message says what happened,
+// Action what to do next, both in plain language. Details carry machine-readable context.
+type Error struct {
+	Code    Code           `json:"code"`
+	Message string         `json:"message"`
+	Action  string         `json:"action,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+// Envelope is the JSON body of every error response: {"error": {...}}.
+type Envelope struct {
+	Error *Error `json:"error"`
+}
+
+func (e *Error) Error() string {
+	if e.Action != "" {
+		return fmt.Sprintf("%s (%s): %s", e.Message, e.Code, e.Action)
+	}
+	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
+}
+
+// Errorf builds an Error with a formatted message and no action.
+func Errorf(code Code, format string, args ...any) *Error {
+	return &Error{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// WithAction returns a copy of e with the action set.
+func (e *Error) WithAction(action string) *Error {
+	c := *e
+	c.Action = action
+	return &c
+}
+
+// WithDetail returns a copy of e with one detail added.
+func (e *Error) WithDetail(key string, value any) *Error {
+	c := *e
+	c.Details = make(map[string]any, len(e.Details)+1)
+	for k, v := range e.Details {
+		c.Details[k] = v
+	}
+	c.Details[key] = value
+	return &c
+}
+
+// NotImplemented is the error every store-dependent endpoint returns until the store lands.
+func NotImplemented(what string) *Error {
+	return &Error{
+		Code:    CodeNotImplemented,
+		Message: what + " is not implemented in this build",
+		Action:  "this is a pre-v0 build; follow the project for a release that includes it",
+	}
+}
+
+// Page is the body of every list endpoint. NextCursor is opaque and empty on the last
+// page. Resync is true when the request's cursor expired: the client must drop what it
+// has and list again from the beginning instead of treating the page as an empty delta.
+type Page[T any] struct {
+	Items      []T    `json:"items"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	Resync     bool   `json:"resync,omitempty"`
+}
+
+// State is the lifecycle state of an operation.
+type State string
+
+const (
+	StateRunning   State = "running"
+	StateSucceeded State = "succeeded"
+	StateFailed    State = "failed"
+	StateCancelled State = "cancelled"
+)
+
+// Terminal reports whether s is a final state.
+func (s State) Terminal() bool { return s != StateRunning && s != "" }
+
+// Progress is a bounded counter. Total is 0 when unknown. Unit is "bytes", "items" or
+// another plain word used in progress rendering.
+type Progress struct {
+	Done  int64  `json:"done"`
+	Total int64  `json:"total,omitempty"`
+	Unit  string `json:"unit,omitempty"`
+}
+
+// Operation is long-running work with an ID, an exact target, a stage, progress, an
+// event stream and a wait. Fetches, adds, follow syncs, item pushes, migrations and
+// bundles are all operations.
+type Operation struct {
+	ID string `json:"id"`
+	// Kind names the work: "add", "fetch", "pin", "follow", ...
+	Kind string `json:"kind"`
+	// Target is the exact thing being worked on (a CID, path or link), never a name that
+	// could resolve differently later.
+	Target   string    `json:"target"`
+	State    State     `json:"state"`
+	Stage    string    `json:"stage,omitempty"`
+	Progress Progress  `json:"progress"`
+	Created  time.Time `json:"created"`
+	Updated  time.Time `json:"updated"`
+	// Result is kind-specific and present only when State is succeeded.
+	Result json.RawMessage `json:"result,omitempty"`
+	// Error is present only when State is failed or cancelled.
+	Error *Error `json:"error,omitempty"`
+}
+
+// Done reports whether the operation reached a terminal state.
+func (o Operation) Done() bool { return o.State.Terminal() }
+
+// EventType classifies operation events.
+type EventType string
+
+const (
+	// EventStage: the stage changed; Stage is set.
+	EventStage EventType = "stage"
+	// EventProgress: the counters changed; Progress is set.
+	EventProgress EventType = "progress"
+	// EventLog: a human-readable line; Message is set.
+	EventLog EventType = "log"
+	// EventDone: the operation reached a terminal state; Operation holds the final
+	// snapshot. It is always the last event of a stream.
+	EventDone EventType = "done"
+)
+
+// Event is one line of an operation's NDJSON stream. Seq increases by one per event and
+// is the `since` cursor for resuming a stream.
+type Event struct {
+	Seq       int64      `json:"seq"`
+	Time      time.Time  `json:"time"`
+	Type      EventType  `json:"type"`
+	Stage     string     `json:"stage,omitempty"`
+	Progress  *Progress  `json:"progress,omitempty"`
+	Message   string     `json:"message,omitempty"`
+	Operation *Operation `json:"operation,omitempty"`
+}
+
+// EventStream delivers operation events in order. Next returns io.EOF after the done
+// event. Close releases the stream; it is safe to call after io.EOF.
+type EventStream interface {
+	Next(ctx context.Context) (*Event, error)
+	Close() error
+}
+
+// Status is the daemon summary. Later tasks add sections (reachability, shares, datasets,
+// cluster); existing fields keep their meaning.
+type Status struct {
+	Version string `json:"version"`
+	Daemon  Daemon `json:"daemon"`
+	Paths   Paths  `json:"paths"`
+	// Operations counts operations by state.
+	Operations map[State]int `json:"operations"`
+}
+
+// Daemon describes the running process.
+type Daemon struct {
+	PID     int       `json:"pid"`
+	Started time.Time `json:"started"`
+	// API and Gateway are the bound listen addresses as host:port.
+	API     string `json:"api"`
+	Gateway string `json:"gateway"`
+}
+
+// Paths lists the `$NU_PATH` layout.
+type Paths struct {
+	Root    string `json:"root"`
+	Config  string `json:"config"`
+	Key     string `json:"key"`
+	DB      string `json:"db"`
+	Blobs   string `json:"blobs"`
+	APIFile string `json:"api_file"`
+}
+
+// AddRequest starts an add operation. The daemon reads Path itself (API and daemon run as
+// the same user on loopback), so no upload is needed. The result of the operation is an
+// AddResult. Fields mirror `nu add` flags and will be settled by the store integration.
+type AddRequest struct {
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive,omitempty"`
+	// Raw adds a whole-file blob instead of a file node with metadata.
+	Raw bool `json:"raw,omitempty"`
+	// Hash is "" (BLAKE3 default) or "sha256" (core-DASL blob, ≤ 8 MiB).
+	Hash string `json:"hash,omitempty"`
+	// NoCopy references the local file instead of copying it into the store.
+	NoCopy bool `json:"nocopy,omitempty"`
+	// NoAnnounce adds without providing to the network.
+	NoAnnounce bool `json:"no_announce,omitempty"`
+	// Pin pins the added root (default true in the CLI).
+	Pin bool `json:"pin,omitempty"`
+}
+
+// AddResult is the result of an add operation.
+type AddResult struct {
+	CID  string `json:"cid"`
+	Name string `json:"name,omitempty"`
+	Size int64  `json:"size"`
+	// Link is the share link, when the daemon can produce one.
+	Link string `json:"link,omitempty"`
+}
+
+// Entry is one row of a directory listing.
+type Entry struct {
+	Name string `json:"name"`
+	CID  string `json:"cid"`
+	// Type is "file", "dir" or "blob".
+	Type string `json:"type"`
+	Size int64  `json:"size,omitempty"`
+}
+
+// Listing is the body of an ls.
+type Listing struct {
+	// Target is the resolved CID (with path) that was listed.
+	Target  string  `json:"target"`
+	Entries []Entry `json:"entries"`
+}
+
+// Pin is one row of the pin list.
+type Pin struct {
+	CID  string `json:"cid"`
+	Name string `json:"name,omitempty"`
+}
+
+// PinRequest adds a pin; the daemon may need to fetch the content, so it is an operation.
+type PinRequest struct {
+	CID  string `json:"cid"`
+	Name string `json:"name,omitempty"`
+}
+
+// DagPutResult is the result of storing one DRISL object.
+type DagPutResult struct {
+	CID string `json:"cid"`
+}

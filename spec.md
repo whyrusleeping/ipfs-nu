@@ -22,6 +22,7 @@ nu get alice.example.com/site/index.html
 |---|---|
 | [Product brief](docs/product.md) | Audience, magic + reliability, progressive journeys and maintainability boundaries |
 | [Operational contracts](docs/operations.md) | Readiness, served versions, retention, capacity, security, recovery and failure acceptance |
+| [Local API and CLI](docs/api.md) | `$NU_PATH` layout, error codes and exit categories, paging, operations, v0 routes, loopback protections, targets |
 | [Data, transfer and storage](docs/data.md) | CIDs, blobs, directory MSTs, file nodes, sync, discovery, pins and GC (D1–D3a, D14–D15, D17) |
 | [DASL and atproto data](docs/dasl.md) | DASL/BDASL conformance, DRISL/CAR/RASL/MASL/FISL, atproto repo profile, repo import/export/browse and archive datasets (D21) |
 | [Identity and names](docs/names.md) | Accounts, current public pointers, records, proofs, caching and updates (D4–D7) |
@@ -191,7 +192,7 @@ connectivity can therefore develop in parallel rather than one waiting for the o
   long-running work (fetch, follow sync, add/import, item push, migration, bundles) is an
   **operation** resource with an ID, exact target, stage, progress, NDJSON event stream and
   `wait` with timeout. The CLI shows TTY progress from the same events and is built only on
-  the public Go `client` package.
+  the public Go `client` package. Codes, routes and layout: [docs/api.md](docs/api.md).
 - Gateway: loopback by default, port `8171`; `/nu/<handle>/<name>/<path>`, `/tree/<cid>/…`,
   `/blob/<cid>`, `/c/<dataset>[@<version>]/<path>`, `/at/<did>[@<rev>]/…` (held atproto
   snapshots, inert rendering) and `/.well-known/rasl/<cid>`. Active untrusted content

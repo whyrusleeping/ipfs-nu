@@ -156,7 +156,8 @@ func (e *Error) WithDetail(key string, value any) *Error {
 	return &c
 }
 
-// NotImplemented is the error every store-dependent endpoint returns until the store lands.
+// NotImplemented is the error for an endpoint or command that this build does not have
+// yet (for example `get` before extraction is wired to fetching).
 func NotImplemented(what string) *Error {
 	return &Error{
 		Code:    CodeNotImplemented,
@@ -261,6 +262,17 @@ type Status struct {
 	Paths   Paths  `json:"paths"`
 	// Operations counts operations by state.
 	Operations map[State]int `json:"operations"`
+	// Store summarises the local store.
+	Store *StoreStatus `json:"store,omitempty"`
+}
+
+// StoreStatus is the store section of Status.
+type StoreStatus struct {
+	// Objects counts held objects (blocks, blobs and partial blobs).
+	Objects int64 `json:"objects"`
+	// Bytes is what the store holds on disk, excluding --nocopy sources.
+	Bytes int64 `json:"bytes"`
+	Pins  int64 `json:"pins"`
 }
 
 // Daemon describes the running process.
@@ -304,7 +316,12 @@ type AddRequest struct {
 type AddResult struct {
 	CID  string `json:"cid"`
 	Name string `json:"name,omitempty"`
-	Size int64  `json:"size"`
+	// Size is the content size in bytes: the file's length, or the tree's total.
+	Size int64 `json:"size"`
+	// Files counts file entries in an added tree.
+	Files int64 `json:"files,omitempty"`
+	// Skipped lists unsupported entries (devices, sockets, FIFOs) left out of a tree.
+	Skipped []string `json:"skipped,omitempty"`
 	// Link is the share link, when the daemon can produce one.
 	Link string `json:"link,omitempty"`
 }
@@ -313,7 +330,7 @@ type AddResult struct {
 type Entry struct {
 	Name string `json:"name"`
 	CID  string `json:"cid"`
-	// Type is "file", "dir" or "blob".
+	// Type is "file", "dir", "symlink" or "blob".
 	Type string `json:"type"`
 	Size int64  `json:"size,omitempty"`
 }
@@ -329,6 +346,10 @@ type Listing struct {
 type Pin struct {
 	CID  string `json:"cid"`
 	Name string `json:"name,omitempty"`
+	// Mode is "recursive" or "direct"; Source is who holds the pin ("explicit" for
+	// `pin add` and `add`; follow, cluster and collection sources arrive later).
+	Mode   string `json:"mode,omitempty"`
+	Source string `json:"source,omitempty"`
 }
 
 // PinRequest adds a pin; the daemon may need to fetch the content, so it is an operation.

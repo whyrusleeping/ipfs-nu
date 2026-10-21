@@ -87,6 +87,16 @@ will churn; tests that pin down internals make every change slower.
   not to feature tasks.
 - If an existing test is slow or flaky, fix or delete it rather than routing around it.
 
+**nutest** (`nutest/`) starts N real nodes in one test process: temporary `$NU_PATH`s,
+loopback QUIC on fixed ephemeral ports, mDNS off, optional API/gateway (`Options.API`).
+`nutest.New(t, 3)` takes tens of milliseconds. Peer nodes explicitly (`n.Peer`, or a share
+link from `n.Link(cid, providers...)`); inject faults with `Node.Stop/Start/Kill/Restart`
+(store intact), `n.Partition/Heal` (host connection gating) and `Node.Corrupt(true)`
+(flips bytes in `/nu/bytes/1` responses); wait with `nutest.Eventually`. Keys and
+`RandBytes` derive from `Options.Seed`. A failing test dumps every node's status and
+operations. See `nutest/nutest_test.go` for the restart-mid-transfer, partition/heal and
+corrupt-provider examples and `nutest/scenario_test.go` for the add → share → get journey.
+
 NAT and isolated-egress scenarios use the netns lab behind the `natlab` build tag; they need
 root and run in dedicated CI jobs. Wire interop with other libp2p implementations lives in
 the separate `experiments/` module (a go-libp2p smoke test per protocol before v0) and 0011.

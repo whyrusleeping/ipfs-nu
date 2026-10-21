@@ -57,7 +57,11 @@ publisher that a seed holds its bytes or that the publisher may sleep.
 
 Steps 1–4 are Nu's generic verified record fetch. `nu get at://<did>/<collection>/<rkey>`
 uses them for any collection, and repo snapshots and atproto archive datasets build on the
-same code ([D21](dasl.md#using-atproto-data)).
+same code ([D21](dasl.md#using-atproto-data)). Package `atproto` implements them
+(0053): handles by DNS TXT then `/.well-known/atproto-did`, did:plc through
+`plc.directory` and did:web, every HTTPS step through `httpsrc`'s SSRF policy (a PDS
+endpoint from a DID document is checked like any URL), identities cached for 10 minutes
+with the age exposed on each answer, and one re-resolution after a signature failure.
 
 The current PDS is the source for current repository state. Proofs establish authenticity,
 not freshness. Cached answers may be stale, including during outages; this is acceptable.

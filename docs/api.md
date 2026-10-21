@@ -107,6 +107,10 @@ GET    /api/v0/cluster/datasets            [Dataset]
 POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?} → Dataset
 GET    /api/v0/cluster/datasets/{name}     Dataset
 GET|POST /api/v0/datasets, GET /api/v0/datasets/{name}   the same, on the local cluster
+GET    /api/v0/at/record?target=at://…      AtRecord (verified record JSON with commit and rev)
+POST   /api/v0/at/snapshot  {target, blobs?} → 202 operation (result: AtSnapshot)
+POST   /api/v0/car/import   {path, profile?, key?, offline?, pin?} → 202 operation (result: CarImport)
+GET    /api/v0/car?target=<cid>&profile=    CAR bytes (application/vnd.ipld.car)
 ```
 
 `add` and `get` pass absolute local paths: API and daemon run as the same user on
@@ -185,6 +189,80 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
   (10 min) and the store runs it on a shortfall; GC passes `node.GCGrace` so unpinned
   objects of in-progress adds and fetches survive, and never removes pinned content.
 
+## atproto records, snapshots and CARs (0053)
+
+`node.AtprotoNode` (implemented by `node.Local` and `client.Client`) carries the at://
+and CAR commands; `ls`/`cat` accept at:// targets through the ordinary routes. The
+`atproto` package does every network step through `httpsrc` (SSRF guards, no ambient
+proxy or cookies) and verifies with `core/atrepo` before anything is returned or kept
+([D6](names.md#d6-resolution-and-caching), [D21](dasl.md#using-atproto-data)).
+
+- **Identity.** A handle resolves by DNS TXT `_atproto.<handle>` (`did=…`), then
+  `https://<handle>/.well-known/atproto-did`; the DID document (did:plc from
+  `plc.directory`, did:web from `/.well-known/did.json` or the path form) supplies the
+  `#atproto` signing key and the `#atproto_pds` endpoint, which must be an https origin
+  that passes the SSRF policy. A handle must appear in the document's `alsoKnownAs`
+  (bidirectional check). Identities are cached for 10 minutes; `AtRecord.identity_age`
+  exposes the age. A signature failure re-resolves once (key rotation).
+- **`get at://<did|handle>/<collection>/<rkey>`** (`GET /at/record`) fetches
+  `com.atproto.sync.getRecord`, verifies the proof (commit signature with the document
+  key and DID, MST path, record block) and returns
+  `AtRecord{uri, did, handle?, pds, collection, rkey, cid, commit, rev, value, source:
+  "pds", identity_age, data_model?}`; the CLI prints it as JSON (or writes it with `-o`).
+  The proof blocks are stored unpinned, so `dag get <commit|record cid>` works on them
+  until GC; nothing is pinned per record. A proven-absent record is `not_found`.
+- **`get at://<did|handle> [--blobs]`** (`POST /at/snapshot`) is an operation (stages
+  `resolving`, `fetching` with byte progress, `blobs`, `pinning`) that streams
+  `com.atproto.sync.getRepo` into the store (every block verified by CID; budget refusals
+  are `insufficient_storage`), verifies the whole repository (signature, every MST node
+  rebuilt and compared with `data`, every record), and pins the commit recursively under
+  the `atrepo` profile with pin name `at://<did>@<rev>`. A verification failure pins
+  nothing (the blocks fall to GC) and names what failed. With `--blobs` the records'
+  blob refs (`{$type: "blob"}` and legacy refs, from the `atrepo+blobs` walk) are fetched
+  with `getBlob`, verified as SHA-256 raw CIDs and the pin uses `atrepo+blobs`; blobs over
+  8 MiB are skipped and counted in `blobs_oversized`, failures in `blobs_failed`, at most
+  `Limits.MaxBlobs` (10,000) per snapshot. Each `get` makes a new snapshot pin; older
+  revs stay pinned until `pin rm <commit>`.
+- **Browsing.** `ls at://<did|handle>[@<rev>]` lists the held snapshot's collections
+  (`{name, cid: commit, type: "collection", size: record count}`), `ls …/<collection>`
+  its records (`type: "record"`, size in bytes), `ls …/<collection>/<rkey>` one record;
+  `cat at://…/<collection>/<rkey>` prints the record as JSON. Without `@rev` the newest
+  held rev is used; a handle is resolved to its DID first (network). When no snapshot is
+  held, `ls` snapshots the repository first (like `ls <cid>` fetches) and `cat` does a
+  live verified record fetch. `get`, `dag get` and `share` with an at:// target explain
+  the at:// commands (`invalid_argument`).
+- **`car import <file> [--profile nu-tree|atrepo|drisl] [--key k] [--offline] [--no-pin]`**
+  (`POST /car/import`, operation with stages `reading`, `verifying`, `pinning`) reads a
+  DASL CAR with exactly one root from an absolute path (the daemon reads the file), stores
+  every block (verified by CID, at most 2²⁴), and verifies under the profile, detected
+  from the root block when omitted (v3 commit → atrepo, tree header or file node →
+  nu-tree, else drisl). `atrepo` verifies the structure completely and the signature
+  with `--key` (did:key or `publicKeyMultibase`) or, otherwise, with the key of the
+  commit DID's document resolved online; `--offline` (or a failed resolution) reports
+  `signature: "unverified: …"` and still imports. `nu-tree` requires a tree header or
+  file node root; `nu-tree` and `drisl` require every reachable block to be present.
+  The result is `CarImport{root, profile, blocks, bytes, unreferenced?, objects,
+  pinned, did?, rev?, records?, non_conforming?, signature?, signed_by?}`; `atrepo`
+  imports are pinned as snapshots (`at://<did>@<rev>`), others as explicit recursive pins.
+- **`car export <cid> [--profile p] [-o file]`** (`GET /car`) streams a held, complete
+  root: `atrepo` in streamable order (`atrepo.Export`: commit, MST pre-order with records
+  interleaved, each block once, byte-identical blocks so a PDS CAR re-exports as a
+  reordered file that stock tools verify), `nu-tree` and `drisl` in pre-order
+  (`car.PreOrder`). Raw blobs over 8 MiB cannot be CAR blocks and fail the export.
+  Incomplete content is `not_found` with the missing count.
+- **Gateway** `/at/<did>[@<rev>]/`, `/at/<did>[@<rev>]/<collection>/` and
+  `/at/<did>[@<rev>]/<collection>/<rkey>` serve held snapshots only (never a live
+  repository, P4): listings are gateway pages with the listing CSP whose rows link only
+  syntactically valid NSIDs and record keys (others are shown unlinked), a record is
+  `application/json` with the listing CSP, `nosniff` and `ETag: "<record cid>"`; blob
+  refs stay CIDs for `/blob/<cid>` (always a download). The latest view is `no-cache`,
+  a fixed `@<rev>` immutable. `/at/` has no site origin: on `<cid>.localhost` the path is
+  a tree path (rules G5/G9, matrix row N30).
+- **Limits** (`atproto.Limits`): DID document 64 KiB, well-known handle body 1 KiB,
+  proof CAR 8 MiB, repo CAR 4 GiB (30 min), blob 8 MiB, 4 concurrent requests per PDS
+  host, 30 s per small request. Loopback, private and special-use addresses are refused
+  for every endpoint, including PDS URLs taken from DID documents.
+
 ## Clusters (0062)
 
 `node.ClusterNode` (implemented by `node.Local` and `client.Client`) carries the cluster
@@ -259,11 +337,13 @@ These are the mechanics of rules G1–G9 of the
   ever set or read. Only `GET`/`HEAD` are accepted; `Range`, `If-Range` and
   `If-None-Match` work on files. Errors are plain text (`<code>: <message>`), never HTML.
 - **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (an empty
-  segment is refused before any redirect, so `//host` can never become a scheme-relative
-  `Location`); a directory URL without a trailing slash redirects (`301`) to its own
+  segment is refused on every route before the mux could clean or redirect it, so
+  `//host` can never become a scheme-relative `Location`); a directory URL without a trailing slash redirects (`301`) to its own
   escaped path plus `/`. Listings show the directory CID and total size below it, and each
   entry's name, kind, size and CID; symlinks and entries with unsafe names are shown but
   not linked. The MASL header allowlist (D21, G10) is not applied yet.
+- **`/at/` routes** serve held atproto snapshots as inert JSON and listings; see
+  [atproto records, snapshots and CARs](#atproto-records-snapshots-and-cars-0053).
 
 ## Safe extraction (`nu get -o`)
 
@@ -284,7 +364,7 @@ prints each one (rules X1–X6 of the [contract](operations.md#x-extraction-nu-g
 
 ## Daemonless commands
 
-Content commands (`add`, `cat`, `ls`, `get`, `share`, `pin`, `dag`) try the daemon first (address
+Content commands (`add`, `cat`, `ls`, `get`, `share`, `pin`, `dag`, `car`) try the daemon first (address
 file, then a status ping). When none answers they take the repo lock, remove stale
 address files, and run an in-process node (`node.Local`, which opens the store) for the
 duration of the command, saying so on stderr; `add`, `pin add` and `dag put` add that the
@@ -300,10 +380,12 @@ the [Targets table](../spec.md#user-experience): `nu://`, `at://`, `rasl://` lin
 `b…` DASL CID (`core/cid`: raw or DRISL, SHA-256 or BLAKE3, canonical lowercase base32)
 with optional `/path`; `<handle-or-did>/<name>[/path]`; or `<dataset>[@<version>][/path]`.
 A `nu://` link is parsed by `node/link` and yields a CID target with the link's hints
-(`Target.Link`); a malformed link is `invalid_argument` with the parser's message. A
+(`Target.Link`); a malformed link is `invalid_argument` with the parser's message. An
+`at://` target is parsed by `atproto.ParseURI` (`at://<handle-or-did>[@<rev>][/<collection>[/<rkey>]]`,
+with `@<rev>` as Nu's held-snapshot selector) and handled by the at:// commands above. A
 CID-length string that does not parse (for example a dag-pb CID) is `invalid_argument`
-naming the accepted forms; so is anything else. Forms this build cannot act on (`at://`,
-`rasl://`, names, datasets) are `not_supported` with an action.
+naming the accepted forms; so is anything else. Forms this build cannot act on
+(`rasl://`, names, datasets) are `not_supported` with an action.
 
 ## CLI
 

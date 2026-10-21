@@ -102,6 +102,21 @@ type ImportOptions struct {
 	// the second attempt, doubling up to a minute (default 1 s).
 	Attempts int
 	Backoff  time.Duration
+	// Progress, when set, is called with the bytes held so far as they arrive.
+	Progress func(int64)
+}
+
+type progressWriter struct {
+	w  io.Writer
+	n  int64
+	cb func(int64)
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	p.n += int64(n)
+	p.cb(p.n)
+	return n, err
 }
 
 // Imported is a stored URL import with its provenance.
@@ -193,6 +208,9 @@ func (c *Client) Import(ctx context.Context, rawURL string, st BlobAdder, o Impo
 		}
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return nil, err
+		}
+		if o.Progress != nil {
+			return &progressWriter{w: f, n: offset, cb: o.Progress}, nil
 		}
 		return f, nil
 	}

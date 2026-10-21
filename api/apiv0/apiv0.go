@@ -359,6 +359,22 @@ type AddRequest struct {
 	NoAnnounce bool `json:"no_announce,omitempty"`
 	// Pin pins the added root (default true in the CLI).
 	Pin bool `json:"pin,omitempty"`
+	// URL imports an https:// URL instead of reading Path (D17 URL import): the bytes
+	// are hashed on arrival and the result records their provenance.
+	URL string `json:"url,omitempty"`
+	// Meta is a metadata record (an atproto-style JSON object) for the added content;
+	// the result's Entry carries it. A URL import adds its provenance under "source"
+	// unless the record already has that key.
+	Meta json.RawMessage `json:"meta,omitempty"`
+}
+
+// TreeEntry is a tree entry for added content with a metadata record (what `nu tree
+// edit --put` takes).
+type TreeEntry struct {
+	Kind string `json:"kind"`
+	CID  string `json:"cid"`
+	Size uint64 `json:"size"`
+	Meta string `json:"meta,omitempty"`
 }
 
 // AddResult is the result of an add operation.
@@ -373,6 +389,11 @@ type AddResult struct {
 	Skipped []string `json:"skipped,omitempty"`
 	// Link is the share link, when the daemon can produce one.
 	Link string `json:"link,omitempty"`
+	// Source is the provenance of a URL import.
+	Source *URLSource `json:"source,omitempty"`
+	// Meta is the stored metadata record and Entry the tree entry carrying it.
+	Meta  string     `json:"meta,omitempty"`
+	Entry *TreeEntry `json:"entry,omitempty"`
 }
 
 // Entry is one row of a directory listing.

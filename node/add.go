@@ -23,6 +23,9 @@ import (
 // with its io.ipfs.nu.tree header. The result is pinned (explicit, recursive) when Pin is
 // set. Unchanged files (same path, size, mtime and inode) are not re-hashed on re-add.
 func (n *Local) Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operation, error) {
+	if req.URL != "" {
+		return n.addURL(req)
+	}
 	if req.Path == "" {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "add needs a path").WithAction("give a file or directory path")
 	}
@@ -184,7 +187,8 @@ func (a *adder) file(fi os.FileInfo) (*apiv0.AddResult, error) {
 	if err := a.pin(root); err != nil {
 		return nil, err
 	}
-	return &apiv0.AddResult{CID: root.String(), Name: name, Size: fi.Size(), Files: 1, Link: a.n.Link(root, "").String()}, nil
+	res := &apiv0.AddResult{CID: root.String(), Name: name, Size: fi.Size(), Files: 1, Link: a.n.Link(root, "").String()}
+	return res, a.n.addMeta(res, c, tree.KindFile, uint64(fi.Size()), a.req.Meta, nil)
 }
 
 func (a *adder) dir() (*apiv0.AddResult, error) {
@@ -232,6 +236,7 @@ func (a *adder) dir() (*apiv0.AddResult, error) {
 	if err := a.pin(res.Header); err != nil {
 		return nil, err
 	}
-	return &apiv0.AddResult{CID: res.Header.String(), Name: filepath.Base(root), Size: int64(res.Bytes), Files: int64(res.Files),
-		Skipped: res.Skipped, Link: a.n.Link(res.Header, "").String()}, nil
+	out := &apiv0.AddResult{CID: res.Header.String(), Name: filepath.Base(root), Size: int64(res.Bytes), Files: int64(res.Files),
+		Skipped: res.Skipped, Link: a.n.Link(res.Header, "").String()}
+	return out, a.n.addMeta(out, res.Root, tree.KindDir, res.Bytes, a.req.Meta, nil)
 }

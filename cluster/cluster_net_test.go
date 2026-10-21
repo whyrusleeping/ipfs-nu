@@ -22,12 +22,12 @@ func ctx(t *testing.T) context.Context {
 	return c
 }
 
-// form creates a private cluster on n0 and joins n1 with a pre-authorized invite and n2
+// form creates a cluster in mode on n0 and joins n1 with a pre-authorized invite and n2
 // with a secret one.
-func form(t *testing.T, n *nutest.Network) {
+func form(t *testing.T, n *nutest.Network, mode string) {
 	t.Helper()
 	a, b, c := n.Nodes[0], n.Nodes[1], n.Nodes[2]
-	if _, err := a.Local.ClusterInit(ctx(t), apiv0.ClusterInitRequest{Name: "lab", Mode: cluster.ModePrivate}); err != nil {
+	if _, err := a.Local.ClusterInit(ctx(t), apiv0.ClusterInitRequest{Name: "lab", Mode: mode}); err != nil {
 		t.Fatal(err)
 	}
 	pre, err := a.Local.ClusterInvite(ctx(t), apiv0.ClusterInviteRequest{Peer: b.ID.String()})
@@ -72,7 +72,7 @@ func converged(t *testing.T, n *nutest.Network, what string, cond func(*cluster.
 func TestPrivateCluster(t *testing.T) {
 	n := nutest.New(t, 4)
 	a, b, c, outsider := n.Nodes[0], n.Nodes[1], n.Nodes[2], n.Nodes[3]
-	form(t, n)
+	form(t, n, cluster.ModePrivate)
 
 	// Dataset create on the admin node: metadata acknowledged, content reported apart.
 	ds, err := a.Local.DatasetCreate(ctx(t), node.ScopeCluster, apiv0.DatasetCreateRequest{Name: "photos"})
@@ -188,7 +188,7 @@ func TestPrivateCluster(t *testing.T) {
 func TestClusterRestart(t *testing.T) {
 	n := nutest.New(t, 3)
 	a, c := n.Nodes[0], n.Nodes[2]
-	form(t, n)
+	form(t, n, cluster.ModePrivate)
 	c.Kill()
 	for _, name := range []string{"one", "two"} {
 		if _, err := a.Local.DatasetCreate(ctx(t), node.ScopeCluster, apiv0.DatasetCreateRequest{Name: name}); err != nil {

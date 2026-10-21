@@ -1,0 +1,10 @@
+[package]
+name = "nu-bao-vectors"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bao-tree = { version = "=0.16.1", default-features = false }
+blake3 = "1.8"
+serde_json = "1"

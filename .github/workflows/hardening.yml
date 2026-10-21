@@ -1,0 +1,97 @@
+# Expensive campaigns are nightly/on-demand only, never per PR.
+name: hardening
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CGO_ENABLED: '0'
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: python3 scripts/fuzz.py --time 10m --jobs 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-results-and-regression-seeds
+          include-hidden-files: true
+          path: |
+            .hardening/fuzz
+            **/testdata/fuzz/**
+  formats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: regenerate independent Bao oracle
+        run: |
+          rustup update stable
+          rustup default stable
+          cargo run --locked --release --manifest-path experiments/bao-vectors/Cargo.toml > /tmp/bao-tree-16k.json
+          diff -u testdata/vectors/bao/bao-tree-16k.json /tmp/bao-tree-16k.json
+          go test ./core/blob
+      - name: DASL, CAR, DAG-CBOR and indigo
+        working-directory: experiments
+        run: |
+          go test -count=1 -v ./hardening
+          go test -count=1 -run '^TestIndigo' -v .
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NU_SLOW: '1'
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: bounded scale, fanout and crash campaigns
+        shell: bash
+        run: |
+          mkdir -p .hardening
+          df -h .
+          go test -count=1 -p=1 -timeout=30m -run '^TestHardening' -v ./store ./core/tree ./nutest 2>&1 | tee .hardening/scale.log
+          go test -run '^$' -bench '^BenchmarkHardening$' -benchtime=1s -count=3 ./core/blob 2>&1 | tee .hardening/bench.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale-and-benchmarks
+          include-hidden-files: true
+          path: .hardening
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            arch: arm64
+          - os: macos-14
+            arch: arm64
+          - os: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: assert native architecture
+        run: test "$(go env GOARCH)" = '${{ matrix.arch }}'
+      - run: go test -count=1 ./...
+      - name: hash and Bao benchmarks
+        env:
+          NU_SLOW: '1'
+        run: go test -run '^$' -bench 'BenchmarkHardening' -benchtime=1s ./core/blob

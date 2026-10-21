@@ -1,3 +1,5 @@
 .ycc/
 .worktrees/
 /nu
+/.hardening/
+/experiments/bao-vectors/target/

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/node/link"
 )
 
 // Node is what commands need from a node. Methods that touch content (Add, Cat, Ls, pins,
@@ -49,7 +51,37 @@ type Node interface {
 	DagGet(ctx context.Context, target string) (json.RawMessage, error)
 	// DagPut stores atproto-style JSON as one DRISL object and returns its CID.
 	DagPut(ctx context.Context, doc io.Reader) (*apiv0.DagPutResult, error)
+
+	// Get starts a get operation (result: apiv0.GetResult) that writes a CID or share-link
+	// target to disk, fetching it first when it is not held.
+	Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation, error)
+	// Share returns the share link of held content, with this node as the provider hint.
+	Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.ShareLink, error)
 }
 
 // EventStream delivers operation events in order; see apiv0.EventStream.
 type EventStream = apiv0.EventStream
+
+// Fetcher brings content the node does not hold into its store. The node asks it from
+// get (and later cat, ls and pin) when the target or part of it is missing; the
+// multi-peer fetcher (package fetch) implements it, and Local falls back to a Fetcher that
+// answers not_implemented until one is plugged in.
+type Fetcher interface {
+	// Fetch makes root and everything reachable from it under the nu-tree walk profile
+	// held and complete in the store. hints are the providers named by a share link (may
+	// be empty: the fetcher then relies on lookup). progress, if non-nil, is called with
+	// bytes fetched so far and the total when known (0 otherwise); callers rate-limit
+	// nothing, so implementations should call it at most a few times per second. Fetch
+	// returns when the content is held, or an *apiv0.Error (not_found when no provider
+	// has it, unavailable when none is reachable) wrapping the cause.
+	Fetch(ctx context.Context, root cid.CID, hints []link.Provider, progress func(done, total int64)) error
+}
+
+// NoFetcher is the Fetcher of a build or node without networking: every Fetch fails with
+// not_implemented and the action to add the content locally.
+type NoFetcher struct{}
+
+func (NoFetcher) Fetch(ctx context.Context, root cid.CID, hints []link.Provider, progress func(done, total int64)) error {
+	return apiv0.NotImplemented("fetching " + root.String() + " from other nodes").
+		WithAction("add the content on this machine, or wait for a build with networking")
+}

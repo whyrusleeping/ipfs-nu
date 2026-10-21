@@ -18,8 +18,8 @@ import (
 const (
 	// ConfigFile is the TOML configuration.
 	ConfigFile = "config.toml"
-	// KeyFile is the node's libp2p identity key. Reserved: the networking track
-	// (p2p/wire) generates and loads it; nothing here reads or writes it.
+	// KeyFile is the node's libp2p identity key (p2p/wire format, 0600), created by
+	// node.LoadKey on init or first node start; nothing here reads or writes it.
 	KeyFile = "node.key"
 	// DBFile is the SQLite database (metadata, DRISL blocks, pins, indexes). Reserved for
 	// the store.

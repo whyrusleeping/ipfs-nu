@@ -65,6 +65,16 @@
       "post": {"summary": "Store atproto-style JSON as one DRISL object. Not implemented in this build.",
         "requestBody": {"required": true, "content": {"application/json": {}}},
         "responses": {"200": {"description": "stored", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DagPutResult"}}}}, "501": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/get": {
+      "post": {"summary": "Start a get operation (result: GetResult): write a CID or nu:// link target to disk, fetching it first when not held.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetRequest"}}}},
+        "responses": {"202": {"$ref": "#/components/responses/Operation"}, "400": {"$ref": "#/components/responses/Error"}, "422": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/share": {
+      "post": {"summary": "Share link for held content, with this node as the provider hint.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareRequest"}}}},
+        "responses": {"200": {"description": "share link", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ShareLink"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
     }
   },
   "components": {
@@ -120,7 +130,8 @@
           "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"}}},
           "paths": {"type": "object", "properties": {"root": {"type": "string"}, "config": {"type": "string"}, "key": {"type": "string"}, "db": {"type": "string"}, "blobs": {"type": "string"}, "api_file": {"type": "string"}}},
           "operations": {"type": "object", "additionalProperties": {"type": "integer"}},
-          "store": {"type": "object", "required": ["objects", "bytes", "pins"], "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}}}
+          "store": {"type": "object", "required": ["objects", "bytes", "pins"], "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}}},
+          "network": {"type": "object", "required": ["peer_id", "addrs", "serving", "peers"], "properties": {"peer_id": {"type": "string", "description": "base36 PeerId"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}, "peers": {"type": "integer"}}}
         }
       },
       "AddRequest": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "local path the daemon reads"}, "recursive": {"type": "boolean"}, "raw": {"type": "boolean"}, "hash": {"type": "string", "enum": ["", "sha256"]}, "nocopy": {"type": "boolean"}, "no_announce": {"type": "boolean"}, "pin": {"type": "boolean"}}},
@@ -129,7 +140,11 @@
       "Listing": {"type": "object", "required": ["target", "entries"], "properties": {"target": {"type": "string"}, "entries": {"type": "array", "items": {"$ref": "#/components/schemas/Entry"}}}},
       "Pin": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "mode": {"type": "string", "enum": ["recursive", "direct"]}, "source": {"type": "string"}}},
       "PinRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
-      "DagPutResult": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}}
+      "DagPutResult": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}},
+      "GetRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path] or nu:// link"}, "output": {"type": "string", "description": "absolute destination path"}, "dir": {"type": "string", "description": "absolute directory to write into under the content's own name, when output is empty"}}},
+      "GetResult": {"type": "object", "required": ["cid", "output", "kind", "files", "dirs", "bytes"], "properties": {"cid": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}, "kind": {"type": "string", "enum": ["file", "dir", "blob"]}, "files": {"type": "integer"}, "dirs": {"type": "integer"}, "bytes": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}}, "fetched": {"type": "boolean"}}},
+      "ShareRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path]"}}},
+      "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}}
     }
   }
 }

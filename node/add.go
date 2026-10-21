@@ -184,7 +184,7 @@ func (a *adder) file(fi os.FileInfo) (*apiv0.AddResult, error) {
 	if err := a.pin(root); err != nil {
 		return nil, err
 	}
-	return &apiv0.AddResult{CID: root.String(), Name: name, Size: fi.Size(), Files: 1}, nil
+	return &apiv0.AddResult{CID: root.String(), Name: name, Size: fi.Size(), Files: 1, Link: a.n.Link(root, "").String()}, nil
 }
 
 func (a *adder) dir() (*apiv0.AddResult, error) {
@@ -232,5 +232,6 @@ func (a *adder) dir() (*apiv0.AddResult, error) {
 	if err := a.pin(res.Header); err != nil {
 		return nil, err
 	}
-	return &apiv0.AddResult{CID: res.Header.String(), Name: filepath.Base(root), Size: int64(res.Bytes), Files: int64(res.Files), Skipped: res.Skipped}, nil
+	return &apiv0.AddResult{CID: res.Header.String(), Name: filepath.Base(root), Size: int64(res.Bytes), Files: int64(res.Files),
+		Skipped: res.Skipped, Link: a.n.Link(res.Header, "").String()}, nil
 }

@@ -338,3 +338,21 @@ func (c *Client) DagPut(ctx context.Context, doc io.Reader) (*apiv0.DagPutResult
 	}
 	return &out, nil
 }
+
+// Get starts a get operation.
+func (c *Client) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation, error) {
+	var o apiv0.Operation
+	if _, err := c.do(ctx, http.MethodPost, "/get", nil, &req, &o); err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+// Share returns the share link of held content.
+func (c *Client) Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.ShareLink, error) {
+	var res apiv0.ShareLink
+	if _, err := c.do(ctx, http.MethodPost, "/share", nil, &req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}

@@ -15,7 +15,7 @@ optional). Files are 0600, directories 0700.
 | Entry | Contents |
 |---|---|
 | `config.toml` | Configuration; dotted keys, edited by `nu config get\|set <key> [value]`. `set` parses the value as TOML (`30`, `true`, `["a"]`, `"quoted"`) and falls back to a string. A running daemon applies changes after restart. |
-| `node.key` | libp2p identity key (reserved; written by the networking layer) |
+| `node.key` | libp2p Ed25519 identity (0600), created by `nu init` or the first in-process node (`node.LoadKey`); its PeerId is the `peer=` hint of every share link |
 | `nu.db`, `blobs/`, `partial/`, `staging/` | The store ([D17](data.md#d17-store-and-replication)): SQLite (DRISL blocks, inline blobs, pins, import cache; schema version in `PRAGMA user_version`), complete blobs with Bao outboards, partially fetched blobs, in-progress writes |
 | `api`, `gateway` | URL of the running daemon's listeners, written at start and removed at clean shutdown; clients discover the daemon through `api` |
 | `daemon.lock` | flock held by the running daemon, containing its PID; a second daemon fails with `conflict` |
@@ -92,10 +92,13 @@ POST   /api/v0/pins       {cid, name?}     → 202 operation (result: Pin)
 DELETE /api/v0/pins/{cid}                  → 204
 GET    /api/v0/dag?target=                 atproto-style JSON
 POST   /api/v0/dag        JSON body        → {cid}
+POST   /api/v0/get        {target, output?, dir?} → 202 operation (result: GetResult)
+POST   /api/v0/share      {target}         → ShareLink
 ```
 
-`add` passes an absolute local path: API and daemon run as the same user on loopback, so
-the daemon reads the file itself. GET never changes state.
+`add` and `get` pass absolute local paths: API and daemon run as the same user on
+loopback, so the daemon reads and writes the files itself. GET never changes state;
+`share` is a POST because it will also announce the content once a host runs.
 
 ## Content commands (v0)
 
@@ -131,9 +134,35 @@ the daemon reads the file itself. GET never changes state.
   final link is printed as `{"$link"}`. A raw CID is `invalid_argument` (use `cat`).
   **`dag put`** parses atproto-style JSON (strict DRISL; foreign links refused), stores
   the SHA-256 DRISL object and prints its CID; it is not pinned.
+- **`get <cid-or-link> [-o path]`** is an operation (stages `resolving`, `fetching` when
+  something is not held, `writing` with byte progress) whose result is
+  `GetResult{cid, path?, output, kind, files, dirs, bytes, skipped?, fetched?}`. The
+  target is a CID with optional path or a `nu://` link (kept exact as the operation
+  target; the link's `peer=`/`addr=` hints go to the fetcher). `output` is the exact
+  destination; without it the content is written into `dir` (the CLI's working directory)
+  under the path's last segment, the file node's name, or the CID. A tree becomes a
+  directory, a file node or blob a file, written with [safe extraction](#safe-extraction-nu-get--o);
+  symlink entries are skipped and reported; a symlink target itself is
+  `invalid_argument`. **Fetch seam:** when the root (or structure on the way to the path)
+  is missing, or the walk under the resolved node is incomplete, the node calls
+  `node.Fetcher.Fetch(ctx, cid, hints, progress)` (the whole root when the root is
+  missing, the resolved sub-node otherwise) and resolves again. `node.Local.Fetcher` is
+  `node.NoFetcher` until the multi-peer fetcher (0027) is plugged in, so a missing target
+  fails with `not_implemented` in this build.
+- **`share <cid[/path]>`** returns `ShareLink{target, link, peer_id, addrs, serving}` for
+  content that is complete in the store (`not_found` otherwise, with the missing CID in
+  `details.missing`). The link names this node (`node.Local.PeerID()`) with
+  `node.Local.Addrs()` (see [Links](names.md#links)); `serving` is false until the daemon
+  runs a host (`node.Local.Net`, the seam a host fills with its addresses and peer count).
+  The CLI prints the link; with a daemon it exits, without one `serveForeground` is where
+  the in-process node will keep serving until interrupted — in this build it explains
+  that content is available only while a holder is online and returns. `add` fills
+  `AddResult.link` the same way.
 - **`status`** carries a `store` section `{objects, bytes, pins}` (`store.Stats`): held
-  objects, bytes on disk excluding `--nocopy` sources, and pins. The CLI reads it from the
-  daemon or, when none runs and the repo lock is free, from the store directly.
+  objects, bytes on disk excluding `--nocopy` sources, and pins, and a `network` section
+  `{peer_id, addrs, serving, peers}` from the same identity and address seams. The CLI
+  reads them from the daemon or, when none runs and the repo lock is free, from an
+  in-process node, and prints bytes with a unit.
 - No GC runs in this build; when it does, the node passes `node.GCGrace` so unpinned
   objects of in-progress adds survive.
 
@@ -203,7 +232,7 @@ directories. The report counts files, directories and bytes and lists skipped en
 
 ## Daemonless commands
 
-Content commands (`add`, `cat`, `ls`, `get`, `pin`, `dag`) try the daemon first (address
+Content commands (`add`, `cat`, `ls`, `get`, `share`, `pin`, `dag`) try the daemon first (address
 file, then a status ping). When none answers they take the repo lock, remove stale
 address files, and run an in-process node (`node.Local`, which opens the store) for the
 duration of the command, saying so on stderr; `add`, `pin add` and `dag put` add that the
@@ -214,13 +243,15 @@ daemon, since operations live in its memory.
 
 ## Targets
 
-`get`, `cat`, `ls` and `dag get` parse their argument with `node/target` per the
-[Targets table](../spec.md#user-experience): `nu://`, `at://`, `rasl://` links; a `b…`
-DASL CID (`core/cid`: raw or DRISL, SHA-256 or BLAKE3, canonical lowercase base32) with
-optional `/path`; `<handle-or-did>/<name>[/path]`; or `<dataset>[@<version>][/path]`.
-A CID-length string that does not parse (for example a dag-pb CID) is `invalid_argument`
-naming the accepted forms; so is anything else. Forms this build cannot act on are
-`not_supported` with an action.
+`get`, `cat`, `ls`, `share` and `dag get` parse their argument with `node/target` per
+the [Targets table](../spec.md#user-experience): `nu://`, `at://`, `rasl://` links; a
+`b…` DASL CID (`core/cid`: raw or DRISL, SHA-256 or BLAKE3, canonical lowercase base32)
+with optional `/path`; `<handle-or-did>/<name>[/path]`; or `<dataset>[@<version>][/path]`.
+A `nu://` link is parsed by `node/link` and yields a CID target with the link's hints
+(`Target.Link`); a malformed link is `invalid_argument` with the parser's message. A
+CID-length string that does not parse (for example a dag-pb CID) is `invalid_argument`
+naming the accepted forms; so is anything else. Forms this build cannot act on (`at://`,
+`rasl://`, names, datasets) are `not_supported` with an action.
 
 ## CLI
 

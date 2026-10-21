@@ -102,6 +102,33 @@ base36 PeerId, adding `addr=` multiaddrs (direct or relay circuit) only when no 
 (dnsaddr, routing v1, mDNS) can supply them. Links are meant to be pasted into chat, so
 hints stay few and the CID comes first.
 
+**Grammar (v0, `node/link`).**
+
+```text
+nu://<cid>[/<path>][?peer=<base36 peerid>[&addr=<multiaddr>]…[&via=<did>]]
+```
+
+- `<cid>` is a canonical DASL CID (`core/cid`: raw or DRISL, SHA-256 or BLAKE3, lowercase
+  base32). `<path>` is a slash path under it; segments are percent-encoded where needed and
+  may not be empty, `.`, `..` or contain NUL; no trailing slash.
+- `peer=` names a holder. The `addr=` values that follow it, until the next `peer=`, are
+  that peer's transport multiaddrs (`/ip4/…/udp/…/quic-v1`, `/dns4/…`, relay circuits
+  later) **without** a `/p2p/` component; an `addr=` before any `peer=` is an error. Any
+  legacy or multibase PeerId text parses; links are written with base36 (`k51…`), which is
+  case-insensitive and safe in chat and subdomains.
+- `via=` is a DID whose atproto record could supply the peer's current addresses; v0
+  carries it but does not resolve it.
+- Bounds: whole link ≤ 2048 bytes, ≤ 8 peers, ≤ 8 addresses per peer, each address ≤ 256
+  bytes, path ≤ 1024 bytes. Unknown query keys, duplicate peers, fragments and whitespace
+  are rejected. Formatting a parsed link reproduces it byte for byte (a fuzz target checks
+  this).
+- **What the sharer includes (v0).** There is no dnsaddr, routing or mDNS lookup yet, so
+  `share` and `add` always include the node's PeerId and up to 3 transport addresses: the
+  running host's advertised addresses, or, without a host, the `swarm.listen` config with
+  `0.0.0.0`/`::` expanded over the machine's non-loopback, non-link-local interface
+  addresses (all IPv4, global IPv6). Once lookup sources exist, `addr=` is added only when
+  none of them can supply the address.
+
 HTTPS share links require an explicitly serving public seed/gateway with configured TLS;
 they are not automatic uploads or a project hosting guarantee. Nu-aware links carry provider
 hints; conventional browser links trust that gateway. Followed-name browser links can serve

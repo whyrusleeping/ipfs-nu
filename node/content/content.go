@@ -42,16 +42,40 @@ type Node struct {
 	Mode uint32
 }
 
+// MissingDetail is the error detail key naming the CID whose content is not (fully)
+// held; IsNotHeld reads it.
+const MissingDetail = "missing"
+
+const notHeldAction = "add the content locally, or get it from a holder with `get <link>`"
+
 // NotHeld is the error for content the store does not have.
 func NotHeld(c cid.CID) *apiv0.Error {
 	return apiv0.Errorf(apiv0.CodeNotFound, "%s is not held by this node", c).
-		WithAction("add the content locally; fetching it from other nodes arrives with sharing")
+		WithAction(notHeldAction).WithDetail(MissingDetail, c.String())
+}
+
+// Incomplete is the error for content whose structure is held only in part.
+func Incomplete(c cid.CID, missing, objects int) *apiv0.Error {
+	return apiv0.Errorf(apiv0.CodeNotFound, "%d of %d objects under %s are not held by this node", missing, objects, c).
+		WithAction(notHeldAction).WithDetail(MissingDetail, c.String())
+}
+
+// IsNotHeld reports whether err says content is missing from the store (as opposed to a
+// path that does not exist in held content), returning the CID to fetch.
+func IsNotHeld(err error) (cid.CID, bool) {
+	var ae *apiv0.Error
+	if !errors.As(err, &ae) || ae.Code != apiv0.CodeNotFound {
+		return cid.CID{}, false
+	}
+	s, _ := ae.Details[MissingDetail].(string)
+	c, perr := cid.Parse(s)
+	return c, perr == nil
 }
 
 func notFoundPath(root cid.CID, p string, err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return apiv0.Errorf(apiv0.CodeNotFound, "part of %s is not held by this node", root).
-			WithAction("add the content locally; fetching it from other nodes arrives with sharing")
+			WithAction(notHeldAction).WithDetail(MissingDetail, root.String())
 	}
 	if errors.Is(err, tree.ErrNotFound) {
 		return apiv0.Errorf(apiv0.CodeNotFound, "no %q in %s", p, root).WithAction("list the directory with `ls`")

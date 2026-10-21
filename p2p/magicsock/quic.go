@@ -32,7 +32,7 @@ func (c *Conn) QUICConfigForPeer(addr net.Addr, base *quic.Config) *quic.Config 
 		if p == nil {
 			return nil
 		}
-		tr := &cidTrace{c: c, peer: p, seq: make(map[uint64]string)}
+		tr := &cidTrace{c: c, peer: p, seq: make(map[uint64]cidKey)}
 		if old != nil {
 			tr.downstream = old(ctx, client, initial)
 		}
@@ -44,7 +44,7 @@ func (c *Conn) QUICConfigForPeer(addr net.Addr, base *quic.Config) *quic.Config 
 type cidTrace struct {
 	c          *Conn
 	peer       *Peer
-	seq        map[uint64]string
+	seq        map[uint64]cidKey
 	refs       int
 	closed     bool
 	downstream qlogwriter.Trace
@@ -72,11 +72,11 @@ func (t *cidTrace) bind(seq uint64, cid quic.ConnectionID) {
 	if cid.Len() == 0 || t.closed || t.c.closed || t.c.peers[t.peer.id] != t.peer {
 		return
 	}
-	key := string(cid.Bytes())
+	key := cid
 	if old, ok := t.c.cids[key]; ok && old.owner != t {
 		return
 	}
-	if old := t.seq[seq]; old != "" && old != key {
+	if old := t.seq[seq]; old.Len() != 0 && old != key {
 		delete(t.c.cids, old)
 	}
 	if _, ok := t.c.cids[key]; !ok {
@@ -114,7 +114,7 @@ func (r *cidRecorder) RecordEvent(event qlogwriter.Event) {
 		for _, frame := range e.Frames {
 			if f, ok := frame.Frame.(*qlog.RetireConnectionIDFrame); ok {
 				c.mu.Lock()
-				if key := t.seq[f.SequenceNumber]; key != "" {
+				if key := t.seq[f.SequenceNumber]; key.Len() != 0 {
 					if c.cids[key].owner == t {
 						delete(c.cids, key)
 					}

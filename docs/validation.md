@@ -330,6 +330,8 @@ Provider/IPNS routing, IPIP-484 filters and DHT FIND_PEER remain separate tasks.
 ## Nu-path packet core (0015, 2026-10-21)
 
 **Functional packet core implemented; near-raw throughput acceptance remains unmet.**
+Initial measurements below are retained; the [profiling follow-up](#nu-path-throughput-profiling-0015-2026-10-21)
+removes the direct receive/copy queue and isolates the remaining stock observer cost.
 Production code is in `p2p/magicsock` and `p2p/proto/qpath`; no fork or new dependency.
 [API, ownership, limits and next-owner seams](../p2p/magicsock/README.md) ·
 [final framing and socket contract](networking.md#d11-nu-path).
@@ -428,6 +430,140 @@ automatic bootstrap lifecycle, pinned-CID enumeration and periodic reprovide is 
 installed; private-mode disabling is enforced by the service constructor but owner
 policy remains to be wired. Provider replica fraction, long-term expiry/republish, and
 field Amino availability remain unmeasured.
+
+## Nu-path throughput profiling (0015, 2026-10-21)
+
+**Optimized, but the original ≤~5% versus uninstrumented raw criterion is still open.**
+The remaining measured gap is approximately **16–22%** with the current stock-stack
+CID-observer design. No fork, wire-format change, weaker CID/source checks, disabled
+CID rotation, or relaxed inner MTU was used to make the numbers look better.
+
+### Method and fair baselines
+
+Before code: `d4b7630` (the merged packet core is unchanged from `dbd92b3`); after:
+this profiling/optimization change. Same AMD EPYC 9684X host, 192 logical CPUs visible,
+Linux 5.15.0-176-generic, Go 1.26.2 linux/amd64, quic-go v0.64.1, `GOMAXPROCS=4`,
+no CPU affinity or exclusive-machine guarantee. UDP loopback, no injected loss, same
+4 MiB unidirectional stream operations over one established libp2p-TLS QUIC connection
+per case. Setup is outside timing; stream EOF byte counts are checked. The kernel
+caps the requested receive buffer at 416 KiB; the quic-go warning is retained.
+
+- **Raw** is unwrapped UDPConn, **1200-byte fixed packets**, PMTU discovery off,
+  eight-byte local CIDs, 1 MiB stream / 4 MiB connection receive-window caps. These
+  settings are identical to VirtualDirect. The original benchmark **already used
+  this same-packet-size baseline**: PMTU size did not explain the original 44% result.
+- **RawObserver** adds a no-op public qlog recorder to Raw. It does no routing,
+  serialization, wrapping, socket hand-off or per-event application work. Stock
+  quic-go still constructs the events before invoking it. This isolates the mandatory
+  observer cost; it is a diagnostic control, **not a silent replacement of Raw**.
+- **RawPMTU** is an additional stock-packet-policy control, with the default initial
+  size and PMTU discovery enabled. It is not the wrapper-only comparison.
+- All cases report GSO enabled. Final fixed-size runs averaged **1199 sent bytes per
+  QUIC packet**; RawPMTU averaged **1440**. CPU stacks include `sendPacketsWithGSO`;
+  existing relay GSO segmentation tests remain enabled. VirtualDirect had **zero
+  adapter receive-queue drops**. QUIC reported approximately 1–5 lost packets per
+  4 MiB operation in the final run (not a physical-link loss-rate measurement).
+
+Reproduce from `experiments/` (benchmark remains `slow.Skip`-gated):
+
+```sh
+NU_SLOW=1 GOMAXPROCS=4 go test -run '^$' -bench '^BenchmarkProductionPaths$' -benchtime=1s -count=3 -benchmem ./nupath
+NU_SLOW=1 GOMAXPROCS=4 go test -o /tmp/nu-path.test -run '^$' -bench '^BenchmarkProductionPaths/VirtualDirect$' -benchtime=2s -benchmem -cpuprofile=/tmp/nu-path.cpu -memprofile=/tmp/nu-path.mem -mutexprofile=/tmp/nu-path.mutex ./nupath
+go tool pprof -top /tmp/nu-path.test /tmp/nu-path.cpu
+go tool pprof -top -alloc_space /tmp/nu-path.test /tmp/nu-path.mem
+go tool pprof -top /tmp/nu-path.test /tmp/nu-path.mutex
+```
+
+### Before/after results
+
+Unprofiled one-second runs, three repetitions; MB/s is decimal. Before was also
+rerun using the retained **unmodified** binary, not reconstructed by selectively
+turning off correctness features. Ranges show shared-machine variation, not p95s.
+
+| Case | Before MB/s median (range) | Final MB/s median (range) | Final bytes/op; allocations/op (median) |
+|---|---|---|---|
+| Raw, fixed 1200 | 740 (721–767) | **722 (695–741)** | 475,214; 15,316 |
+| VirtualDirect, fixed 1200 | 530 (518–549) | **564 (555–567)** | 2,855,246; 44,561 |
+| RawObserver, fixed 1200 | — | **564 (555–567)** | 2,805,055; 42,620 |
+| RawPMTU | — | **875 (804–917)** | 400,310; 12,732 |
+
+Before virtual allocated a median **3,139,047 bytes / 55,551 objects per operation**.
+The final implementation reduces that by **9.0% / 19.8%**, respectively. In the final
+confirmation set, virtual throughput improved **6.3%** and its raw-relative deficit
+fell from **28.4% to 21.9%**. An earlier complete three-repeat optimized set achieved
+**603 MB/s** virtual (578–608), versus **716 MB/s** Raw (707–760), a **15.7% gap**;
+RawObserver was **595 MB/s** (571–601). That is the best completed set, not a claim
+that the final slower confirmation should be discarded. The earlier 100 ms/44%
+result is not a stable before/after baseline for these longer runs.
+
+A separate one-second **ECN-disabled control** (`QUIC_GO_DISABLE_ECN=true`, n=1) gave
+Raw **727**, RawObserver **592**, VirtualDirect **591 MB/s**. Thus inner ECN suppression
+is not hiding a missing-GSO or ECN-related performance explanation. RawPMTU's additional
+advantage is the separate, intentional 1200-byte D11 packet-budget tradeoff.
+
+### Profile findings and changes
+
+- Before profiles (`/tmp/nu-vdirect-before.*`, `/tmp/nu-raw-before.*`) showed that
+  approximately **70% of virtual allocated space** was in quic-go packet/frame/metric
+  qlog construction, despite our observer doing no log serialization. Virtual cost
+  was ~3.12 MB/op versus raw ~0.47 MB/op. Dropping events in our recorder is too late:
+  `logShortHeaderPacketWithDatagramPayloadChecksum`, `handleShortHeaderPacket.func2`,
+  `toQlogFrame` and `qlogMetricsUpdated` have already allocated their arguments.
+- The direct receive path now runs kernel `ReadBatch` **directly into quic-go's
+  buffers**, with no separate UDP receive goroutine, intermediate pooled packet copy,
+  or per-packet channel send/receive. Relay frames alone use the bounded receive queue;
+  enqueue wakes an idle physical read via a private deadline without changing the
+  caller deadline. Filtering compacts by copying across holes, never swapping buffers
+  out from under quic-go's indexed ownership bookkeeping.
+- CID map keys are inline comparable values, not freshly allocated header strings.
+  Virtual UDP source addresses are created per peer/batch rather than per datagram.
+  Linux GSO metadata uses a borrowed validated cmsg view instead of allocating a
+  parsed-message slice and rebuilt control buffer. OOB filtering and GSO splitting
+  semantics are unchanged.
+- After profiles (`/tmp/nu-vdirect-after.*`) no longer show CID-string, parsed-cmsg or
+  receive-pool allocation hot spots. `runtime.memmove` fell from **3.9% to 2.3%** of
+  sampled CPU; qlog construction now accounts for roughly **78% of allocated space**.
+  Our CID recorder itself was **1.2%** of sampled CPU. Mutex delay was only **24 ms
+  before / 23 ms after** over ~3.2 s profile captures, not the dominant cost. The
+  original block profile mostly counted expected idle/network/channel waits and was
+  not interpreted as equivalent CPU cost. Profiled throughput is not mixed into the
+  unprofiled table.
+
+### Why stop here / proposed acceptance change (not adopted)
+
+The final **no-op RawObserver control is already ~22% below Raw**, with VirtualDirect
+essentially matching it. This is the measured floor of the **current architecture**,
+not a mathematical claim that every conceivable stock-quic-go architecture is slower.
+In v0.64.1 the public per-connection CID lifecycle information is carried through the
+broad qlog event interface; there is no public CID-only event-construction filter.
+`NEW_CONNECTION_ID` / retirement frames are encrypted, so the wrapper cannot just sniff
+UDP headers. Learning by source endpoint instead of CID violates D11 when outer and
+inner QUIC share an endpoint; disabling the observer after handshake breaks rotation.
+The transport-global CID generator has no connection/peer argument to bind later IDs.
+
+To pursue the original ≤5% total target, request an **upstream** CID-issued/retired
+callback or selective event-construction API, then remeasure; no local quic-go fork
+was introduced. Per-peer QUIC Transports with self-routing CIDs are another possible
+architecture, but change the current single-dispatcher/Host design and were not
+silently substituted during this optimization.
+
+Proposed spec split, requiring an owning decision: (1) measure adapter overhead
+against identically sized **RawObserver** and retain the ~5% incremental target;
+(2) always publish uninstrumented Raw and RawPMTU alongside it, keeping the currently
+~16–22% CID-observer cost and fixed-packet-policy cost visible; (3) keep the original
+end-to-end ≤5% goal open pending an upstream API or an approved architecture change.
+**Changing only to “same packet size” does not close this gap: that baseline was already
+used.** No acceptance criterion has been weakened or marked complete here.
+
+Correctness verification retained: normal suite/depguard, race-enabled magicsock/qpath,
+rootless two-NAT qpath scenario, real go-libp2p rejection/pass-through, decoder fuzz seeds,
+and Darwin arm64 compile. Added one fast regression for caller-buffer ownership across
+a filtered batch, relay wakeup of an idle fd read, unchanged logical deadline, next-read
+reset, and small-buffer virtual-source demux. No long fuzz/loss/soak run was added.
+Two initial full-suite runs hit `nutest.TestRestartMidTransfer`'s unrelated one-second
+startup assertion (13.03 s / 1.73 s); its isolated retry passed in 0.14 s and the final
+full suite passed (`nutest` 0.38 s). The changed packet-core packages are absent from
+that test's dependency graph; no nutest/node/store code or timing threshold was changed.
 
 ## Early experiments
 

@@ -52,6 +52,9 @@ func (c *Conn) WriteDisco(payload []byte, dest netip.AddrPort) error {
 	_, err = c.WriteTo(b, net.UDPAddrFromAddrPort(dest))
 	return err
 }
+
+// ReadDisco consumes envelopes demultiplexed by the active QUIC/ReadBatch loop.
+// It is not an independent physical socket reader.
 func (c *Conn) ReadDisco(ctx context.Context, b []byte) (int, netip.AddrPort, error) {
 	select {
 	case <-ctx.Done():

@@ -1,0 +1,103 @@
+package extract
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/whyrusleeping/nu/api/apiv0"
+)
+
+func file(p, data string, mode uint32) Entry {
+	return Entry{Path: p, Kind: KindFile, Mode: mode, Size: int64(len(data)),
+		Open: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(data)), nil }}
+}
+
+func walkOf(entries ...Entry) Walk {
+	return func(yield func(Entry, error) bool) {
+		for _, e := range entries {
+			if !yield(e, nil) {
+				return
+			}
+		}
+	}
+}
+
+// A good tree extracts with bounded modes and skipped symlinks; hostile paths and
+// symlinks in the destination are refused before anything escapes.
+func TestExtractSafety(t *testing.T) {
+	ctx := context.Background()
+	dest := filepath.Join(t.TempDir(), "out")
+	rep, err := Extract(ctx, dest, walkOf(
+		Entry{Path: "", Kind: KindDir},
+		file("a.txt", "hello", 0o644),
+		Entry{Path: "bin", Kind: KindDir},
+		file("bin/run", "#!/bin/sh", 0o777),
+		Entry{Path: "ln", Kind: KindSymlink, Target: "/etc/passwd"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Files != 2 || rep.Dirs != 2 || rep.Bytes != 14 || len(rep.Skipped) != 1 || rep.Skipped[0].Path != "ln" {
+		t.Fatalf("report: %+v", rep)
+	}
+	if fi, _ := os.Stat(filepath.Join(dest, "a.txt")); fi.Mode().Perm() != FileMode {
+		t.Fatalf("a.txt mode %v", fi.Mode())
+	}
+	if fi, _ := os.Stat(filepath.Join(dest, "bin/run")); fi.Mode().Perm() != ExecMode {
+		t.Fatalf("bin/run mode %v", fi.Mode())
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "ln")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink was created: %v", err)
+	}
+	if names, _ := filepath.Glob(filepath.Join(dest, ".nu-extract-*")); len(names) != 0 {
+		t.Fatalf("temp files left: %v", names)
+	}
+
+	// Hostile paths never produce a write.
+	outside := filepath.Join(t.TempDir(), "victim")
+	bad := []Entry{
+		file("../victim", "x", 0),
+		file("/victim", "x", 0),
+		file("a/../../victim", "x", 0),
+		file("a\\..\\victim", "x", 0),
+		file("a/\x00/victim", "x", 0),
+		file("./victim", "x", 0),
+	}
+	for _, e := range bad {
+		_, err := Extract(ctx, dest, walkOf(e))
+		if !isUnsafe(err) {
+			t.Errorf("%q: %v", e.Path, err)
+		}
+	}
+	if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("escaped: %v", err)
+	}
+
+	// A symlink already in the destination is not followed, whether it names the
+	// directory being written into or the file being replaced.
+	victimDir := t.TempDir()
+	if err := os.Symlink(victimDir, filepath.Join(dest, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(victimDir, "f"), filepath.Join(dest, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []Entry{file("escape/pwned", "x", 0), file("escape.txt", "x", 0)} {
+		if _, err := Extract(ctx, dest, walkOf(e)); !isUnsafe(err) || !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("%q: %v", e.Path, err)
+		}
+	}
+	if entries, _ := os.ReadDir(victimDir); len(entries) != 0 {
+		t.Fatalf("wrote through a symlink: %v", entries)
+	}
+}
+
+func isUnsafe(err error) bool {
+	var ae *apiv0.Error
+	return errors.As(err, &ae) && ae.Code == apiv0.CodeInvalidArgument && strings.Contains(ae.Message, "unsafe path") && ae.Action != ""
+}

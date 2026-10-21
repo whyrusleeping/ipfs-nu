@@ -9,6 +9,7 @@ import (
 
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/target"
@@ -19,6 +20,8 @@ import (
 type Local struct {
 	Repo *repo.Repo
 	Ops  *op.Manager
+	// Content backs the gateway; nil until the store lands.
+	Content gateway.Content
 
 	started time.Time
 	// API and Gateway are the bound listen addresses, set by the daemon.
@@ -31,6 +34,13 @@ func NewLocal(r *repo.Repo) *Local {
 }
 
 var _ Node = (*Local)(nil)
+
+// Close stops the node: running operations are cancelled. Later it closes the store and
+// network.
+func (n *Local) Close() error {
+	n.Ops.CancelAll()
+	return nil
+}
 
 // Paths returns the repo layout.
 func Paths(r *repo.Repo) apiv0.Paths {

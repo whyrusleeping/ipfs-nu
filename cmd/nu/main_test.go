@@ -59,6 +59,32 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 		{[]string{"--nu-path", t.TempDir(), "--json", "operations"}, apiv0.ExitUnavailable},
 		{[]string{"--nu-path", r.Root(), "bogus"}, apiv0.ExitUsage},
 	}
+	// Daemonless: cat/ls/get run an in-process node when no daemon runs (the store is
+	// absent, so they reach not_implemented); a held lock without an answering API is a
+	// clear unavailable error.
+	lonely, _, _ := repo.Open(t.TempDir())
+	cid := "bafkr4iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cases = append(cases,
+		struct {
+			args []string
+			exit int
+		}{[]string{"--nu-path", lonely.Root(), "cat", cid}, apiv0.ExitNotImplemented},
+		struct {
+			args []string
+			exit int
+		}{[]string{"--nu-path", lonely.Root(), "add", "main.go"}, apiv0.ExitUnavailable},
+	)
+	locked, _, _ := repo.Open(t.TempDir())
+	lk, err := locked.Lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lk.Release()
+	cases = append(cases, struct {
+		args []string
+		exit int
+	}{[]string{"--nu-path", locked.Root(), "ls", cid}, apiv0.ExitUnavailable})
+
 	for _, tc := range cases {
 		out.Reset()
 		errb.Reset()
@@ -68,5 +94,13 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 		if tc.exit != apiv0.ExitUsage && !strings.Contains(errb.String(), "→") && !strings.Contains(errb.String(), `"action"`) {
 			t.Errorf("%v: error without action: %q", tc.args, errb.String())
 		}
+	}
+	if _, err := lonely.ReadAddrFile(repo.APIFile); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := lonely.Lock(); err != nil {
+		t.Fatalf("in-process node did not release the lock: %v", err)
+	} else {
+		l.Release()
 	}
 }

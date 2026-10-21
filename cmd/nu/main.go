@@ -55,6 +55,14 @@ type env struct {
 	apiAddr        string // --api override
 	repo           *repo.Repo
 	path           []string // command path, for usage
+	cleanup        []func() // run after the command (in-process node, repo lock)
+}
+
+func (e *env) close() {
+	for i := len(e.cleanup) - 1; i >= 0; i-- {
+		e.cleanup[i]()
+	}
+	e.cleanup = nil
 }
 
 // usageError is a usage problem: exits with ExitUsage after printing the message and usage.
@@ -70,6 +78,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	e := &env{stdout: stdout, stderr: stderr}
+	defer e.close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -203,9 +212,19 @@ func (e *env) openRepo() (*repo.Repo, error) {
 	return r, nil
 }
 
-// node returns the node to talk to: the daemon found through the repo (or --api).
-// Daemonless commands will fall back to an in-process node here.
+// node returns the daemon found through the repo (or --api). Commands that need the
+// daemon (add, pin, operations) use it; they fail with unavailable when none runs.
 func (e *env) node(ctx context.Context) (node.Node, error) {
+	return e.connect(ctx, false)
+}
+
+// nodeOrLocal is node for get/cat/ls/share: when no daemon runs, it starts an in-process
+// node for the duration of the command, holding the repo lock.
+func (e *env) nodeOrLocal(ctx context.Context) (node.Node, error) {
+	return e.connect(ctx, true)
+}
+
+func (e *env) connect(ctx context.Context, localOK bool) (node.Node, error) {
 	if e.apiAddr != "" {
 		return client.New(e.apiAddr), nil
 	}
@@ -213,7 +232,35 @@ func (e *env) node(ctx context.Context) (node.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.Discover(r)
+	c, derr := client.Discover(r)
+	if !localOK {
+		return c, derr
+	}
+	if derr == nil {
+		if _, err := c.Status(ctx); err == nil {
+			return c, nil
+		} else if ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	// No daemon answered. Take the repo lock to be sure none is alive.
+	lock, err := r.Lock()
+	if err != nil {
+		if errors.Is(err, repo.ErrLocked) {
+			return nil, apiv0.Errorf(apiv0.CodeUnavailable, "%v, but its API is not answering", err).
+				WithAction("wait for it to finish starting, or stop it and run `" + nu.Name + " daemon` again")
+		}
+		return nil, err
+	}
+	// Stale address files from a crashed daemon would mislead the next command.
+	_ = r.RemoveAddrFile(repo.APIFile)
+	_ = r.RemoveAddrFile(repo.GatewayFile)
+	n := node.NewLocal(r)
+	e.cleanup = append(e.cleanup, func() { n.Close(); lock.Release() })
+	if !e.json {
+		fmt.Fprintf(e.stderr, "%s: no daemon running; using an in-process node for this command\n", nu.Name)
+	}
+	return n, nil
 }
 
 // emit writes v as JSON in --json mode, else calls text.

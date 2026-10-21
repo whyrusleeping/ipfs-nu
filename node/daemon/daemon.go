@@ -114,7 +114,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 	d.gwSrv = &http.Server{
-		Handler:           gateway.New(),
+		Handler:           gateway.New(d.Node.Content),
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}

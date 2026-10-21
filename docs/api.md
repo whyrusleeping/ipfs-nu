@@ -110,6 +110,66 @@ carry `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The full
 [security contract](operations.md#api-gateway-and-public-exposure) precedes any
 non-loopback exposure.
 
+## Gateway (v0 baseline)
+
+The loopback gateway (`gateway.listen`, default `127.0.0.1:8171`) serves held content
+through the `gateway.Content` interface (`Resolve(root, path)`, `Open`, `List`), which the
+store implements. These rules are the v0 baseline; the full
+[security contract](operations.md#api-gateway-and-public-exposure) comes before any
+non-loopback exposure.
+
+- **Hosts.** `Host` must be `localhost`, a loopback IP literal, or `<cid>.localhost`
+  (one label, a syntactically valid base32 CIDv1), always with the gateway's own port.
+  Anything else is `403` (DNS-rebinding defense).
+- **Two origins.** The bare origin (`http://localhost:8171`, `http://127.0.0.1:8171`)
+  serves `/tree/<cid>/<path>` and `/blob/<cid>` as *non-active* content only. One origin
+  per root, `http://<cid>.localhost:8171/<path>`, serves the tree as a site: `index.html`
+  when a directory has one, listings otherwise, active content allowed because the origin
+  isolates it. Browsers that do not resolve `*.localhost` (Safari) keep the bare origin's
+  download behavior; nothing active is ever rendered there.
+- **Non-active fallback.** On the bare origin a file is served inline only if its
+  sanitized type is `text/plain`, `text/css`, `application/json`,
+  `application/octet-stream`, or `image/*` (not SVG), `video/*`, `audio/*`, `font/*`.
+  Everything else (HTML, SVG, XML, JavaScript, PDF, unknown) is sent as
+  `application/octet-stream` with `Content-Disposition: attachment` and a
+  `Link: <http://<cid>.localhost:<port>/<path>>; rel="alternate"` header. Listings carry
+  an "open as site" link to the same URL.
+- **Types.** The tree's `mime` is parsed with `mime.ParseMediaType`; only a `utf-8`
+  charset parameter survives; an invalid or missing type falls back to the name's
+  extension, then `application/octet-stream`. Blobs (`/blob/<cid>` or a blob root) are
+  always `application/octet-stream` downloads. Symlink entries are listed but answer
+  `422` instead of being followed.
+- **Headers.** Every response has `X-Content-Type-Options: nosniff`; content responses
+  carry `ETag: "<cid>"` and `Cache-Control: public, max-age=31536000, immutable`;
+  gateway-generated pages (root, listings) carry
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. No cookies are
+  ever set or read. Only `GET`/`HEAD` are accepted; `Range`, `If-Range` and
+  `If-None-Match` work on files. Errors are plain text (`<code>: <message>`), never HTML.
+- **Paths.** Paths with empty, `.` or `..` segments or NUL are `400`; a directory URL
+  without a trailing slash redirects (`301`) to one. Listings show the directory CID and
+  total size below it, and each entry's name, kind, size and CID; entries with unsafe
+  names are shown but not linked. The MASL header allowlist (D21) is not applied yet.
+
+## Safe extraction (`nu get -o`)
+
+`node/extract.Extract(ctx, dest, walk)` writes a pre-order tree walk under `dest`:
+paths must be relative with no empty, `.`, `..`, NUL or backslash segments and names ≤
+255 bytes (else `invalid_argument`, nothing written); every existing path component under
+`dest` is `Lstat`ed and a symlink anywhere on the way, or in place of the file being
+written, aborts the extraction; symlink entries are never created and are listed in the
+report; files are written to a temp file in the target directory and renamed into place;
+modes are `0644`, or `0755` when the tree marks the file executable, `0755` for
+directories. The report counts files, directories and bytes and lists skipped entries.
+
+## Daemonless commands
+
+`get`, `cat` and `ls` try the daemon first (address file, then a status ping). When none
+answers they take the repo lock, remove stale address files, and run an in-process node
+for the duration of the command, saying so on stderr. If another process holds the lock
+but its API does not answer, they fail with `unavailable` and the action to wait or
+restart the daemon. `add`, `pin` and `operations` require the daemon, since content added
+without one would have no node to serve or announce it.
+
 ## Targets
 
 `get`, `cat`, `ls` and `dag get` parse their argument with `node/target` per the

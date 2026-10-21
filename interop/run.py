@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Small bounded Docker runner for upstream transport binaries and black-box peers.
+"""Bounded Docker runner for unified-testing-compatible QUIC peers and black boxes.
 
-No Python packages required. Every run writes results, including unsupported pairs,
-and exits nonzero for any non-pass. Public network probes require --public.
+No Python packages required. Every run writes results and exits nonzero for any
+non-pass. Public network probes require --public.
 """
 import argparse
 import json
@@ -25,6 +25,7 @@ SOURCES = {
 KUBO = "ipfs/kubo:v0.40.0@sha256:e08c602bf97f138a0ec5b42155b4fd4532852919250b11b4aadbea2bf42c0e10"
 LIGHTHOUSE = "sigp/lighthouse:v8.0.1@sha256:774535b450d498de37d1c1a305cd36777bcf85bf0bc06c1ac54ef2552e7d81c2"
 REDIS = "redis:7.4.2-bookworm@sha256:fbdbaea47b9ae4ecc2082ecdb4e1cea81e32176ffb1dcf643d422ad07427e5d9"
+LODESTAR = "chainsafe/lodestar:v1.50.0@sha256:f3d339e962672a8ccc50e0b7c87ba2e215b8894d3d5e4471e5502608bfae0a16"
 
 
 class Runner:
@@ -102,7 +103,9 @@ class Runner:
             "upstream": UPSTREAM,
             "nuRevision": self.cmd(["git", "rev-parse", "HEAD"]).stdout.strip(),
             "workingTreeDirty": bool(self.cmd(["git", "status", "--porcelain"]).stdout),
-            "sources": SOURCES, "kubo": KUBO, "lighthouse": LIGHTHOUSE,
+            "sources": SOURCES,
+            "js": json.loads((HERE / "js" / "package.json").read_text())["dependencies"],
+            "kubo": KUBO, "lighthouse": LIGHTHOUSE, "lodestar": LODESTAR,
             "results": self.results,
         }, indent=2) + "\n")
 
@@ -131,14 +134,11 @@ class Runner:
 
     def transport(self, impl):
         if impl == "js":
-            with urllib.request.urlopen(f"https://raw.githubusercontent.com/libp2p/unified-testing/{UPSTREAM}/transport/images.yaml", timeout=60) as response:
-                (self.out / "upstream-images.yaml").write_bytes(response.read())
-            for direction in ("nu-to-js", "js-to-nu"):
-                self.results.append({"name": direction, "status": "unsupported", "error":
-                    "Pinned unified-testing js-v3.x supports tcp/ws/wss only, not quic-v1. Not a passing test; Phase 0a gate remains open."})
-            self.save()
-            return
-        image = self.build_upstream(impl)
+            image = "nu-interop-js:local"
+            self.docker("build", "-t", image, HERE / "js", timeout=900, log="build-js.log")
+            self.docker("image", "inspect", image, log="image-js.log")
+        else:
+            image = self.build_upstream(impl)
         self.init_network()
         redis = self.start("redis", REDIS, options=("--network-alias", "redis"))
         self.wait_ready(lambda: self.docker("exec", redis, "redis-cli", "ping", check=False).stdout.strip() == "PONG")
@@ -167,8 +167,10 @@ class Runner:
                 if not match:
                     raise RuntimeError("missing upstream YAML latency field: " + field)
                 values[field] = float(match[1])
-                if not math.isfinite(values[field]) or values[field] <= 0:
+                if not math.isfinite(values[field]) or values[field] < 0:
                     raise RuntimeError("invalid latency: " + field)
+                if field == "handshake_plus_one_rtt" and values[field] == 0:
+                    raise RuntimeError("invalid handshake latency")
             if not re.search(r"^ {2,4}unit: ms$", logs, re.M):
                 raise RuntimeError("missing latency units")
             return values
@@ -208,6 +210,12 @@ class Runner:
                       'ipfs config --json Addresses.Swarm \'["/ip4/0.0.0.0/udp/4001/quic-v1"]\' && '
                       'exec ipfs daemon --routing=none --migrate=true')
             c = self.start(kind, KUBO, args=("-ec", script), options=("--entrypoint", "/bin/sh"))
+        elif kind == "lodestar":
+            # Minimal disposable dev genesis, no validators or discovery; no public chain sync.
+            c = self.start(kind, LODESTAR, args=("dev", "--network", "dev", "--dataDir", "/tmp/lodestar",
+                "--genesisValidators", "8", "--discv5", "false", "--mdns", "false", "--quic", "true",
+                "--logFile", "none"), env={"RAYON_NUM_THREADS": "2", "TOKIO_WORKER_THREADS": "2"},
+                options=("--cpus", "2"))
         else:
             c = self.start(kind, LIGHTHOUSE, args=("lighthouse", "bn", "--network", "mainnet", "--datadir", "/tmp/lh",
                 "--allow-insecure-genesis-sync", "--execution-endpoint", "http://127.0.0.1:8551",
@@ -219,6 +227,9 @@ class Runner:
                 self.wait_ready(lambda: "Daemon is ready" in self.logs(c))
                 peer = self.docker("exec", c, "ipfs", "config", "Identity.PeerID").stdout.strip()
                 port, ping, key = 4001, "libp2p", None
+            elif kind == "lodestar":
+                match = self.wait_ready(lambda: re.search(r"PeerId ([A-Za-z0-9]+), Multiaddrs .*quic-v1", self.logs(c)), seconds=120)
+                peer, port, ping, key = match[1], 9001, "eth2", 2
             else:
                 match = self.wait_ready(lambda: re.search(r"/udp/9001/quic-v1/p2p/([A-Za-z0-9]+)", self.logs(c)))
                 peer, port, ping, key = match[1], 9001, "eth2", 2
@@ -244,6 +255,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suite", choices=("transport", "blackbox", "amino"))
     parser.add_argument("--impl", choices=("go", "rust", "js", "all"), default="all")
+    parser.add_argument("--client", choices=("kubo", "lighthouse", "lodestar", "all"),
+                        help="black-box target; default kubo+lighthouse. Lodestar rejects Nu's Ed25519 identity")
     parser.add_argument("--public", action="store_true", help="explicitly permit connections to pinned public Amino peers")
     parser.add_argument("--out", type=Path, default=HERE / "results")
     args = parser.parse_args()
@@ -259,7 +272,10 @@ def main():
                 except Exception as e:
                     runner.results.append({"name": "setup-" + impl, "status": "fail", "error": str(e)})
         elif args.suite == "blackbox":
-            for kind in ("kubo", "lighthouse"):
+            clients = ["kubo", "lighthouse"] if args.client is None else [args.client]
+            if args.client == "all":
+                clients = ["kubo", "lighthouse", "lodestar"]
+            for kind in clients:
                 runner.record(kind, lambda k=kind: runner.blackbox(k))
         else:
             runner.amino()

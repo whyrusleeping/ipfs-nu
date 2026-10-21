@@ -24,10 +24,8 @@ jobs:
         impl: [go, rust, js]
     steps:
       - uses: actions/checkout@v4
-      - name: Run pinned unified-testing transport binaries
+      - name: Run pinned QUIC peers with unified-testing coordination
         run: python3 interop/run.py transport --impl '${{ matrix.impl }}'
-      # JS currently reports unsupported and fails rather than silently passing
-      # an empty QUIC matrix. See interop/README.md; Phase 0a remains open.
       - uses: actions/upload-artifact@v4
         if: always()
         with:

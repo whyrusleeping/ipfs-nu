@@ -10,30 +10,40 @@ not establish field success.
 ## Libp2p container interop (2026-10-21)
 
 Task 0011; [runner, contract, exact source/image pins and reproduction](../interop/README.md).
-**Phase 0a remains open:** the pinned upstream js-libp2p transport test plan does
-not support QUIC-v1. Its two matrix entries are `unsupported`, never counted as
-passes; the JS CI job and complete matrix deliberately return failure.
+**All six transport directions pass locally**, including js-libp2p with
+`@chainsafe/libp2p-quic`. This supersedes the initial unsupported-JS result: the
+stock unified-testing JS plan still comments out QUIC, but ChainSafe provides a
+usable transport, now exercised by `interop/js/` with the same env/Redis/result
+contract. No unsupported exemption or spec waiver was needed. Remote CI execution
+and artifact publication remain unobserved; local evidence alone is not a claim
+that the full Phase 0a exit has been declared.
 
 Local environment: Linux 5.15.0-176-generic x86_64, Docker 29.4.1, no sudo.
-Nu base `43ffedc` plus this interop worktree; Nu image built with Go 1.26.0.
+Nu base `ef770d8` plus this interop update; Nu image built with Go 1.26.0.
 Upstream unified-testing `4ade567bfea81d291278a272825a7d35e73b40dd`, using its
 actual transport test binaries and contract patches: go-v0.47-pre
 `dd26469c52a7ba555095df0f8088ae1fff8c7627`, rust-v0.56
 `70082df7e6181722630eabc5de5373733aac9a21`. The bounded runner executes the
 Nu-only submatrix rather than the upstream multi-thousand-pair shell harness.
-All available components built and ran locally; none were deferred for image size.
+The JS image pins Node 24.10.0 (Debian/glibc), js-libp2p 3.5.1, ChainSafe QUIC
+2.1.5, identify 4.1.18 and ping 3.1.17, with npm integrity-locked dependencies.
+ChainSafe's linux-x64-gnu native binary supports both roles; no native build is
+needed. All required components built and ran locally; none were deferred for size.
 
 | Dialer → listener | Local result | Handshake + first ping (ms) | Ping RTT (ms) |
 |---|---|---:|---:|
-| Nu → go-libp2p | pass | 7.065 | 0.290 |
-| go-libp2p → Nu | pass | 5.942 | 0.315 |
-| Nu → rust-libp2p | pass | 4.414 | 0.255 |
-| rust-libp2p → Nu | pass | 3.669 | 0.285 |
-| Nu → js-libp2p v3.x | unsupported: upstream QUIC implementation commented out | — | — |
-| js-libp2p v3.x → Nu | unsupported: upstream QUIC implementation commented out | — | — |
+| Nu → go-libp2p | pass | 5.773 | 0.449 |
+| go-libp2p → Nu | pass | 5.917 | 0.314 |
+| Nu → rust-libp2p | pass | 4.529 | 0.214 |
+| rust-libp2p → Nu | pass | 4.770 | 0.349 |
+| Nu → js-libp2p 3.5.1 + ChainSafe QUIC 2.1.5 | pass | 69.588 | 1.495 |
+| js-libp2p 3.5.1 + ChainSafe QUIC 2.1.5 → Nu | pass | 76.752 | 0 (integer-ms clock) |
 
 These are single smoke samples on local Docker networks, **not performance
-benchmarks**. Both modern uppercase env/Redis coordination and YAML latency
+benchmarks**. JS ping validates the echoed bytes but measures with `Date.now()`;
+a valid sub-ms ping may report 0 ms (an earlier sample reported 1 ms). The runner
+accepts finite nonnegative ping latency and requires a positive handshake measurement
+and successful exit. Both modern uppercase env/Redis coordination and YAML latency
 fields are exercised. A separate Nu↔Nu Docker smoke passed using lowercase legacy
 env vars, the `listenerAddr` Redis key and the exact two-key single-line JSON
 result contract. Calling the public runner without `--public` was rejected before
@@ -41,8 +51,8 @@ starting any containers.
 
 | Black-box target | Local evidence |
 |---|---|
-| Kubo v0.40.0 (`kubo/0.40.0/882b7d2`) | QUIC connect, authenticated Ed25519 identity, identify, `/ipfs/ping/1.0.0`; ping 0.185 ms |
-| Lighthouse v8.0.1 (`Lighthouse/v8.0.1-ced49dd/x86_64-linux`) | QUIC connect, authenticated **secp256k1** key type asserted, identify, Ethereum `/eth2/beacon_chain/req/ping/1/ssz_snappy`; ping 0.848 ms |
+| Kubo v0.40.0 (`kubo/0.40.0/882b7d2`) | QUIC connect, authenticated Ed25519 identity, identify, `/ipfs/ping/1.0.0`; ping 0.322 ms |
+| Lighthouse v8.0.1 (`Lighthouse/v8.0.1-ced49dd/x86_64-linux`) | QUIC connect, authenticated **secp256k1** key type asserted, identify, Ethereum `/eth2/beacon_chain/req/ping/1/ssz_snappy`; ping 0.541 ms |
 
 Lighthouse does **not** advertise IPFS ping. Its native Ping/Pong uses an SSZ
 uint64 metadata sequence and snappy framing; this is not an IPFS-ping pass or
@@ -51,7 +61,20 @@ state and an internal Docker network. Lighthouse starts from its bundled genesis
 with a deliberately absent execution engine; expected execution warnings do not
 prevent its P2P service from answering. No validator or public chain sync runs.
 
-Public Amino was separately opted into locally: all three pinned identities in
+**Optional Lodestar v1.50.0 attempt:** the digest-pinned image starts a disposable
+minimal dev genesis with no running validators, mock execution and discovery off.
+QUIC connects and authenticates the remote secp256k1 key, but identify gets
+`unexpected EOF`, so ping is **not** counted as tested. Lodestar's
+[peer manager explicitly rejects non-secp256k1 remote identities](https://github.com/ChainSafe/lodestar/blob/003bd66543fa65b5c1e954eec9e8077054c226dc/packages/beacon-node/src/network/peers/peerManager.ts#L754-L761),
+including Nu's Ed25519 key. An independent js-libp2p Ed25519 control reproduces
+identify EOF and Lodestar's outgoing Goodbye. This is a client admission policy,
+not evidence of a Nu QUIC bug or missing platform binary (the image includes
+ChainSafe QUIC 2.1.5). The probe is retained behind `blackbox --client lodestar`
+(exit 1) for reproduction, not enabled in the required/default nightly suite.
+Changing Nu's own identity policy is deliberately not part of this interop patch.
+
+Public Amino was separately opted into locally in the original `43ffedc` run:
+all three pinned identities in
 [`interop/amino.json`](../interop/amino.json) connected and identified, with no
 outgoing ping or DHT query. The pins came from bootstrap DNS TXT records on this
 date, not an unbounded peer discovery walk:
@@ -66,14 +89,15 @@ Reproduce from the repository root:
 
 ```sh
 python3 interop/run.py transport --impl all --out interop/results/transport
-# Expected exit 1 until the unsupported JS pairs can be exercised.
+# All six rows now pass; any real test/setup failure still returns nonzero.
 python3 interop/run.py blackbox --out interop/results/blackbox
 python3 interop/run.py amino --public --out interop/results/amino
 ```
 
-Local raw evidence remains in ignored `interop/results/final-transport/`,
-`final-blackbox/`, and `amino/` (results JSON, per-container logs, identity/protocol
-JSON and build logs). `.github/workflows/interop.yml` runs these commands nightly
+Local raw evidence remains in ignored `interop/results/chainsafe-final-matrix/`,
+`chainsafe-final-blackbox/`, and the original `amino/` (results JSON, per-container
+logs, identity/protocol JSON and build logs). The optional Lodestar failure/control
+is recorded under `interop/results/lodestar-final/` and `lodestar-js-control/`. `.github/workflows/interop.yml` runs these commands nightly
 and on demand, uploading results even on failure; public Amino on manual dispatch
 requires its explicit input. **Remote CI execution/artifact publication has not
 yet been observed**, because this branch has not been pushed.
@@ -85,11 +109,11 @@ extractor only accepts two). No main-module dependencies changed. Pre-commit
 passed, as did the separate interop module's vet/staticcheck/build checks and
 Python compilation. Root tests remain network/Docker independent.
 
-Deferred/unmet: a supported JS QUIC-v1 test-plan pin and both JS directions;
-remote CI execution; no claim of standard IPFS ping on Lighthouse, reverse
-black-box client dialing, NAT traversal, sustained Ethereum sessions or data
-exchange. The upstream JS capability gap must be resolved before marking 0011
-or the full Phase 0a matrix green; it is not waived here.
+Deferred/unmet: remote CI execution; Lodestar connect/identify/ping with Nu's
+Ed25519 identity (blocked by Lodestar policy); no claim of standard IPFS ping on
+Lighthouse, reverse black-box client dialing, NAT traversal, sustained Ethereum
+sessions or data exchange. The original JS capability gap is resolved without
+waiving either matrix direction.
 
 ## Linux NAT lab smoke (2026-10-21)
 

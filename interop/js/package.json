@@ -1,0 +1,15 @@
+{
+  "name": "nu-interop-js-quic",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "dependencies": {
+    "@chainsafe/libp2p-quic": "2.1.5",
+    "@libp2p/identify": "4.1.18",
+    "@libp2p/ping": "3.1.17",
+    "@multiformats/multiaddr": "13.0.3",
+    "libp2p": "3.5.1",
+    "redis": "6.3.0"
+  }
+}

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
 	"github.com/whyrusleeping/nu/collection"
+	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
@@ -34,6 +36,8 @@ type ClusterNode interface {
 	DatasetCreate(ctx context.Context, scope string, req apiv0.DatasetCreateRequest) (*apiv0.Dataset, error)
 	Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, error)
 	Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset, error)
+	DatasetUpdate(ctx context.Context, scope, name string, req apiv0.DatasetUpdateRequest) (*apiv0.Dataset, error)
+	DatasetWait(ctx context.Context, scope, name string, req apiv0.DatasetWaitRequest) (*apiv0.WaitResult, error)
 }
 
 var _ ClusterNode = (*Local)(nil)
@@ -114,6 +118,9 @@ func (n *Local) localCluster() (*cluster.Cluster, error) {
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the local cluster in %s: %v", n.clusterDir("local"), err)
 	}
 	cs.local = c
+	if cs.sw != nil {
+		n.startReplica(c)
+	}
 	return c, nil
 }
 
@@ -150,6 +157,16 @@ func (n *Local) AttachNetwork(sw ClusterNet) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.sw = sw
+	if cs.local != nil || cluster.Exists(n.clusterDir("local")) {
+		if cs.local == nil {
+			if c, err := cluster.Open(n.clusterOpts("local")); err == nil {
+				cs.local = c
+			}
+		}
+		if cs.local != nil {
+			n.startReplica(cs.local)
+		}
+	}
 	c, err := n.netClusterLocked()
 	if err != nil || c == nil {
 		return err
@@ -171,13 +188,14 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 		return err
 	}
 	svc, err := cluster.StartService(cluster.ServiceConfig{Cluster: c, Host: cs.sw.Host(), Key: n.Key, Connect: cs.sw.Connect, Addrs: cs.sw.Addrs,
-		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks})
+		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks, Reports: n.reportsOf(c)})
 	if err != nil {
 		return err
 	}
 	cs.svc = svc
 	cs.svcPtr.Store(svc)
 	m.Start()
+	n.startReplica(c)
 	return nil
 }
 
@@ -203,6 +221,7 @@ func (n *Local) closeClusters() {
 	if coll != nil {
 		_ = coll.Close()
 	}
+	n.closeReplicas()
 }
 
 // ClusterService returns the running cluster service, if any (tests, diagnostics).
@@ -647,16 +666,44 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 			src.Ingest.Limits = &cluster.IngestLimits{MaxBytes: in.MaxBytes, Attempts: in.Attempts, Timeout: in.Timeout}
 		}
 	}
+	pol := cluster.Policy{Replicas: replicas, All: req.All, Where: req.Where, Spread: req.Spread}
+	if pol.All {
+		pol.Replicas = 0
+	}
+	if err := pol.Validate(); err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
+	}
+	var warnings []string
+	if c.Mode() != cluster.ModeLocal && !pol.All && pol.Spread == "" && pol.Replicas > 1 && coll == nil {
+		// Team default (docs/cluster.md "Datasets and updates"): spread over zones only
+		// when every eligible member is zone-tagged and there are enough zones.
+		pl := cluster.NewPlacement(c.View(), cluster.Policy{Replicas: pol.Replicas, Where: pol.Where}, n.PeerID())
+		zones, tagged := map[string]bool{}, true
+		for _, m := range pl.Members {
+			if z := m.Tags["zone"]; z != "" {
+				zones[z] = true
+			} else {
+				tagged = false
+			}
+		}
+		switch {
+		case tagged && len(zones) >= int(pol.Replicas):
+			pol.Spread = "zone"
+		default:
+			warnings = append(warnings, fmt.Sprintf("no zone spread: %d distinct zone(s) among %d eligible storage member(s), and every member must be tagged zone=…; copies may share a failure domain (set --spread to require one)", len(zones), len(pl.Members)))
+		}
+	}
 	w, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: req.Name, Value: &cluster.Dataset{Source: src,
-		Policy: cluster.Policy{Replicas: replicas}, Writers: req.Writers, Collection: coll, Note: req.Note}})
+		Policy: pol, Writers: req.Writers, Collection: coll, Note: req.Note}})
 	if err != nil {
 		if errors.Is(err, cluster.ErrNoKey) {
 			return nil, writeErr(err)
 		}
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "cannot write the dataset record: %v", err)
 	}
-	d := datasetInfo(c, req.Name)
+	d := n.datasetInfo(c, req.Name)
 	d.Metadata = n.ack(ctx, c, w)
+	d.Warnings = warnings
 	return d, nil
 }
 
@@ -669,7 +716,7 @@ func (n *Local) Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, er
 	out := []apiv0.Dataset{}
 	for name, d := range v.Datasets {
 		if !d.Deleted {
-			out = append(out, *datasetInfo(c, name))
+			out = append(out, *n.datasetInfo(c, name))
 		}
 	}
 	slices.SortFunc(out, func(a, b apiv0.Dataset) int { return cmpStr(a.Name, b.Name) })
@@ -685,10 +732,10 @@ func (n *Local) Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q in the %s cluster", name, scope).
 			WithAction("list datasets with `" + nu.Name + " dataset ls` or `" + nu.Name + " cluster dataset ls`")
 	}
-	return datasetInfo(c, name), nil
+	return n.datasetInfo(c, name), nil
 }
 
-func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
+func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	v := c.View()
 	d := v.Datasets[name]
 	out := &apiv0.Dataset{Name: name, Cluster: ScopeLocal, Source: "local", Signer: d.Signer,
@@ -698,6 +745,7 @@ func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	}
 	if d.Value != nil {
 		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
+		out.All, out.Where, out.Spread = d.Value.Policy.All, d.Value.Policy.Where, d.Value.Policy.Spread
 		if cp := d.Value.Collection; cp != nil {
 			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
 			for k, f := range cp.Facets {
@@ -723,7 +771,9 @@ func datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	slices.SortFunc(out.Heads, func(a, b apiv0.DatasetHead) int { return cmpStr(a.Signer, b.Signer) })
 	if h, ok := v.Head(name); ok {
 		out.Head = &apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: h.Signer, HLC: h.HLC.String()}
-		out.Content = apiv0.ContentState{State: "not_tracked", Detail: "content placement and readiness are not implemented yet; this reports signed metadata only"}
+		if t, err := cid.Parse(h.Value.Target); err == nil {
+			out.Content = n.evalContent(c, name, t).cs
+		}
 	}
 	return out
 }

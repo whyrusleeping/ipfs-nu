@@ -47,6 +47,7 @@ type Local struct {
 
 	content  *content.Content
 	clusters clusterState
+	reps     replicas
 	started  time.Time
 	// API and Gateway are the bound listen addresses, set by the daemon.
 	API, Gateway string

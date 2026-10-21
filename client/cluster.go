@@ -2,8 +2,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node"
@@ -85,6 +88,49 @@ func (c *Client) Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, e
 func (c *Client) Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset, error) {
 	var out apiv0.Dataset
 	if _, err := c.do(ctx, http.MethodGet, datasetsPath(scope)+"/"+url.PathEscape(name), nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DatasetUpdate writes a dataset's head.
+func (c *Client) DatasetUpdate(ctx context.Context, scope, name string, req apiv0.DatasetUpdateRequest) (*apiv0.Dataset, error) {
+	var out apiv0.Dataset
+	if _, err := c.do(ctx, http.MethodPost, datasetsPath(scope)+"/"+url.PathEscape(name)+"/head", nil, &req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DatasetWait waits for a condition on an exact target. An unsatisfied wait returns the
+// error (timeout or failed) together with the result its details carry.
+func (c *Client) DatasetWait(ctx context.Context, scope, name string, req apiv0.DatasetWaitRequest) (*apiv0.WaitResult, error) {
+	q := url.Values{"target": {req.Target}}
+	if req.Condition != "" {
+		q.Set("condition", req.Condition)
+	}
+	for _, h := range req.Holders {
+		q.Add("holder", h)
+	}
+	if req.Acks > 0 {
+		q.Set("acks", strconv.Itoa(req.Acks))
+	}
+	if req.Mode != "" {
+		q.Set("mode", req.Mode)
+	}
+	if req.Timeout != "" {
+		q.Set("timeout", req.Timeout)
+	}
+	var out apiv0.WaitResult
+	if _, err := c.do(ctx, http.MethodGet, datasetsPath(scope)+"/"+url.PathEscape(name)+"/wait", q, nil, &out); err != nil {
+		var ae *apiv0.Error
+		if errors.As(err, &ae) {
+			if raw, ok := ae.Details["result"]; ok {
+				if b, merr := json.Marshal(raw); merr == nil && json.Unmarshal(b, &out) == nil {
+					return &out, err
+				}
+			}
+		}
 		return nil, err
 	}
 	return &out, nil

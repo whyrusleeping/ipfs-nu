@@ -113,7 +113,7 @@ func TestPrivateCluster(t *testing.T) {
 		_, other := v.Head("other")
 		return ok && h.Signer == writer && !other && !v.IsMember(outsider.ID) && v.Ignored >= 2
 	}, a, b, c)
-	if d, err := c.Local.Dataset(ctx(t), node.ScopeCluster, "photos"); err != nil || d.Head == nil || d.Content.State != "not_tracked" || len(d.Heads) != 1 {
+	if d, err := c.Local.Dataset(ctx(t), node.ScopeCluster, "photos"); err != nil || d.Head == nil || d.Content.State == cluster.ReadyReady || d.Content.Target != target || len(d.Heads) != 1 {
 		t.Fatalf("dataset status on c: %+v, %v", d, err)
 	}
 

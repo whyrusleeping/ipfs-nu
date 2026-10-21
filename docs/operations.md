@@ -194,6 +194,12 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **0046 (placement and readiness)**: E1–E8, E10, W1–W3, W6, S5, S7 and `release.auto`
   defaulting to false; R1, R3–R8, R15, R17; `ContentState` carries the W3 fields; one-node
   `k=1` status (R9) with 0047.
+  Implemented with these readings: `extra` lists fresh **complete** reports from
+  non-owners (R7's incomplete surplus holder appears in neither `confirmed` nor `extra`);
+  a report naming another target is `absent`; a never-ready target with only stale
+  evidence is `unknown`, with fresh contradicting evidence `syncing`; a well-formed target
+  that no head names yet keeps a wait waiting (`target_not_observed`) rather than failing
+  it. Evidence: [validation](validation.md#placement-and-readiness-0046).
 - **0047 (presets and history)**: E8 archive-wide readiness over the live-set root, R9,
   and version availability reported separately from readiness.
 - **0048 (repair, handoff, audits)**: S1–S4, S6, S8 enabling `release.auto`; E9; R10–R14,

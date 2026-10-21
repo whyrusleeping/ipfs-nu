@@ -128,7 +128,7 @@ concurrent snapshots subject to explicit retention and content availability.
 | `key` (`<did:key>`) | `role` (`admin`, `writer`), `revoked?` `{after: <commit link>, rev: <TID>}` |
 | `member` (`<PeerId base58>`) | `roles` ([`storage`\|`client`]), `capacity` (int), `store_limit?`, `tags?` (string map), `addrs?` (≤ 16 multiaddrs), `label?`, `state` |
 | `invite` (`<id>`, 16 base32 chars) | `proofKey` (32 bytes, [below](#invites-and-join)), `roles`, `tags?`, `capacity?`, `expires` (datetime) |
-| `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas}` plus the policy fields above), `writers?` ([did]), `collection?` (`{facets?: {<name>: {ptr, type}}, merge?: "union"\|"lww", expire?: {facet, after}}`, [D22](collections.md#items-and-facets)), `note?` |
+| `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas, all?: true, where?: {<tag>: [<value>…]}, spread?: <tag>}`, at most 16 `where` tags of 1–16 values; other policy fields above are later work), `writers?` ([did]), `collection?` (`{facets?: {<name>: {ptr, type}}, merge?: "union"\|"lww", expire?: {facet, after}}`, [D22](collections.md#items-and-facets)), `note?` |
 | `head` (`<name>`) | `target` (CID string), `kind` (`tree`, `file`, `blob`), `size?`, `note?` |
 | `drop` (`<name>`, admins) | `paths` (at most 256 item paths; the union head leaves out everything at or below them, [D22](collections.md#union-heads)) |
 | `config` (`self`) | `clock?` (`{max_future_ms?, warn_skew_ms?}`) |
@@ -337,7 +337,17 @@ claiming proofs remain verifiable after key/account changes.
   `u = (uint64(blake3("nu.place\0" ‖ peerId_p ‖ b)[0:8]) + 1) / (2^64 + 1)` and
   `score = −capacity_p / ln(u)`. The owners are the `k` highest-scoring eligible members in
   state `active`. Prefer distinct `spread` values, then fill up to `k` with best remaining
-  eligible members to preserve useful copies. Duplicate domains do not satisfy strict
+  eligible members to preserve useful copies. Exact encoding (vectors:
+  `testdata/vectors/nu-cluster/placement.json`): `b` is the blob's 34-byte binary
+  multihash, `peerId_p` the PeerId bytes, the 8 bytes are read big-endian, and `u` and
+  `score` are evaluated in IEEE-754 float64 (so the denominator is 2^64; `u` is clamped
+  below 1). The weight is `capacity`, or 1 TiB when the record has none (0). Ties rank by
+  PeerId bytes, ascending. *Eligible* means role `storage`, state `active` and every
+  `where` tag present with an allowed value; `replicas: all` makes `k` the eligible count.
+  With `spread`, the first pass takes, in rank order, the best member of each distinct
+  non-empty value of the tag (untagged members have none). The **owner set** of a target
+  is the union of its blobs' owners, or the owners of the target's own multihash when it
+  has no blobs, so an empty tree still needs a confirming member. Duplicate domains do not satisfy strict
   spread: report policy-unsatisfied, not ready. Fewer than `k` members likewise cannot meet
   policy. Defaults are stored in dataset policy, not recomputed when tags change; preview
   tag/weight/member edits for feasibility and movement impacts.
@@ -347,6 +357,11 @@ claiming proofs remain verifiable after key/account changes.
 - Only `member` records affect placement. Adding or removing a member moves roughly that
   member's share, not the whole cluster. The **placement epoch** is a hash of the eligible
   members with their capacities, tags and states; completeness and status are keyed by it.
+  It is the hex SHA-256 of `"nu.cluster.epoch.v1\0"` ‖ the DRISL array of `{peer: <PeerId
+  bytes>, capacity, tags, state}` of every non-removed member with the `storage` role,
+  sorted by PeerId bytes (one epoch per cluster, so any storage member change re-binds
+  every dataset; the local cluster's epoch is `local`). The **policy hash** is the hex
+  SHA-256 of the DRISL `policy` map exactly as signed, unknown fields included.
 - No per-blob allocation is stored or agreed on. Each member determines its own blobs while
   walking structure. An epoch change triggers a rescan: about 10⁹ short hashes for 10M
   entries × 100 members. Benchmarks must confirm the cost.
@@ -365,7 +380,14 @@ claiming proofs remain verifiable after key/account changes.
 
 - Each storage member runs the D19 sync for every dataset for which it is eligible, fetching
   only blobs it owns. A completeness mark per `(subtree, epoch)` means that the structure and
-  all owned blobs are present.
+  all owned blobs are present. (0046: the head's `nu-tree` pin under source `cluster`, name
+  `dataset/<name>`, plus a completeness walk of the structure and owned blobs in the current
+  epoch; `/nu/tree/1` then inlines no blobs, so a member never receives blobs it does not
+  own. Under S5 a member that never saw the dataset ready works on the newest of at most
+  `staging.max_heads` staged heads; when one becomes fully held, older staged heads that
+  were never held are unpinned, while held and ready versions stay pinned and, with
+  `release.auto` off, are listed as release candidates. Storage refusals pause acquisition
+  with `insufficient_storage` and the bytes needed; nothing is unpinned.)
 - Blob sources are tried in this order: owners by rank, members holding surplus copies, then
   other members found with `/nu/have/1`. There is no DHT lookup.
 - **Handoff:** a blob that a member held but no longer owns becomes **surplus**. Keep its
@@ -393,7 +415,15 @@ claiming proofs remain verifiable after key/account changes.
 
 - **Heartbeats**, signed by the member's node key every 30 s:
   `{peer, seq, time, free, used, epoch, datasets: [<report>]}`. Dataset lists are sent as
-  deltas against the previous heartbeat, and full status is fetched on demand. For
+  deltas against the previous heartbeat, and full status is fetched on demand. Encoding
+  (0046): `reports: {base, seq, list?: [<report>], gone?: [<name>]}`. Each report's `seq` is
+  `max(last + 1, now in µs)`, so it grows across restarts; `seq` is the member's greatest,
+  `base` its value at the previous heartbeat. A receiver holding the sender's set at `base`
+  applies the delta (`base: 0` replaces the whole set) and treats every report of that
+  member as received now (E4); any other receiver, or `base: -1` (a delta over 48 KiB),
+  pulls the full set with `reports`. Heartbeats are sent early when reports change, and
+  carry `peers: [{peer, addrs}]` (at most 32 connected members, 4 addresses each) so members
+  whose records carry no addresses, such as pre-authorized ones, can dial each other. For
   collections, heartbeats carry only each item holdings log's latest `seq`; item holdings
   are streamed separately ([D22](collections.md#holdings-reports-and-index)).
 - **Completion report** ([E2](operations.md#e-readiness-evidence)), one per dataset the
@@ -513,6 +543,9 @@ request a non-member or non-admin may not make). Requests naming another cluster
   carry `holdings: [{dataset, epoch, seq}]`, each collection's log position.
 - `join {invite, proof, addrs?}` and, between members, `admit {invite, proof, peer, addrs?}`
   answer `{status}` once the member record is committed.
+- `reports {}` answers `{status}` followed by one uvarint-framed DRISL `{seq, reports:
+  [<report>]}` of at most 8 MiB: the member's current completion reports, authenticated by
+  the stream.
 
 ### Network modes
 
@@ -644,10 +677,11 @@ restore before a production recommendation.
   capacity adjustment, conflict reconciliation and key/state recovery/export procedures.
 - Version tree encoding, span-index storage cost at 10M entries × hundreds of versions,
   exact bucket boundaries for the retention schedule, and `compact_after` defaults.
-- `/nu/cluster/1` mesh degree once full mesh stops scaling, and heartbeat delta encoding.
+- `/nu/cluster/1` mesh degree once full mesh stops scaling.
 - Tombstone compaction.
-- Exact placement encoding, `spread` selection, cross-implementation vectors, rescan
-  benchmarks and the mapping from capacity to weight.
+- Cross-implementation placement vectors beyond Go's float64 `math.Log` (the encoding and
+  `spread` selection are specified above), rescan benchmarks, per-dataset epochs, and
+  whether capacity in bytes is the right weight.
 - Storage cost and invalidation of per-epoch completeness marks.
 - `down_after`/`up_after` defaults, flap damping, and handoff when an owner is `full`.
 - Bundle size limits and splitting, and atproto proof verification against a pinned key.

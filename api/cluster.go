@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node"
@@ -18,26 +19,34 @@ var clusterRoutes = []Route{
 	{"GET", "/cluster/datasets"},
 	{"POST", "/cluster/datasets"},
 	{"GET", "/cluster/datasets/{name}"},
+	{"POST", "/cluster/datasets/{name}/head"},
+	{"GET", "/cluster/datasets/{name}/wait"},
 	{"GET", "/datasets"},
 	{"POST", "/datasets"},
 	{"GET", "/datasets/{name}"},
+	{"POST", "/datasets/{name}/head"},
+	{"GET", "/datasets/{name}/wait"},
 }
 
 func init() { Routes = append(Routes, clusterRoutes...) }
 
 func (s *Server) clusterHandlers() map[Route]handlerFunc {
 	return map[Route]handlerFunc{
-		{"GET", "/cluster"}:                   s.clusterStatus,
-		{"POST", "/cluster/init"}:             s.clusterInit,
-		{"POST", "/cluster/invites"}:          s.clusterInvite,
-		{"POST", "/cluster/join"}:             s.clusterJoin,
-		{"DELETE", "/cluster/members/{peer}"}: s.clusterMemberRemove,
-		{"GET", "/cluster/datasets"}:          s.datasets(node.ScopeCluster),
-		{"POST", "/cluster/datasets"}:         s.datasetCreate(node.ScopeCluster),
-		{"GET", "/cluster/datasets/{name}"}:   s.dataset(node.ScopeCluster),
-		{"GET", "/datasets"}:                  s.datasets(node.ScopeLocal),
-		{"POST", "/datasets"}:                 s.datasetCreate(node.ScopeLocal),
-		{"GET", "/datasets/{name}"}:           s.dataset(node.ScopeLocal),
+		{"GET", "/cluster"}:                       s.clusterStatus,
+		{"POST", "/cluster/init"}:                 s.clusterInit,
+		{"POST", "/cluster/invites"}:              s.clusterInvite,
+		{"POST", "/cluster/join"}:                 s.clusterJoin,
+		{"DELETE", "/cluster/members/{peer}"}:     s.clusterMemberRemove,
+		{"GET", "/cluster/datasets"}:              s.datasets(node.ScopeCluster),
+		{"POST", "/cluster/datasets"}:             s.datasetCreate(node.ScopeCluster),
+		{"GET", "/cluster/datasets/{name}"}:       s.dataset(node.ScopeCluster),
+		{"GET", "/datasets"}:                      s.datasets(node.ScopeLocal),
+		{"POST", "/datasets"}:                     s.datasetCreate(node.ScopeLocal),
+		{"GET", "/datasets/{name}"}:               s.dataset(node.ScopeLocal),
+		{"POST", "/cluster/datasets/{name}/head"}: s.datasetUpdate(node.ScopeCluster),
+		{"GET", "/cluster/datasets/{name}/wait"}:  s.datasetWait(node.ScopeCluster),
+		{"POST", "/datasets/{name}/head"}:         s.datasetUpdate(node.ScopeLocal),
+		{"GET", "/datasets/{name}/wait"}:          s.datasetWait(node.ScopeLocal),
 	}
 }
 
@@ -171,6 +180,51 @@ func (s *Server) dataset(scope string) handlerFunc {
 			return err
 		}
 		writeJSON(w, http.StatusOK, d)
+		return nil
+	}
+}
+
+func (s *Server) datasetUpdate(scope string) handlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		c, err := s.cluster()
+		if err != nil {
+			return err
+		}
+		var req apiv0.DatasetUpdateRequest
+		if err := readJSON(r, &req); err != nil {
+			return err
+		}
+		d, err := c.DatasetUpdate(r.Context(), scope, r.PathValue("name"), req)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, d)
+		return nil
+	}
+}
+
+// datasetWait answers with the wait result; an unsatisfied wait is an error (timeout or
+// failed) whose details carry the result.
+func (s *Server) datasetWait(scope string) handlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		c, err := s.cluster()
+		if err != nil {
+			return err
+		}
+		q := r.URL.Query()
+		req := apiv0.DatasetWaitRequest{Target: q.Get("target"), Condition: q.Get("condition"), Holders: q["holder"], Mode: q.Get("mode"), Timeout: q.Get("timeout")}
+		if a := q.Get("acks"); a != "" {
+			n, err := strconv.Atoi(a)
+			if err != nil || n < 1 {
+				return apiv0.Errorf(apiv0.CodeInvalidArgument, "acks must be a positive integer")
+			}
+			req.Acks = n
+		}
+		res, err := c.DatasetWait(r.Context(), scope, r.PathValue("name"), req)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, res)
 		return nil
 	}
 }

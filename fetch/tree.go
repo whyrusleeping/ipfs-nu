@@ -16,6 +16,9 @@ import (
 // peer lacks, everything after a failure) the layer-1 walk fetches afterwards.
 func (r *run) treeSync(ctx context.Context, root cid.CID) {
 	req := proto.TreeRequest{Root: root, Scope: proto.ScopeSubtree, InlineMax: proto.MaxInline, Have: r.opts.Have}
+	if r.opts.Want != nil {
+		req.InlineMax = 0 // blobs are selected one by one
+	}
 	for _, p := range r.sw.live() {
 		for fails := 0; fails < maxFails && r.sw.usable(p); {
 			rctx, cancel := r.timeout(ctx)

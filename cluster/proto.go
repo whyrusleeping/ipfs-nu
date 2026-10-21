@@ -33,6 +33,7 @@ const (
 	OpJoin      = "join"
 	OpAdmit     = "admit"
 	OpHoldings  = "holdings"
+	OpReports   = "reports"
 )
 
 // Response statuses (those of /nu/bytes/1, plus forbidden).
@@ -88,7 +89,18 @@ type Heartbeat struct {
 	Addrs []string `drisl:"addrs,omitempty"`
 	// Holdings carries the latest holdings-log position per collection (D22).
 	Holdings []HoldingsMark `drisl:"holdings,omitempty"`
-	Sig      []byte         `drisl:"sig,omitempty"`
+	// Reports carries the member's completion reports as a delta (docs/cluster.md
+	// "Status").
+	Reports *ReportDelta `drisl:"reports,omitempty"`
+	// Peers relays connected members' advertised addresses.
+	Peers []PeerAddrs `drisl:"peers,omitempty"`
+	Sig   []byte      `drisl:"sig,omitempty"`
+}
+
+// PeerAddrs is a member's advertised addresses as relayed by another member.
+type PeerAddrs struct {
+	Peer  []byte   `drisl:"peer"`
+	Addrs []string `drisl:"addrs"`
 }
 
 // HoldingsMark is a member's holdings-log position for one collection.

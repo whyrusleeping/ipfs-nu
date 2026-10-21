@@ -38,6 +38,9 @@ type ServiceConfig struct {
 	Holdings func(peer wire.PeerID, req HoldingsRequest) (*HoldingsPage, error)
 	// HoldingsMarks reports this node's holdings-log positions for heartbeats.
 	HoldingsMarks func() []HoldingsMark
+	// Reports returns this node's current completion reports (seq unset; the service
+	// numbers changes) for heartbeats; nil sends none.
+	Reports func() []Report
 }
 
 // PeerStatus is what this node knows about another member.
@@ -47,6 +50,12 @@ type PeerStatus struct {
 	// Skew is the peer's clock minus ours, measured at heartbeat receipt.
 	Skew  time.Duration
 	Heads map[string]string // did → rev last reported by the peer
+	// Reports are the peer's completion reports by dataset at report sequence RSeq, all
+	// confirmed current at ReportsAt (this node's clock).
+	Reports   map[string]Report
+	RSeq      int64
+	ReportsAt time.Time
+	pulling   bool
 }
 
 // Service runs a networked cluster on a host: gating, state replication (heads
@@ -69,6 +78,14 @@ type Service struct {
 	pulling map[string]bool
 	closed  bool
 	changed chan struct{} // closed and replaced when peer heads change
+
+	hbKick   chan struct{}
+	own      map[string]Report // this node's reports with their seqs
+	ownSeq   int64             // report sequence: the greatest seq assigned
+	sentSeq  int64             // ownSeq at the previous heartbeat (the next delta's base)
+	sentOnce bool
+	evidence chan struct{}            // closed and replaced when received reports change
+	learned  map[wire.PeerID][]string // member addresses relayed by other members' heartbeats
 }
 
 // Gate is the connection policy of c for this node (self): in private and isolated mode
@@ -121,7 +138,8 @@ func StartService(cfg ServiceConfig) (*Service, error) {
 		cfg.Logger = slog.Default()
 	}
 	s := &Service{cfg: cfg, c: cfg.Cluster, h: cfg.Host, self: cfg.Host.ID(), log: cfg.Logger.With("cluster", cfg.Cluster.ID.String()),
-		kick: make(chan struct{}, 1), peers: map[wire.PeerID]*PeerStatus{}, pulling: map[string]bool{}, changed: make(chan struct{})}
+		kick: make(chan struct{}, 1), peers: map[wire.PeerID]*PeerStatus{}, pulling: map[string]bool{}, changed: make(chan struct{}),
+		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{}), learned: map[wire.PeerID][]string{}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	private := s.c.Mode() == ModePrivate || s.c.Mode() == ModeIsolated
 	if private {
@@ -199,6 +217,8 @@ func (s *Service) run() {
 			for _, id := range s.connectedMembers() {
 				s.exchange(id)
 			}
+		case <-s.hbKick:
+			s.heartbeat()
 		case <-tick.C:
 			s.c.Refresh()
 			s.connectMembers()
@@ -241,6 +261,7 @@ func (s *Service) addrsOf(id wire.PeerID) []wire.Multiaddr {
 	if p := s.peers[id]; p != nil && p.Heartbeat != nil {
 		texts = append(texts, p.Heartbeat.Addrs...)
 	}
+	texts = append(texts, s.learned[id]...)
 	s.mu.Unlock()
 	for _, b := range s.c.Boot() {
 		if b.Peer == id {
@@ -375,6 +396,10 @@ func (s *Service) heartbeat() {
 	s.seq++
 	hb := Heartbeat{Peer: s.self.Bytes(), Seq: s.seq, Time: s.c.Now().UnixMilli(), Free: free, Used: used}
 	s.mu.Unlock()
+	if s.cfg.Reports != nil {
+		hb.Reports = s.reportDelta(s.cfg.Reports())
+	}
+	hb.Peers = s.relayAddrs()
 	if s.cfg.HoldingsMarks != nil {
 		hb.Holdings = s.cfg.HoldingsMarks()
 	}
@@ -606,13 +631,33 @@ func (s *Service) serve(st *host.Stream) {
 			p = &PeerStatus{}
 			s.peers[peer] = p
 		}
+		pull := false
 		if p.Heartbeat == nil || req.HB.Seq > p.Heartbeat.Seq || req.HB.Seq == 1 {
 			now := s.c.Now()
 			p.Heartbeat, p.Received = req.HB, now
 			p.Skew = time.UnixMilli(req.HB.Time).Sub(now)
+			if d := req.HB.Reports; d != nil {
+				pull = s.applyReportsLocked(p, d, now)
+			}
+			for _, pa := range req.HB.Peers {
+				if id, err := wire.PeerIDFromBytes(pa.Peer); err == nil && id != s.self && len(pa.Addrs) <= 16 {
+					s.learned[id] = pa.Addrs
+				}
+			}
 		}
 		s.mu.Unlock()
 		reply(response{}, nil)
+		if pull {
+			s.spawn(func() { s.pullReports(peer) })
+		}
+
+	case OpReports:
+		body, err := s.serveReports()
+		if err != nil {
+			refuse(StatusInternal, "%v", err)
+			return
+		}
+		reply(response{}, body)
 	case OpHoldings:
 		if s.cfg.Holdings == nil {
 			refuse(StatusNotFound, "this member keeps no holdings logs")
@@ -719,4 +764,26 @@ func (s *Service) admit(joiner wire.PeerID, invite string, proof []byte, addrs [
 		return StatusOK, ""
 	}
 	return StatusNotFound, "no connected member holding an admin key accepted the invite"
+}
+
+// relayAddrs lists the heartbeat addresses (at most 4 each) of connected members (at most
+// 32), so members
+// that are not connected to each other, such as two pre-authorized members whose records
+// carry no addresses, can dial each other. Gating still admits only members, and the TLS
+// handshake authenticates the PeerId.
+func (s *Service) relayAddrs() []PeerAddrs {
+	v := s.c.View()
+	var out []PeerAddrs
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, p := range s.peers {
+		if len(out) == 32 || p.Heartbeat == nil || len(p.Heartbeat.Addrs) == 0 || !v.IsMember(id) {
+			continue
+		}
+		if _, ok := s.h.Connection(id); ok {
+			out = append(out, PeerAddrs{Peer: id.Bytes(), Addrs: p.Heartbeat.Addrs[:min(len(p.Heartbeat.Addrs), 4)]})
+		}
+	}
+	slices.SortFunc(out, func(a, b PeerAddrs) int { return cmpStr(string(a.Peer), string(b.Peer)) })
+	return out
 }

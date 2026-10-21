@@ -121,7 +121,17 @@ func printClusterInfo(w io.Writer, label string, c *apiv0.ClusterInfo) {
 }
 
 func printDataset(w io.Writer, d *apiv0.Dataset) {
-	fmt.Fprintf(w, "%s (%s cluster) replicas %d, record by %s\n", d.Name, d.Cluster, d.Replicas, d.Signer)
+	reps := strconv.FormatInt(d.Replicas, 10)
+	if d.All {
+		reps = "all"
+	}
+	fmt.Fprintf(w, "%s (%s cluster) replicas %s, record by %s\n", d.Name, d.Cluster, reps, d.Signer)
+	if d.Spread != "" || len(d.Where) > 0 {
+		fmt.Fprintf(w, "  placement: spread %q, where %v\n", d.Spread, d.Where)
+	}
+	for _, warn := range d.Warnings {
+		fmt.Fprintf(w, "  warning: %s\n", warn)
+	}
 	if c := d.Collection; c != nil {
 		fmt.Fprintf(w, "  collection: merge %s, %d facet(s)", c.Merge, len(c.Facets))
 		if c.Expire != "" {
@@ -141,11 +151,55 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 		}
 	}
 	printMetadata(w, d.Metadata)
-	fmt.Fprintf(w, "content: %s", d.Content.State)
-	if d.Content.Detail != "" {
-		fmt.Fprintf(w, " (%s)", d.Content.Detail)
+	printContent(w, d.Content)
+}
+
+// printContent prints a content status with its W3 fields.
+func printContent(w io.Writer, c apiv0.ContentState) {
+	fmt.Fprintf(w, "content: %s", c.State)
+	if c.Detail != "" {
+		fmt.Fprintf(w, " (%s)", c.Detail)
 	}
 	fmt.Fprintln(w)
+	if c.Target == "" {
+		return
+	}
+	fmt.Fprintf(w, "  target %s, %d of %d owner(s) confirmed", c.Target, len(c.Confirmed), c.Required)
+	if len(c.Confirmed) > 0 {
+		fmt.Fprintf(w, ", oldest evidence %s", (time.Duration(c.EvidenceAge) * time.Millisecond).Round(time.Millisecond))
+	}
+	fmt.Fprintln(w)
+	if c.Epoch != "" {
+		fmt.Fprintf(w, "  epoch %.16s, policy %.16s, mode %s\n", c.Epoch, c.Policy, c.Mode)
+	}
+	for _, m := range c.Missing {
+		fmt.Fprintf(w, "  missing %s: %s\n", m.Peer, m.Reason)
+	}
+	for _, x := range c.Extra {
+		fmt.Fprintf(w, "  extra %s (not counted)\n", x.Peer)
+	}
+	for _, u := range c.Unmet {
+		fmt.Fprintf(w, "  unmet: %s\n", u)
+	}
+	if lr := c.LastReady; lr != nil && c.State != "ready" {
+		fmt.Fprintf(w, "  last ready at %s (epoch %.16s)\n", lr.At.Local().Format(time.RFC3339), lr.Epoch)
+	}
+	if l := c.Local; l != nil {
+		fmt.Fprintf(w, "  this node: %s %s (%s), owns %d blob(s) %d B, missing %d blob(s) %d B", l.State, l.Target, l.Mode, l.Owned.Blobs, l.Owned.Bytes, l.Missing.Blobs, l.Missing.Bytes)
+		if l.Observed != "" {
+			fmt.Fprintf(w, "; head %s observed only (staging full)", l.Observed)
+		}
+		if l.Reason != "" {
+			fmt.Fprintf(w, "; %s", l.Reason)
+		}
+		if l.Need > 0 {
+			fmt.Fprintf(w, ", %d B more needed", l.Need)
+		}
+		fmt.Fprintln(w)
+	}
+	if r := c.Release; r != nil && len(r.Candidates) > 0 {
+		fmt.Fprintf(w, "  %d retained version(s) are release candidates; release.auto is off, nothing is released\n", len(r.Candidates))
+	}
 }
 
 // datasetCommands builds `create|ls|status` for a scope.
@@ -163,7 +217,20 @@ func datasetCommands(scope string) []*command {
 			summary: "create a dataset record (metadata only; content arrives with `add`/heads)",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
-				replicas := fs.Int64("replicas", 0, "copies per blob (default 2; 1 in the local cluster)")
+				replicasFlag := fs.String("replicas", "", "copies per blob, or all (default 2; 1 in the local cluster)")
+				spread := fs.String("spread", "", "tag whose values each blob's owners must differ in, e.g. zone (team default: zone when every member is zone-tagged)")
+				var where map[string][]string
+				fs.Func("where", "placement tag filter tag=v1|v2 (repeatable; every tag must match)", func(s string) error {
+					k, v, ok := strings.Cut(s, "=")
+					if !ok || k == "" || v == "" {
+						return fmt.Errorf("want tag=value[|value…]")
+					}
+					if where == nil {
+						where = map[string][]string{}
+					}
+					where[k] = append(where[k], strings.Split(v, "|")...)
+					return nil
+				})
 				note := fs.String("note", "", "free-form note")
 				var writers []string
 				fs.Func("writer", "did:key allowed to write heads (repeatable)", func(s string) error { writers = append(writers, s); return nil })
@@ -200,8 +267,19 @@ func datasetCommands(scope string) []*command {
 				if err != nil {
 					return err
 				}
-				req := apiv0.DatasetCreateRequest{Name: fs.Arg(0), Replicas: *replicas, Writers: writers, Note: *note,
-					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge}
+				req := apiv0.DatasetCreateRequest{Name: fs.Arg(0), Writers: writers, Note: *note,
+					Collection: *coll, Facets: facets, Expire: *expire, Merge: *merge, Where: where, Spread: *spread}
+				switch *replicasFlag {
+				case "":
+				case "all":
+					req.All = true
+				default:
+					k, err := strconv.ParseInt(*replicasFlag, 10, 64)
+					if err != nil || k < 0 {
+						return usagef("--replicas must be a number or all")
+					}
+					req.Replicas = k
+				}
 				if *ingestMax != "" {
 					var sz repo.Size
 					if err := sz.UnmarshalTOML(*ingestMax); err != nil {
@@ -243,6 +321,62 @@ func datasetCommands(scope string) []*command {
 						fmt.Fprintf(w, "%s\treplicas %d\thead %s\tcontent %s\n", d.Name, d.Replicas, head, d.Content.State)
 					}
 				})
+			},
+		},
+		{
+			name:    "update",
+			args:    "<name> <cid> [--kind tree|file|blob] [--note text]",
+			summary: "write a dataset's head; reports metadata acknowledgment and content readiness separately",
+			run: func(ctx context.Context, e *env, args []string) error {
+				fs := e.flags()
+				kind := fs.String("kind", "", "head kind (default: detected from held content)")
+				note := fs.String("note", "", "free-form note")
+				if err := parseFlags(fs, args); err != nil {
+					return err
+				}
+				if fs.NArg() != 2 {
+					return usagef("dataset update needs a name and a target CID")
+				}
+				c, err := get(e, ctx)
+				if err != nil {
+					return err
+				}
+				d, err := c.DatasetUpdate(ctx, scope, fs.Arg(0), apiv0.DatasetUpdateRequest{Target: fs.Arg(1), Kind: *kind, Note: *note})
+				if err != nil {
+					return err
+				}
+				return e.emit(d, func(w io.Writer) { printDataset(w, d) })
+			},
+		},
+		{
+			name:    "wait",
+			args:    "<name> <cid> [--condition ready|held|metadata] [--holder peer]... [--acks n] [--timeout 10m]",
+			summary: "wait for one condition on an exact target (exit 6 on timeout); the result names what is still missing",
+			run: func(ctx context.Context, e *env, args []string) error {
+				fs := e.flags()
+				cond := fs.String("condition", "ready", "metadata (signed state held by --acks storage members), held (every --holder has it complete) or ready (policy readiness)")
+				var holders []string
+				fs.Func("holder", "PeerId that must hold the target (held; repeatable)", func(s string) error { holders = append(holders, s); return nil })
+				acks := fs.Int("acks", 1, "storage members that must hold the signed state (metadata)")
+				mode := fs.String("mode", "", "report mode a holder must use (held; default any)")
+				timeout := fs.String("timeout", "", "give up after this long (default 30s for metadata, 10m otherwise; 0 waits indefinitely)")
+				if err := parseFlags(fs, args); err != nil {
+					return err
+				}
+				if fs.NArg() != 2 {
+					return usagef("dataset wait needs a name and a target CID")
+				}
+				c, err := get(e, ctx)
+				if err != nil {
+					return err
+				}
+				res, err := c.DatasetWait(ctx, scope, fs.Arg(0), apiv0.DatasetWaitRequest{Target: fs.Arg(1), Condition: *cond, Holders: holders, Acks: *acks, Mode: *mode, Timeout: *timeout})
+				if res != nil {
+					if eerr := e.emit(res, func(w io.Writer) { printWait(w, res) }); eerr != nil {
+						return eerr
+					}
+				}
+				return err
 			},
 		},
 		{
@@ -431,4 +565,19 @@ var cmdCluster = &command{
 			sub:     datasetCommands(node.ScopeCluster),
 		},
 	},
+}
+
+func printWait(w io.Writer, r *apiv0.WaitResult) {
+	verdict := "satisfied"
+	if !r.Satisfied {
+		verdict = "NOT satisfied"
+	}
+	fmt.Fprintf(w, "%s: %s\n", r.Condition, verdict)
+	if r.SupersededBy != "" {
+		fmt.Fprintf(w, "  the head moved to %s during the wait; the wait stayed on %s\n", r.SupersededBy, r.Target)
+	}
+	if m := r.Metadata; m != nil {
+		fmt.Fprintf(w, "  metadata: rev %s by %s held by %d of %d storage member(s)\n", m.Rev, m.Signer, len(m.AckedBy), m.Acks)
+	}
+	printContent(w, r.ContentState)
 }

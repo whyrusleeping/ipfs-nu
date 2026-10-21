@@ -20,6 +20,7 @@ import (
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/target"
+	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/store"
 )
 
@@ -31,6 +32,13 @@ type Local struct {
 	Store *store.Store
 	// Content backs the gateway.
 	Content gateway.Content
+
+	// Key is the node's libp2p identity, loaded from (or created at) $NU_PATH/node.key.
+	Key *wire.NodeKey
+	// Fetcher brings content the node does not hold; NoFetcher until networking plugs one in.
+	Fetcher Fetcher
+	// Net is the running host's view of reachability; nil without a host.
+	Net Net
 
 	content *content.Content
 	started time.Time
@@ -45,16 +53,34 @@ type Local struct {
 // automatically in this build; the constant pins the contract for when it does.
 const GCGrace = time.Hour
 
-// NewLocal opens the store in the repo (creating it on first use) and returns a node with
-// a fresh operation manager. Close it when done.
+// NewLocal opens the store in the repo (creating it on first use), loads or creates the
+// node key, and returns a node with a fresh operation manager and no fetcher. Close it
+// when done.
 func NewLocal(r *repo.Repo) (*Local, error) {
+	key, err := LoadKey(r)
+	if err != nil {
+		return nil, err
+	}
 	st, err := store.Open(r.Root(), store.Options{})
 	if err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the store in %s: %v", r.Root(), err).
 			WithAction("check that the directory is writable and not in use by an older or newer " + nu.Name)
 	}
 	c := content.New(st)
-	return &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), content: c, started: time.Now()}, nil
+	return &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
+		content: c, started: time.Now()}, nil
+}
+
+// LoadKey loads the node key from $NU_PATH/node.key, creating it (0600) on first use.
+// Every node of a repo shares this identity; `nu init` creates it so a fresh repo is
+// complete, and NewLocal creates it for repos initialized by older builds.
+func LoadKey(r *repo.Repo) (*wire.NodeKey, error) {
+	key, err := wire.LoadOrCreateNodeKey(r.Path(repo.KeyFile))
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot load the node key %s: %v", r.Path(repo.KeyFile), err).
+			WithAction("the file must be a 0600 libp2p Ed25519 key; move it away to generate a new identity")
+	}
+	return key, nil
 }
 
 var _ Node = (*Local)(nil)
@@ -96,6 +122,7 @@ func (n *Local) Status(ctx context.Context) (*apiv0.Status, error) {
 		return nil, err
 	}
 	st.Store = &apiv0.StoreStatus{Objects: ss.Objects, Bytes: ss.Bytes, Pins: ss.Pins}
+	st.Network = n.networkStatus()
 	return st, nil
 }
 
@@ -227,6 +254,14 @@ func pinFor(c cid.CID, name string) store.Pin {
 	return p
 }
 
+// missing is the not_found error for content held in part (or not at all).
+func missing(c cid.CID, missing, objects int) *apiv0.Error {
+	if objects == 1 {
+		return content.NotHeld(c)
+	}
+	return content.Incomplete(c, missing, objects)
+}
+
 func apiPin(p store.Pin) apiv0.Pin {
 	return apiv0.Pin{CID: p.CID.String(), Name: p.Name, Mode: p.Mode, Source: p.Source}
 }
@@ -262,11 +297,7 @@ func (n *Local) PinAdd(ctx context.Context, req apiv0.PinRequest) (*apiv0.Operat
 		}
 		o.Progress(int64(st.Objects), 0, "objects")
 		if !st.Complete() {
-			if st.Objects == 1 {
-				return nil, content.NotHeld(c)
-			}
-			return nil, apiv0.Errorf(apiv0.CodeNotFound, "%d of %d objects under %s are not held by this node", st.Missing, st.Objects, c).
-				WithAction("add the content locally; fetching it from other nodes arrives with sharing")
+			return nil, missing(c, st.Missing, st.Objects)
 		}
 		o.Stage("pinning")
 		if err := n.Store.Pin(p); err != nil {

@@ -81,6 +81,8 @@ var Routes = []Route{
 	{"DELETE", "/pins/{cid}"},
 	{"GET", "/dag"},
 	{"POST", "/dag"},
+	{"POST", "/get"},
+	{"POST", "/share"},
 }
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
@@ -102,6 +104,8 @@ func (s *Server) register() {
 		{"DELETE", "/pins/{cid}"}:           s.pinRm,
 		{"GET", "/dag"}:                     s.dagGet,
 		{"POST", "/dag"}:                    s.dagPut,
+		{"POST", "/get"}:                    s.get,
+		{"POST", "/share"}:                  s.share,
 	}
 	paths := map[string]bool{}
 	for _, rt := range Routes {
@@ -460,6 +464,32 @@ func (s *Server) dagGet(w http.ResponseWriter, r *http.Request) error {
 
 func (s *Server) dagPut(w http.ResponseWriter, r *http.Request) error {
 	res, err := s.n.DagPut(r.Context(), io.LimitReader(r.Body, MaxJSONBody))
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, res)
+	return nil
+}
+
+func (s *Server) get(w http.ResponseWriter, r *http.Request) error {
+	var req apiv0.GetRequest
+	if err := readJSON(r, &req); err != nil {
+		return err
+	}
+	o, err := s.n.Get(r.Context(), req)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusAccepted, o)
+	return nil
+}
+
+func (s *Server) share(w http.ResponseWriter, r *http.Request) error {
+	var req apiv0.ShareRequest
+	if err := readJSON(r, &req); err != nil {
+		return err
+	}
+	res, err := s.n.Share(r.Context(), req)
 	if err != nil {
 		return err
 	}

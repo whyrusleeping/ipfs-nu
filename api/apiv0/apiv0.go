@@ -264,6 +264,23 @@ type Status struct {
 	Operations map[State]int `json:"operations"`
 	// Store summarises the local store.
 	Store *StoreStatus `json:"store,omitempty"`
+	// Network is the node's identity and reachability.
+	Network *NetworkStatus `json:"network,omitempty"`
+}
+
+// NetworkStatus is the network section of Status: who this node is and how it can be
+// reached. Serving and Peers stay false/0 until the daemon runs a libp2p host.
+type NetworkStatus struct {
+	// PeerID is the node's base36 libp2p PeerId (the `peer=` hint of its share links).
+	PeerID string `json:"peer_id"`
+	// Addrs are the multiaddrs the node would advertise: the host's actual addresses when
+	// one runs, else the swarm listen config expanded over the machine's non-loopback
+	// interfaces.
+	Addrs []string `json:"addrs"`
+	// Serving reports whether a host is accepting connections.
+	Serving bool `json:"serving"`
+	// Peers counts connected peers.
+	Peers int `json:"peers"`
 }
 
 // StoreStatus is the store section of Status.
@@ -361,4 +378,51 @@ type PinRequest struct {
 // DagPutResult is the result of storing one DRISL object.
 type DagPutResult struct {
 	CID string `json:"cid"`
+}
+
+// GetRequest starts a get operation: the target (a CID with optional path, or a nu://
+// share link, kept exact as the operation's target) is written to disk with safe
+// extraction. Like add, the daemon writes the path itself. Output is the exact destination
+// path; when empty, the content is written into Dir under its own name (the file node's
+// name, the path's last segment, or the CID). One of Output and Dir is required, as an
+// absolute path.
+type GetRequest struct {
+	Target string `json:"target"`
+	Output string `json:"output,omitempty"`
+	Dir    string `json:"dir,omitempty"`
+}
+
+// GetResult is the result of a get operation.
+type GetResult struct {
+	// CID is the resolved root that was written (with Path, when the target had one).
+	CID  string `json:"cid"`
+	Path string `json:"path,omitempty"`
+	// Output is the absolute path written.
+	Output string `json:"output"`
+	// Kind is "file", "dir" or "blob".
+	Kind  string `json:"kind"`
+	Files int    `json:"files"`
+	Dirs  int    `json:"dirs"`
+	Bytes int64  `json:"bytes"`
+	// Skipped lists entries not written (symlinks) and why.
+	Skipped []string `json:"skipped,omitempty"`
+	// Fetched reports whether any of the content had to be fetched from other nodes.
+	Fetched bool `json:"fetched,omitempty"`
+}
+
+// ShareRequest asks for the share link of held content.
+type ShareRequest struct {
+	// Target is a CID with optional path.
+	Target string `json:"target"`
+}
+
+// ShareLink is the answer to a share: the link to paste, and what went into it.
+type ShareLink struct {
+	Target string `json:"target"`
+	Link   string `json:"link"`
+	PeerID string `json:"peer_id"`
+	// Addrs are the multiaddrs included as hints.
+	Addrs []string `json:"addrs"`
+	// Serving reports whether this node is accepting connections for the content now.
+	Serving bool `json:"serving"`
 }

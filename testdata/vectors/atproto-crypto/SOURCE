@@ -1,0 +1,4 @@
+https://github.com/bluesky-social/atproto-interop-tests
+commit 056e5741bb330757205d6b16db5266fffcae937b
+files: crypto/{signature-fixtures.json,w3c_didkey_K256.json,w3c_didkey_P256.json} (unmodified), LICENSE-CC0
+Used by core/atrepo (commit signatures, did:key).

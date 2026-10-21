@@ -342,6 +342,47 @@ A node record containing only relay/dnsaddr hints does not conceal direct IPs in
 DNS/peer records. Specify/explain default address exposure and relay-only behavior. Hint,
 LAN and explicit-member discovery work independently of global Amino support.
 
+### v0 lookup, cache and mDNS
+
+`p2p/lookup.Resolver` streams results while all sources run in parallel. The default
+service combines the cache and libp2p mDNS; additional sources implement the bounded,
+cancelable Source interface. Defaults: 32 simultaneous lookups, 3 s per lookup, ten
+sources including cache/mDNS, 256 distinct results per lookup and 32 buffered results.
+Cancellation stops source work; a source must honor context and the emit callback.
+Hints are address claims, never membership or identity authorization. Normalize every
+address to a terminal `/p2p/<destination>`; reject conflicting destination identities.
+Share links accept repeated `peer` and `addr` query fields (8 KiB link, 16 peers,
+32 addresses, 1024 bytes per address). A suffix-less address needs exactly one peer;
+with multiple peers the destination suffix disambiguates, and must name a listed peer.
+The member-record adapter accepts an authenticated member rkey and its addrs field;
+cluster record verification remains the caller's job. Content/name/`via` resolution
+is separate. The lookup layer does not consume atproto feeds.
+
+The address cache retains Seen, Expires, source and original confidence. Effective
+confidence is `original * 2^(-age / halfLife)`, with age clamped to zero and a default
+24 h half-life. Hints start at 0.6 with 24 h expiry; mDNS at 0.5 with up to 120 s expiry.
+Expired entries are not returned. Defaults cap 256 peers and 32 source/address entries
+per peer, evicting oldest entries. Independent sources do not refresh each other's
+confidence. Persistence has a Load/Save snapshot interface for a later SQLite adapter.
+The interim FileStore uses JSON `{v:1, entries:[...]}`, at most 1 MiB/8192 entries,
+regular 0600 files, same-directory temporary files, fsync, atomic rename and directory
+fsync. Callers own the private parent directory. Invalid versions/entries fail closed.
+
+mDNS advertises PTR/SRV/TXT plus A/AAAA under `_p2p._udp.local.` on UDP 5353
+(224.0.0.251 and ff02::fb), using `dnsaddr=<multiaddr>/p2p/<id>` TXT strings.
+TXT, SRV and address records use cache-flush; PTR does not. SRV port 4001 is a
+compatibility placeholder: only TXT multiaddrs are used for peer connectivity.
+Query on startup and lookup, then every 30 s; answer matching service/instance/host
+queries, including unicast-response requests. Advertise at most eight addresses,
+TTL 120 s, expand wildcard listeners to the selected interface's IPs, and omit
+unscoped link-local IPv6. Packet limit is 9000 bytes, 128 questions/records total
+checked before DNS decoding, and 32 received address claims per packet. Ignore
+malformed/other-service/self advertisements and cap received TTL at 120 s.
+Cluster service names are `_p2p-<first-10-hex-SHA256(clusterID)>._udp.local.`;
+this is collision avoidance, not authentication or privacy. Discovery is enabled
+unless DisableMDNS is set; explicit interfaces allow loopback-only test harnesses.
+No multicast-capable interface is a reported startup error, not silent enablement.
+
 ## D16. Testing and diagnostics
 
 - Fuzz every parser. Use libp2p `unified-testing` for QUIC-v1 and black-box Kubo, Helia and

@@ -5,10 +5,12 @@ go 1.26.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
+	github.com/miekg/dns v1.1.73
 	github.com/mr-tron/base58 v1.2.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/multiformats/go-multibase v0.2.0
 	github.com/quic-go/quic-go v0.64.1
+	golang.org/x/net v0.57.0
 )
 
 require (
@@ -22,7 +24,6 @@ require (
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/exp v0.0.0-20230725012225-302865e7556b // indirect
-	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	lukechampine.com/blake3 v1.2.1 // indirect
 )

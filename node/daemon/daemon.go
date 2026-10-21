@@ -84,7 +84,12 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		}
 		return nil, err
 	}
-	d := &Daemon{Node: node.NewLocal(opts.Repo), log: log, lock: lock, errs: make(chan error, 2)}
+	n, err := node.NewLocal(opts.Repo)
+	if err != nil {
+		lock.Release()
+		return nil, err
+	}
+	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 2)}
 
 	d.apiLn, err = net.Listen("tcp", apiAddr)
 	if err != nil {
@@ -151,7 +156,8 @@ func (d *Daemon) Wait(ctx context.Context) error {
 }
 
 // Close shuts down gracefully: stops accepting, cancels running operations, lets handlers
-// finish within ShutdownTimeout, removes the address files and releases the lock.
+// finish within ShutdownTimeout, closes the node (waiting for operations, then the store),
+// removes the address files and releases the lock.
 func (d *Daemon) Close() error {
 	d.closeMu.Lock()
 	defer d.closeMu.Unlock()
@@ -181,6 +187,7 @@ func (d *Daemon) Close() error {
 		}
 	}
 	if d.Node != nil {
+		keep(d.Node.Close())
 		keep(d.Node.Repo.RemoveAddrFile(repo.APIFile))
 		keep(d.Node.Repo.RemoveAddrFile(repo.GatewayFile))
 	}

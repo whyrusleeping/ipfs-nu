@@ -16,12 +16,12 @@ import (
 )
 
 // Content commands. They parse their input here so users get the same errors with and
-// without a store, then call the node, which answers not_implemented until the store lands.
+// without a daemon, then call the node.
 
 var cmdAdd = &command{
 	name:    "add",
 	args:    "[-r] [--raw] [--hash sha256] [--nocopy] [--no-announce] [--no-wait] <path>",
-	summary: "add a file or directory; prints the CID (not available in this build)",
+	summary: "add a file or directory to the local store and print its CID",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		req := apiv0.AddRequest{Pin: true}
@@ -55,7 +55,7 @@ var cmdAdd = &command{
 			return apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is a directory", fs.Arg(0)).WithAction("add it with -r")
 		}
 		req.Path = p
-		n, err := e.node(ctx)
+		n, err := e.nodeOrLocalWrite(ctx)
 		if err != nil {
 			return err
 		}
@@ -65,6 +65,9 @@ var cmdAdd = &command{
 		}
 		return finishOperation(e, ctx, n, op, *noWait, func(w io.Writer, res apiv0.AddResult) {
 			fmt.Fprintf(w, "added %s %s\n", res.CID, res.Name)
+			for _, s := range res.Skipped {
+				fmt.Fprintf(w, "skipped %s\n", s)
+			}
 			if res.Link != "" {
 				fmt.Fprintf(w, "share: %s\n", res.Link)
 			}
@@ -98,7 +101,7 @@ func finishOperation[T any](e *env, ctx context.Context, n node.Node, op *apiv0.
 var cmdCat = &command{
 	name:    "cat",
 	args:    "<cid[/path]>",
-	summary: "write a file's bytes to stdout (not available in this build)",
+	summary: "write a file's bytes to stdout",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		if err := parseFlags(fs, args); err != nil {
@@ -125,7 +128,7 @@ var cmdCat = &command{
 var cmdLs = &command{
 	name:    "ls",
 	args:    "<cid[/path]>",
-	summary: "list a directory (not available in this build)",
+	summary: "list a directory (or describe a file)",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		if err := parseFlags(fs, args); err != nil {
@@ -190,7 +193,7 @@ var cmdPin = &command{
 		{
 			name:    "add",
 			args:    "[--no-wait] <cid>",
-			summary: "pin a CID (not available in this build)",
+			summary: "pin held content so GC keeps it",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				noWait := fs.Bool("no-wait", false, "print the operation and return instead of following it")
@@ -200,7 +203,7 @@ var cmdPin = &command{
 				if fs.NArg() != 1 || !target.IsCID(fs.Arg(0)) {
 					return usagef("pin add needs one CID")
 				}
-				n, err := e.node(ctx)
+				n, err := e.nodeOrLocalWrite(ctx)
 				if err != nil {
 					return err
 				}
@@ -216,7 +219,7 @@ var cmdPin = &command{
 		{
 			name:    "rm",
 			args:    "<cid>",
-			summary: "unpin a CID (not available in this build)",
+			summary: "remove an explicit pin",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				if err := parseFlags(fs, args); err != nil {
@@ -225,7 +228,7 @@ var cmdPin = &command{
 				if fs.NArg() != 1 || !target.IsCID(fs.Arg(0)) {
 					return usagef("pin rm needs one CID")
 				}
-				n, err := e.node(ctx)
+				n, err := e.nodeOrLocal(ctx)
 				if err != nil {
 					return err
 				}
@@ -237,19 +240,19 @@ var cmdPin = &command{
 		},
 		{
 			name:    "ls",
-			summary: "list pins (not available in this build)",
+			summary: "list pins",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
-				n, err := e.node(ctx)
+				n, err := e.nodeOrLocal(ctx)
 				if err != nil {
 					return err
 				}
 				return listAll(e, func(cursor string) (*apiv0.Page[apiv0.Pin], error) {
 					return n.Pins(ctx, cursor, 0)
-				}, func(w io.Writer, p apiv0.Pin) { fmt.Fprintf(w, "%s\t%s\n", p.CID, p.Name) })
+				}, func(w io.Writer, p apiv0.Pin) { fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.CID, p.Mode, p.Source, p.Name) })
 			},
 		},
 	},
@@ -262,7 +265,7 @@ var cmdDag = &command{
 		{
 			name:    "get",
 			args:    "<cid[/path]>",
-			summary: "print a DRISL object as atproto-style JSON (not available in this build)",
+			summary: "print a DRISL object (or a path into it) as atproto-style JSON",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				if err := parseFlags(fs, args); err != nil {
@@ -272,7 +275,7 @@ var cmdDag = &command{
 				if err != nil {
 					return err
 				}
-				n, err := e.node(ctx)
+				n, err := e.nodeOrLocal(ctx)
 				if err != nil {
 					return err
 				}
@@ -287,7 +290,7 @@ var cmdDag = &command{
 		{
 			name:    "put",
 			args:    "[file]",
-			summary: "store atproto-style JSON (stdin by default) as one DRISL object (not available in this build)",
+			summary: "store atproto-style JSON (stdin by default) as one SHA-256 DRISL object",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				if err := parseFlags(fs, args); err != nil {
@@ -304,7 +307,7 @@ var cmdDag = &command{
 				} else if fs.NArg() > 1 {
 					return usagef("dag put takes at most one file")
 				}
-				n, err := e.node(ctx)
+				n, err := e.nodeOrLocalWrite(ctx)
 				if err != nil {
 					return err
 				}

@@ -119,14 +119,15 @@
           "version": {"type": "string"},
           "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"}}},
           "paths": {"type": "object", "properties": {"root": {"type": "string"}, "config": {"type": "string"}, "key": {"type": "string"}, "db": {"type": "string"}, "blobs": {"type": "string"}, "api_file": {"type": "string"}}},
-          "operations": {"type": "object", "additionalProperties": {"type": "integer"}}
+          "operations": {"type": "object", "additionalProperties": {"type": "integer"}},
+          "store": {"type": "object", "required": ["objects", "bytes", "pins"], "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}}}
         }
       },
       "AddRequest": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "local path the daemon reads"}, "recursive": {"type": "boolean"}, "raw": {"type": "boolean"}, "hash": {"type": "string", "enum": ["", "sha256"]}, "nocopy": {"type": "boolean"}, "no_announce": {"type": "boolean"}, "pin": {"type": "boolean"}}},
-      "AddResult": {"type": "object", "required": ["cid", "size"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "size": {"type": "integer"}, "link": {"type": "string"}}},
-      "Entry": {"type": "object", "required": ["name", "cid", "type"], "properties": {"name": {"type": "string"}, "cid": {"type": "string"}, "type": {"type": "string", "enum": ["file", "dir", "blob"]}, "size": {"type": "integer"}}},
+      "AddResult": {"type": "object", "required": ["cid", "size"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "size": {"type": "integer"}, "files": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}}, "link": {"type": "string"}}},
+      "Entry": {"type": "object", "required": ["name", "cid", "type"], "properties": {"name": {"type": "string"}, "cid": {"type": "string"}, "type": {"type": "string", "enum": ["file", "dir", "symlink", "blob"]}, "size": {"type": "integer"}}},
       "Listing": {"type": "object", "required": ["target", "entries"], "properties": {"target": {"type": "string"}, "entries": {"type": "array", "items": {"$ref": "#/components/schemas/Entry"}}}},
-      "Pin": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
+      "Pin": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}, "mode": {"type": "string", "enum": ["recursive", "direct"]}, "source": {"type": "string"}}},
       "PinRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "name": {"type": "string"}}},
       "DagPutResult": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}}
     }

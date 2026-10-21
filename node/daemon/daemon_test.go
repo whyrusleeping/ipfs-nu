@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -136,15 +137,39 @@ func TestDaemonEndToEnd(t *testing.T) {
 		t.Fatalf("expired cursor: %+v %v", page, err)
 	}
 
-	// Error envelope: unknown operation, not-yet-supported target, unimplemented store.
+	// Error envelope: unknown operation, not-yet-supported target, relative add path.
 	if _, err := c.Operation(ctx, "nope"); !isCode(err, apiv0.CodeNotFound) {
 		t.Fatalf("unknown op: %v", err)
 	}
 	if _, err := c.Cat(ctx, "alice.example.com/site"); !isCode(err, apiv0.CodeNotSupported) {
 		t.Fatalf("name target: %v", err)
 	}
-	if _, err := c.Add(ctx, apiv0.AddRequest{Path: "x"}); !isCode(err, apiv0.CodeNotImplemented) {
+	if _, err := c.Add(ctx, apiv0.AddRequest{Path: "x"}); !isCode(err, apiv0.CodeInvalidArgument) {
 		t.Fatalf("add: %v", err)
+	}
+	// An add through the API: the operation runs past the request and cat reads it back.
+	file := filepath.Join(t.TempDir(), "hello.txt")
+	os.WriteFile(file, []byte("hello"), 0o644)
+	ao, err := c.Add(ctx, apiv0.AddRequest{Path: file, Pin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fin, err := c.WaitOperation(ctx, ao.ID, 0)
+	if err != nil || fin.State != apiv0.StateSucceeded {
+		t.Fatalf("add wait: %+v %v", fin, err)
+	}
+	var ar apiv0.AddResult
+	json.Unmarshal(fin.Result, &ar)
+	rc, err := c.Cat(ctx, ar.CID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := io.ReadAll(rc); string(b) != "hello" {
+		t.Fatalf("cat via api: %q", b)
+	}
+	rc.Close()
+	if st, err := c.Status(ctx); err != nil || st.Store == nil || st.Store.Pins != 1 {
+		t.Fatalf("status store: %+v %v", st, err)
 	}
 
 	// Clean shutdown removes the address files and releases the lock.

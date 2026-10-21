@@ -14,9 +14,8 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 )
 
-// Node is what commands need from a node. Store-dependent methods (Add, Cat, Ls, pins,
-// dag) return apiv0.CodeNotImplemented until the store lands; their signatures are the
-// contract the store integration fills in.
+// Node is what commands need from a node. Methods that touch content (Add, Cat, Ls, pins,
+// dag) read and write the local store; fetching from other nodes arrives with sharing.
 type Node interface {
 	// Status returns the daemon summary.
 	Status(ctx context.Context) (*apiv0.Status, error)

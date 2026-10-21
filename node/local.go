@@ -3,43 +3,68 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
+	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/target"
+	"github.com/whyrusleeping/nu/store"
 )
 
 // Local is the in-process Node: the daemon serves it over the API, and daemonless
-// commands will run it directly. Store-dependent methods are stubs until the store lands.
+// commands run it directly under the repo lock. It owns the store.
 type Local struct {
-	Repo *repo.Repo
-	Ops  *op.Manager
-	// Content backs the gateway; nil until the store lands.
+	Repo  *repo.Repo
+	Ops   *op.Manager
+	Store *store.Store
+	// Content backs the gateway.
 	Content gateway.Content
 
+	content *content.Content
 	started time.Time
 	// API and Gateway are the bound listen addresses, set by the daemon.
 	API, Gateway string
+	// work tracks operation goroutines so Close can wait for them.
+	work sync.WaitGroup
 }
 
-// NewLocal creates a node on an opened repo with a fresh operation manager.
-func NewLocal(r *repo.Repo) *Local {
-	return &Local{Repo: r, Ops: op.NewManager(), started: time.Now()}
+// GCGrace is the grace period a node passes to store GC (store.GCOptions.Grace), so the
+// objects of an add or fetch in progress survive until they are pinned. No GC runs
+// automatically in this build; the constant pins the contract for when it does.
+const GCGrace = time.Hour
+
+// NewLocal opens the store in the repo (creating it on first use) and returns a node with
+// a fresh operation manager. Close it when done.
+func NewLocal(r *repo.Repo) (*Local, error) {
+	st, err := store.Open(r.Root(), store.Options{})
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the store in %s: %v", r.Root(), err).
+			WithAction("check that the directory is writable and not in use by an older or newer " + nu.Name)
+	}
+	c := content.New(st)
+	return &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), content: c, started: time.Now()}, nil
 }
 
 var _ Node = (*Local)(nil)
 
-// Close stops the node: running operations are cancelled. Later it closes the store and
-// network.
+// Close stops the node: running operations are cancelled and waited for, then the store
+// is closed.
 func (n *Local) Close() error {
 	n.Ops.CancelAll()
-	return nil
+	n.work.Wait()
+	return n.Store.Close()
 }
 
 // Paths returns the repo layout.
@@ -55,7 +80,7 @@ func Paths(r *repo.Repo) apiv0.Paths {
 }
 
 func (n *Local) Status(ctx context.Context) (*apiv0.Status, error) {
-	return &apiv0.Status{
+	st := &apiv0.Status{
 		Version: nu.Version,
 		Daemon: apiv0.Daemon{
 			PID:     os.Getpid(),
@@ -65,7 +90,13 @@ func (n *Local) Status(ctx context.Context) (*apiv0.Status, error) {
 		},
 		Paths:      Paths(n.Repo),
 		Operations: n.Ops.Counts(),
-	}, nil
+	}
+	ss, err := n.Store.Stats()
+	if err != nil {
+		return nil, err
+	}
+	st.Store = &apiv0.StoreStatus{Objects: ss.Objects, Bytes: ss.Bytes, Pins: ss.Pins}
+	return st, nil
 }
 
 func (n *Local) Operations(ctx context.Context, cursor string, limit int) (*apiv0.Page[apiv0.Operation], error) {
@@ -122,64 +153,244 @@ func (n *Local) CancelOperation(ctx context.Context, id string) error {
 	return nil
 }
 
-// Store-dependent methods. Each validates its input so callers get the same errors now as
-// after the store lands, then reports not_implemented.
+// start runs work as an operation of the given kind in its own goroutine (the request
+// context ends with the request; work watches the operation's context instead) and
+// returns the initial snapshot.
+func (n *Local) start(kind, target string, work func(o *op.Operation) (any, error)) *apiv0.Operation {
+	o := n.Ops.Start(kind, target)
+	n.work.Add(1)
+	go func() {
+		defer n.work.Done()
+		o.Finish(work(o))
+	}()
+	snap := o.Snapshot()
+	return &snap
+}
 
-func (n *Local) Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operation, error) {
-	if req.Path == "" {
-		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "add needs a path").WithAction("give a file or directory path")
+// resolve parses a CID target (with optional path) and resolves it in the store.
+func (n *Local) resolve(t string) (*content.Node, cid.CID, string, error) {
+	pt, err := target.Parse(t)
+	if err != nil {
+		return nil, cid.CID{}, "", err
 	}
-	return nil, apiv0.NotImplemented("add")
+	if err := pt.Supported(); err != nil {
+		return nil, cid.CID{}, "", err
+	}
+	root, err := cid.Parse(pt.CID)
+	if err != nil {
+		return nil, cid.CID{}, "", apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", pt.CID)
+	}
+	nd, err := n.content.Resolve(root, pt.Path)
+	return nd, root, pt.Path, err
 }
 
 func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
-	if err := checkCIDTarget(t); err != nil {
+	nd, _, _, err := n.resolve(t)
+	if err != nil {
 		return nil, err
 	}
-	return nil, apiv0.NotImplemented("cat")
+	if nd.Kind == gateway.KindDir {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is a directory", t).WithAction("list it with `ls`, or cat a file inside it")
+	}
+	return n.content.Open(nd)
 }
 
 func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
-	if err := checkCIDTarget(t); err != nil {
+	nd, root, p, err := n.resolve(t)
+	if err != nil {
 		return nil, err
 	}
-	return nil, apiv0.NotImplemented("ls")
+	l := &apiv0.Listing{Target: root.String(), Entries: []apiv0.Entry{}}
+	if p != "" {
+		l.Target += "/" + p
+	}
+	if nd.Kind != gateway.KindDir {
+		l.Entries = append(l.Entries, apiv0.Entry{Name: nd.Name, CID: nd.CID.String(), Type: string(nd.Kind), Size: nd.Size})
+		return l, nil
+	}
+	for e, err := range n.content.Entries(nd) {
+		if err != nil {
+			return nil, err
+		}
+		l.Entries = append(l.Entries, apiv0.Entry{Name: e.Name, CID: e.CID.String(), Type: string(e.Kind), Size: e.Size})
+	}
+	return l, nil
+}
+
+// pinFor is the explicit pin of c: recursive under the nu-tree profile for structure,
+// direct for a raw blob.
+func pinFor(c cid.CID, name string) store.Pin {
+	p := store.Pin{CID: c, Mode: store.Recursive, Profile: "nu-tree", Source: store.SourceExplicit, Name: name}
+	if c.Codec() == cid.Raw {
+		p.Mode = store.Direct
+	}
+	return p
+}
+
+func apiPin(p store.Pin) apiv0.Pin {
+	return apiv0.Pin{CID: p.CID.String(), Name: p.Name, Mode: p.Mode, Source: p.Source}
+}
+
+func parseCID(s string) (cid.CID, error) {
+	c, err := cid.Parse(s)
+	if err != nil {
+		return cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", s).WithAction("give a b… DASL CID")
+	}
+	return c, nil
 }
 
 func (n *Local) PinAdd(ctx context.Context, req apiv0.PinRequest) (*apiv0.Operation, error) {
-	if !target.IsCID(req.CID) {
-		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", req.CID)
-	}
-	return nil, apiv0.NotImplemented("pin add")
-}
-
-func (n *Local) PinRm(ctx context.Context, cid string) error {
-	if !target.IsCID(cid) {
-		return apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", cid)
-	}
-	return apiv0.NotImplemented("pin rm")
-}
-
-func (n *Local) Pins(ctx context.Context, cursor string, limit int) (*apiv0.Page[apiv0.Pin], error) {
-	return nil, apiv0.NotImplemented("pin ls")
-}
-
-func (n *Local) DagGet(ctx context.Context, t string) (json.RawMessage, error) {
-	if err := checkCIDTarget(t); err != nil {
+	c, err := parseCID(req.CID)
+	if err != nil {
 		return nil, err
 	}
-	return nil, apiv0.NotImplemented("dag get")
+	p := pinFor(c, req.Name)
+	return n.start("pin", c.String(), func(o *op.Operation) (any, error) {
+		o.Stage("checking")
+		var objects int64
+		last := time.Now()
+		st, err := n.Store.Walk(o.Context(), p, func(cid.CID, bool) error {
+			objects++
+			if time.Since(last) > 100*time.Millisecond {
+				o.Progress(objects, 0, "objects")
+				last = time.Now()
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		o.Progress(int64(st.Objects), 0, "objects")
+		if !st.Complete() {
+			if st.Objects == 1 {
+				return nil, content.NotHeld(c)
+			}
+			return nil, apiv0.Errorf(apiv0.CodeNotFound, "%d of %d objects under %s are not held by this node", st.Missing, st.Objects, c).
+				WithAction("add the content locally; fetching it from other nodes arrives with sharing")
+		}
+		o.Stage("pinning")
+		if err := n.Store.Pin(p); err != nil {
+			return nil, err
+		}
+		return apiPin(p), nil
+	}), nil
 }
 
-func (n *Local) DagPut(ctx context.Context, doc io.Reader) (*apiv0.DagPutResult, error) {
-	return nil, apiv0.NotImplemented("dag put")
-}
-
-// checkCIDTarget parses a target and requires a form this build supports.
-func checkCIDTarget(s string) error {
-	t, err := target.Parse(s)
+func (n *Local) PinRm(ctx context.Context, s string) error {
+	c, err := parseCID(s)
 	if err != nil {
 		return err
 	}
-	return t.Supported()
+	pins, err := n.Store.Pins()
+	if err != nil {
+		return err
+	}
+	removed := 0
+	for _, p := range pins {
+		if p.CID != c || p.Source != store.SourceExplicit {
+			continue
+		}
+		if ok, err := n.Store.Unpin(p); err != nil {
+			return err
+		} else if ok {
+			removed++
+		}
+	}
+	if removed == 0 {
+		return apiv0.Errorf(apiv0.CodeNotFound, "%s is not pinned", c).WithAction("list pins with `" + nu.Name + " pin ls`")
+	}
+	return nil
+}
+
+func (n *Local) Pins(ctx context.Context, cursor string, limit int) (*apiv0.Page[apiv0.Pin], error) {
+	pins, err := n.Store.Pins()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]apiv0.Pin, 0, len(pins))
+	for _, p := range pins {
+		items = append(items, apiPin(p))
+	}
+	return apiv0.PageSlice(items, cursor, limit, n.Ops.Epoch())
+}
+
+func (n *Local) DagGet(ctx context.Context, t string) (json.RawMessage, error) {
+	pt, err := target.Parse(t)
+	if err != nil {
+		return nil, err
+	}
+	if err := pt.Supported(); err != nil {
+		return nil, err
+	}
+	c, err := parseCID(pt.CID)
+	if err != nil {
+		return nil, err
+	}
+	v, err := n.dagLoad(c)
+	if err != nil {
+		return nil, err
+	}
+	// A path selects into the object: map keys and array indexes, following links.
+	if pt.Path != "" {
+		for _, seg := range strings.Split(pt.Path, "/") {
+			if l, ok := v.(cid.CID); ok {
+				if v, err = n.dagLoad(l); err != nil {
+					return nil, err
+				}
+			}
+			switch x := v.(type) {
+			case map[string]any:
+				var ok bool
+				if v, ok = x[seg]; !ok {
+					return nil, apiv0.Errorf(apiv0.CodeNotFound, "no key %q under %s", seg, pt.CID)
+				}
+			case []any:
+				i, err := strconv.Atoi(seg)
+				if err != nil || i < 0 || i >= len(x) {
+					return nil, apiv0.Errorf(apiv0.CodeNotFound, "no index %q under %s", seg, pt.CID)
+				}
+				v = x[i]
+			default:
+				return nil, apiv0.Errorf(apiv0.CodeNotFound, "%q: cannot descend into a scalar under %s", seg, pt.CID)
+			}
+		}
+	}
+	return drisl.ToJSON(v)
+}
+
+func (n *Local) dagLoad(c cid.CID) (any, error) {
+	if c.Codec() != cid.DRISL {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is a raw blob, not a DRISL object", c).WithAction("read its bytes with `cat`")
+	}
+	data, err := n.Store.Get(c)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, content.NotHeld(c)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return drisl.Decode(data)
+}
+
+func (n *Local) DagPut(ctx context.Context, doc io.Reader) (*apiv0.DagPutResult, error) {
+	data, err := io.ReadAll(io.LimitReader(doc, cid.MaxWholeObject+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > cid.MaxWholeObject {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "document exceeds the %d-byte object limit", cid.MaxWholeObject)
+	}
+	v, err := drisl.FromJSON(data, drisl.JSONOptions{})
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err).
+			WithAction("give atproto-style JSON: links as {\"$link\": \"<cid>\"}, bytes as {\"$bytes\": \"<base64>\"}")
+	}
+	c, enc, err := drisl.Sum(v)
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
+	}
+	if err := n.Store.Put(c, enc); err != nil {
+		return nil, err
+	}
+	return &apiv0.DagPutResult{CID: c.String()}, nil
 }

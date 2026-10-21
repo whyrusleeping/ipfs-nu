@@ -18,7 +18,12 @@ func newTestServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(node.NewLocal(r), nil))
+	n, err := node.NewLocal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { n.Close() })
+	srv := httptest.NewServer(New(n, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

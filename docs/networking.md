@@ -169,6 +169,49 @@ and a 30 s stream lifetime. EOF closes cleanly; partial frames, incorrect echoes
 and timeouts reset the stream. Ping, identify and push failures do not close an
 otherwise authenticated connection.
 
+### v0 AutoNAT v2
+
+`p2p/proto/autonat.New(host, Config)` registers `/libp2p/autonat/2/dial-back`;
+`Config.Server` opts public nodes/relays into `/libp2p/autonat/2/dial-request`.
+The owner passes the network's private-mode policy as `Config.Private`, which rejects
+construction without registering either protocol. Do not construct AutoNAT in private
+or isolated clusters. `AllowPrivateAddresses` is a lab-only override, never a production
+default. Literal IPv4/IPv6 QUIC-v1 candidates only; DNS, TCP and circuit probes await
+those transports. Addresses with an explicit destination must match the requester.
+
+`Check(ctx, server, []Request)` uses an existing server connection (sessions can establish
+it) and tests exactly the first candidate the server accepts. A cryptographically random
+fixed64 nonce must arrive on a different connection with a consistent IP family/QUIC
+transport; the dialer's PeerId is deliberately irrelevant. Success claims without that
+nonce, unknown statuses and mismatched challenged/result indexes are discarded. Results
+identify the selected address/index and the observer's actual connection endpoint; they
+are one observer's evidence, not an aggregate NAT classification. Observer selection,
+periodic/network-change scheduling, multi-observer confidence and promotion into identify
+and signed peer records belong to the owning node, not this protocol service.
+
+Servers use a fresh short-lived host/socket/identity for each probe, never the request
+connection or the server's listening port. They select one destination and never fall
+back after a failed dial. A destination IP different from the authenticated request's
+observed IP requires 30,000–100,000 payload bytes before any dial. Only protobuf data
+payload counts; each data field is bounded to 4096 bytes and tiny nonfinal frames are
+refused. Clients explicitly opt into paying that cost per candidate, capped at 100,000
+bytes. Servers wait for dial-back acknowledgement/closure before closing the probe host;
+like go-libp2p, a reset that discards a queued acknowledgement does not undo a successfully
+sent nonce. The client still requires independent nonce receipt to claim reachability.
+
+Defaults: 8 inbound and 8 outbound requests, one active request per peer, sliding-minute
+limits of 60 requests globally, 12 per peer, and 12 cross-IP data challenges. Rejected
+identities do not grow retained rate-limit state. Request messages are bounded to 8 KiB,
+50 addresses and 1024 bytes per address; dial-back messages to 1024 bytes. Requests have
+a 15 s lifetime, dials at most 10 s, and dial-back exchanges at most 5 s; cancellation and
+service Close interrupt I/O and join active operations. Close the service before its host.
+
+Evidence: loopback success (including cross-IP dial data), a filtered UDP endpoint's
+negative result, invalid-payment/no-victim-traffic, nonce/policy/rate-limit tests, decoder
+fuzz seeds, and an `experiments/` smoke test against go-libp2p v0.50.0 in both directions.
+These are not a measured consumer-router/NAT-lab classification result; that acceptance
+and broader transport/network profiling remain deferred.
+
 ## D9. Peer sessions
 
 `connect(PeerId)` returns a session owning all connections to that peer and assigning new

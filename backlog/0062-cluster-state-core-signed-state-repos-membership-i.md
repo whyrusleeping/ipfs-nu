@@ -1,7 +1,7 @@
 ---
 id: "0062"
 title: 'Cluster state core: signed state repos, membership/invites, dataset records, writer heads, private-mode gating'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-21"
 updated: "2026-10-21"

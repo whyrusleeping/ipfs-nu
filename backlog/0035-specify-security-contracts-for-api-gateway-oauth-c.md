@@ -25,3 +25,4 @@ Acceptance: testable contracts and a negative-test matrix in the owning docs; br
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done on track/app (f260510, merged c7ddf6a). Contract in docs/operations.md (threat model; rules A1–A8, G1–G11, P1–P6, X1–X6; negative-test matrix N1–N35 with 24 automated rows; feature-entry gates for 0028/0043/0052/0053/0055; independent review plan), mechanics in docs/api.md, browser plan B1–B8 in docs/validation.md with scripts/browser-check.sh. Fixes: JSON-only request bodies (closes form-POST CSRF hole), a real gateway open redirect (//host on site origins), escaped redirect/Link paths, unsafe names listed unlinked, extraction case/Unicode collision reporting. Not yet done (owned elsewhere/human): browser results B1–B8 (needs a person with Safari/Firefox/Chromium; gates active content on path routes and 0043), the independent review itself.

@@ -1,7 +1,7 @@
 ---
 id: "0007"
 title: '0c: profiled MST (nu-dir + atproto v3) + directory/tree/MASL file node formats'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

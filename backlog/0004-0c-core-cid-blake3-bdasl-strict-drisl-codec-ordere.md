@@ -1,7 +1,7 @@
 ---
 id: "0004"
 title: '0c: core DASL/BDASL CIDs, strict DRISL codec, DASL CAR'
-status: in_progress
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

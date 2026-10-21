@@ -1,7 +1,7 @@
 ---
 id: "0009"
 title: '0c: Core store: blob + outboard store, SQLite metadata, pins, GC, --nocopy'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

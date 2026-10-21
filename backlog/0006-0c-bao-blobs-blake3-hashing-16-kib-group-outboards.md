@@ -1,7 +1,7 @@
 ---
 id: "0006"
 title: '0c: Bao blobs: BLAKE3 hashing, 16 KiB-group outboards, verified range slices'
-status: todo
+status: done
 priority: 1
 created: "2026-09-24"
 updated: "2026-10-21"

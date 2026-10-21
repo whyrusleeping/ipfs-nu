@@ -30,3 +30,4 @@ spec_refs:
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Functional core merged (dbd92b3; e7ad49d): p2p/magicsock shared-socket Conn (virtual peers, direct/relay paths, ReadBatch, disco envelope), /nu/qpath/1 v1 framing (uint16 length + ≤1200-byte QUIC datagram) in docs/networking.md D11. Evidence: loopback relay→direct→relay→reattach with one authenticated stream; rootless natlab between two EIM/APDF NATs incl. nft blocking and WAN down/up; go-libp2p declines /nu/qpath/1 cleanly; framing fuzz seeds. UNMET: throughput — virtual direct median 483 MB/s vs raw quic-go 862 MB/s (~44% lower; target ~5%). Profiling/optimization in progress.

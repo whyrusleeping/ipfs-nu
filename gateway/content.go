@@ -58,3 +58,10 @@ type Content interface {
 	// List iterates a directory Info in name order.
 	List(ctx context.Context, info *Info) iter.Seq2[Entry, error]
 }
+
+// ObjectContent is implemented by content that can serve one held object's bytes as
+// stored (a raw blob or a DRISL node) for RASL. It answers apiv0.CodeNotFound for
+// anything not held and complete; it never fetches.
+type ObjectContent interface {
+	OpenObject(ctx context.Context, cid string) (File, error)
+}

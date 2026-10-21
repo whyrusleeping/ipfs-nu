@@ -4,6 +4,7 @@
 package content
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -272,4 +273,42 @@ func (c *Content) nodeOf(info *gateway.Info) (*Node, error) {
 	}
 	n.Name, n.Mime, n.Mode = info.Name, info.Mime, info.Mode
 	return n, nil
+}
+
+// Object opens the bytes of one held, complete object as stored: a DRISL node from the
+// block table or a raw blob. It never fetches.
+func (c *Content) Object(root cid.CID) (gateway.File, error) {
+	if root.Codec() != cid.Raw {
+		data, err := c.st.Get(root)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, NotHeld(root)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return bytesFile{bytes.NewReader(data)}, nil
+	}
+	b, err := c.st.OpenBlob(root.Multihash())
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, NotHeld(root)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &File{SectionReader: io.NewSectionReader(b, 0, int64(b.Size)), b: b}, nil
+}
+
+type bytesFile struct{ *bytes.Reader }
+
+func (bytesFile) Close() error { return nil }
+
+var _ gateway.ObjectContent = gw{}
+
+// OpenObject implements gateway.ObjectContent (RASL).
+func (g gw) OpenObject(ctx context.Context, s string) (gateway.File, error) {
+	root, err := parseRoot(s)
+	if err != nil {
+		return nil, err
+	}
+	return g.c.Object(root)
 }

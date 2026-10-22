@@ -1,7 +1,7 @@
 ---
 id: "0079"
 title: 'Remove Ethereum interop: Lighthouse/Lodestar probes, eth2 ping, CI job, doc claims'
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

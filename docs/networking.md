@@ -61,8 +61,10 @@ is a lookup source (D13 step 7) beside optional `swarm.lookup_domain` (dnsaddr) 
 `swarm.routing_url` (routing/v1) sources, and `fetch.Kademlia` is a fetch provider source
 beside connected peers (which are now limited to peers whose identify advertises a `/nu`
 data protocol). Providing follows D15: on every pin and every 22 h the daemon announces
-each pin's root plus, for recursive nu-tree pins, every file node and blob beneath it
-(never directory shards), at most 4096 keys per cycle, with the publication address set
+each public-intent pin's root (sources explicit, public, my-names, follow; never cluster,
+surplus, collection or IPFS-import pins, whose content is member-only per
+[cluster.md](cluster.md#network-modes)) plus, for recursive nu-tree pins, every file node
+and blob beneath it (never directory shards), at most 4096 keys per cycle, with the publication address set
 (confirmed/public interface addresses and known relay circuits; nothing is announced,
 and status says so, when that set is empty). `--no-announce` roots are recorded in
 `$NU_PATH/no-announce.json` and skipped. `nu status`/`doctor` and `GET /status`

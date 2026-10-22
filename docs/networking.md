@@ -58,12 +58,50 @@ participation. Joining Amino does not imply UnixFS/Bitswap data support.
 peers. Standard non-Nu relayed secure connections await Noise/yamux. `nu doctor` explains
 limitations and next actions. Basic routed/private archival does not depend on relays/NAT.
 
-**Production public reach:** HTTPS-compatible Nu relay fallback (planned WSS/TCP 443 with
-appropriate security/multiplexing) precedes broad public recommendation, rather than waiting
-for hard-NAT tuning, advanced clusters or browser-native p2p. Its exact wire/security mapping
-and endpoint/proxy requirements must be specified and tested; “HTTPS works somewhere” is
-not a guarantee the admitted relay is reachable. Public HTTPS gateway reads arrive earlier
-and do not themselves provide peer connectivity.
+**Production public reach:** the TCP fallback is libp2p WebSocket over ordinary Web-PKI
+TLS (`/dns/<name>/tcp/443/tls/ws`, equivalently `/wss`), then multistream-select
+`/noise` (Noise XX, X25519, ChaCha20-Poly1305, SHA-256), then `/yamux/1.0.0`.
+Noise's static X25519 key is signed by the libp2p identity key using
+`noise-libp2p-static-key:`; dialing MUST verify the configured relay PeerID, independently
+of TLS's DNS certificate validation. Neither plaintext WS nor a Nu-specific TCP security
+protocol is a public fallback. Noise early-data/muxer negotiation is not required: negotiate
+yamux after the handshake. This path belongs to networking, not optional IPFS import.
+
+Nu nodes maintain ordinary circuit-v2 reservations over that connection. CONNECT/STOP
+streams select `/nu/qpath/1` and carry the existing framed inner QUIC connection; no new
+content transport or resume format is introduced. The outer Noise identity authenticates
+the relay hop, while inner QUIC authenticates the destination. Disco/direct upgrades and
+verified transfer checkpoints retain their existing ownership and semantics. Standard peers
+can use the outer WSS/Noise/yamux connection and circuit-v2 without understanding qpath.
+
+The operator MUST declare admitted relay endpoints (DNS name, TCP port, relay PeerID and
+certificate), alongside any QUIC endpoint for the same relay. Remote identify or peer records
+MUST NOT enlarge this authorization list. UDP failure may select a declared WSS alternative;
+status/doctor must expose the selected transport and UDP failure reason. Never silently
+fall back to plaintext, disable certificate checking, or use ambient proxy credentials.
+
+| Endpoint / middlebox | Production contract |
+|---|---|
+| Direct TCP 443 with valid DNS certificate and HTTP/1.1 Upgrade | Supported target; operator supplies certificate/key and explicit endpoint |
+| Explicit HTTP CONNECT proxy allowing the admitted host:443 | Supported target; tunnel first, then end-to-end TLS, WebSocket, Noise and yamux; no proxy auto-discovery |
+| TLS-intercepting proxy | Unsupported; certificate/identity failures must identify the failed stage; no insecure retry. Operators must not install interception roots for relay dialing |
+| Proxy denying CONNECT or stripping WebSocket Upgrade | Fail clearly with CONNECT/Upgrade status, without leaking credentials |
+| HTTPS permitted only to other domains, HTTP/2-only gateways, captive portals | No reach guarantee; configure an admitted accessible relay or change network policy |
+
+Listener admission MUST bound unauthenticated connections and handshake time, HTTP headers,
+WebSocket frames, Noise records and yamux streams/windows before allocating peer-controlled
+sizes. WebSocket compression and text messages are not negotiated. Circuit reservations,
+per-peer/per-observed-IP slots, full-service allow-list and byte/duration limits apply unchanged
+to WSS; outer transport authentication grants no content or unlimited relay authorization.
+Proxy clients share the proxy's observed-IP budget. Connection closure must release all stream,
+reservation and handshake slots. Rate/account admission and production fleet operation remain
+0039, not an implication of transport availability.
+
+This normative mapping precedes broad public recommendation. Implementation acceptance still
+requires both-direction standard-peer interop, bounded decoder seeds/security review, and a
+verified resumable Nu transfer with UDP blocked on both ends (including CONNECT proxy). It
+is not a claim those gates have passed. “HTTPS works somewhere” does not imply an admitted
+relay is reachable. Public HTTPS gateway reads do not themselves provide peer connectivity.
 
 **Extensions:** standard-peer DCUtR, browser-facing WebTransport/WebRTC-direct, optional
 gossipsub, HTTP over libp2p and further interop. IPFS one-way import has its own adoption gate.

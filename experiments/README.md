@@ -17,7 +17,7 @@ proposed upstream patch, submission text and the before/after Nu-path benchmark;
 against Nu's standalone relay and Nu's client against an upstream relay, including
 signed voucher verification in both directions. It also sends a raw Nu
 CONNECT/STOP stream through the upstream relay. This is not evidence for stock
-peers' end-to-end Noise/yamux upgrades (outside 0013) or Nu's future qpath layer.
+peers' end-to-end circuit security upgrades (outside Nu's QUIC-only scope) or Nu's qpath layer.
 
 ## Manual two-machine LAN check (0060/0040)
 

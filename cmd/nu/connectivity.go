@@ -23,10 +23,7 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 		fmt.Fprintf(w, "relays:     home %s; backup %s\n", c.Home, c.Backup)
 	}
 	for _, r := range c.Relays {
-		fmt.Fprintf(w, "relay:      %s %s", r.PeerID, r.Transport)
-		if r.UDPError != "" {
-			fmt.Fprintf(w, "; UDP attempt failed: %s", r.UDPError)
-		}
+		fmt.Fprintf(w, "relay:      %s", r.PeerID)
 		if r.LastError != "" {
 			fmt.Fprintf(w, "; %s", r.LastError)
 		}
@@ -108,7 +105,7 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 		case "ok":
 			checks = append(checks, check{Name: "udp", Status: "ok", Detail: u.Detail})
 		case "blocked":
-			checks = append(checks, check{Name: "udp", Status: "fail", Detail: "UDP appears blocked: " + u.Detail,
+			checks = append(checks, check{Name: "udp", Status: "fail", Detail: "UDP appears blocked; UDP-blocked networks are unsupported until a replacement is accepted: " + u.Detail,
 				Action: "allow outbound UDP from this machine (QUIC to the relays' ports and to peers' port " + port + ") in the local firewall and the router; nothing can connect until UDP passes"})
 		default:
 			checks = append(checks, check{Name: "udp", Status: "warn", Detail: u.Detail, Action: "configure swarm.relays so the daemon can test UDP reachability"})
@@ -134,7 +131,7 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 		status, action := "ok", ""
 		if c.Home == "" || c.Backup == "" {
 			status = "warn"
-			action = "configure two available swarm.relays for NAT sharing; check UDP or declared WSS access and relay admission"
+			action = "configure two available swarm.relays for NAT sharing; check UDP access and relay admission"
 		}
 		checks = append(checks, check{Name: "home relays", Status: status, Detail: fmt.Sprintf("home %s; backup %s", c.Home, c.Backup), Action: action})
 	}
@@ -142,9 +139,6 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 		name := "relay " + r.PeerID
 		if r.Role != "" {
 			name = "relay " + r.Role + " " + r.PeerID
-		}
-		if r.Transport == "wss" && r.UDPError != "" {
-			checks = append(checks, check{Name: "relay fallback " + r.PeerID, Status: "ok", Detail: "WSS selected; UDP attempt failed: " + r.UDPError})
 		}
 		if r.LastError != "" {
 			checks = append(checks, check{Name: name, Status: "warn", Detail: r.LastError, Action: "check the relay is online and allows this node"})

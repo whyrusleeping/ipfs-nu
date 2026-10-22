@@ -11,7 +11,6 @@ import (
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
-	"github.com/whyrusleeping/nu/p2p/wss"
 )
 
 func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
@@ -28,7 +27,7 @@ func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
 	default:
 		return fmt.Errorf("swarm.mode: expected public, private or isolated, got %q", in.Mode)
 	}
-	if len(in.Relays) > 32 || len(in.Peers) > 128 || len(in.ProbeAllow) > 4096 {
+	if len(in.Relays) > 16 || len(in.Peers) > 128 || len(in.ProbeAllow) > 4096 {
 		return fmt.Errorf("swarm: too many configured relay, peer or probe endpoints")
 	}
 	for _, text := range in.Relays {
@@ -37,17 +36,12 @@ func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
 			return fmt.Errorf("swarm.relays: %w", err)
 		}
 		if _, err := circuit.RelayPeer(addr); err != nil {
-			return fmt.Errorf("swarm.relays: QUIC or WSS address with /p2p/<relay> required: %w", err)
+			return fmt.Errorf("swarm.relays: QUIC address with /p2p/<relay> required: %w", err)
 		}
-		if _, _, err := wss.Endpoint(addr); err != nil {
-			if ep, ok := literalEndpoint(addr); !ok || magicsock.IsVirtual(ep) {
-				return fmt.Errorf("swarm.relays: local virtual addresses cannot be configured")
-			}
+		if ep, ok := literalEndpoint(addr); !ok || magicsock.IsVirtual(ep) {
+			return fmt.Errorf("swarm.relays: local virtual addresses cannot be configured")
 		}
 		out.Relays = append(out.Relays, addr)
-	}
-	if err := applyWSSConfig(out, in); err != nil {
-		return err
 	}
 	out.Peers = make(map[wire.PeerID][]wire.Multiaddr)
 	for _, text := range in.Peers {

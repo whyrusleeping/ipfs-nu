@@ -608,64 +608,36 @@ NU_SLOW=1 go test -tags natlab ./p2p/disco -run '^TestNATLabDiscoGiB$' -v -count
 the default suite. `natlab.IsolateTimeout` supplies an explicit four-minute child
 deadline for this test, leaving the normal 45-second fixture deadline unchanged.
 
-### HTTPS-compatible relay acceptance (0041, 2026-10-22)
+### QUIC-only transport scope (0080)
 
-`TestDaemonWSSUDPBlocked` runs real `nu relay` and two real daemon/CLI processes
-inside rootless Linux network namespaces. Both daemon output firewalls drop **all
-UDP**, including loopback UDP; apart from local CLI/API TCP they permit only one
-remote TCP/443 destination. The direct case permits the relay, and the CONNECT
-case permits only the separate HTTP proxy (not the relay). DHT/mDNS are disabled,
-so neither lookup nor a direct content connection can bypass the restrictions.
-The fixture uses a generated, explicitly trusted operator certificate and a leaf
-certificate pin; it does not disable Web-PKI verification.
+Task 0080 withdrew the 0041 TCP relay implementation and its acceptance evidence.
+UDP-blocked networks are unsupported until a replacement is accepted. No replacement
+is implemented. QUIC-v1/libp2p TLS, circuit-v2 over QUIC, qpath, magicsock and the
+QUIC restart recovery below remain supported.
 
-Evidence command:
+Verification (2026-10-22): `go build ./...`, `go vet ./...`, `staticcheck ./...`,
+`go test ./...`, `./scripts/depguard.sh`, gofmt and `git diff --check` passed.
+The rootless QUIC relay/restart gate passed in 74.2 s:
 
 ```
-go test -p 1 -tags natlab ./node/swarm -run '^TestDaemonWSSUDPBlocked$' -count=1 -v
+GOMAXPROCS=4 go test -p 1 -tags natlab ./node/swarm \
+  -run '^(TestDaemonNAT.*|TestDaemonPairAwarePeerRelay|TestDaemon.*Restart.*)$' -count=1
+python3 interop/run.py transport --impl all --out interop/results/0080-transport
+python3 interop/run.py blackbox --client kubo --out interop/results/0080-kubo
 ```
 
-Passed locally, rootless, in 17.5 s: each case independently selected WSS after a
-reported UDP failure, transferred part of an 11,400,000-byte BLAKE3 blob, stopped
-the receiving daemon, inspected its persisted verified ranges, restarted both
-daemons, and completed `nu get` with a byte-for-byte SHA-256 comparison. The runs
-retained approximately 4 MiB of verified data. Existing `fetch.TestResumeAfterRestart`
-checks that resumed range requests do not overlap checkpointed ranges; this lab
-adds the real daemon/CLI and restricted-network assembly. Replacing the CONNECT
-proxy with a refusing proxy produces `CONNECT denied: HTTP 403` in status **and
-`nu doctor`**, not an opaque timeout or insecure retry.
-
-**Historical limitation, superseded by 0075 below:** the original acceptance run
-needed both endpoints restarted because the survivor retained stale inner QUIC
-state. `TestDaemonWSSUDPBlocked` now restarts only the recipient, including the
-CONNECT case; it no longer uses that workaround.
-
-| Endpoint/proxy case | Support and evidence |
-|---|---|
-| Declared TCP/443 WSS, trusted TLS certificate, no proxy | Supported; UDP-blocked real-daemon lab above |
-| Explicit HTTP CONNECT to the admitted relay TCP/443 | Supported; same lab, with direct relay TCP also blocked |
-| QUIC timeout followed by declared WSS | `p2p/homerelay.TestDeclaredWSSFallbackIndependentBudget`: silent UDP sink consumes its full budget; WSS gets a fresh budget, reserves, publishes WSS and renews |
-| WSS endpoint/pin policy | `node/swarm.TestWSSRelayPolicyAndRemoteAdmission`: pin match/mismatch, config rejection and remote-record authorization negatives |
-| CONNECT refusal | Doctor-visible HTTP 403 in the real-daemon lab |
-| Untrusted TLS interception / Upgrade refusal | Stage-labelled hard failure in `p2p/wss` tests; no insecure fallback |
-| Locally trusted TLS interception CA | Not automatically distinguishable; configure a relay leaf pin. Operators must not grant trust to interception roots for relay dialing |
-| Ambient proxy env, PAC, SOCKS, HTTPS-to-proxy, NTLM, HTTP/2-only gateway, captive portal | Unsupported; no claim that arbitrary HTTPS availability implies Nu reachability |
-| Standard non-Nu peer | Outer WSS/Noise/yamux interop belongs to the existing 0041 experiment evidence; Nu inner qpath is not a standard-peer requirement |
-
-Resource limits and admission remain those of the WSS listener, Noise/yamux and
-circuit-v2 server: bounded unauthenticated connections/headers/frames/records,
-per-peer and per-observed-IP circuits/reservations, and full-service admission.
-Nodes sharing a proxy share its observed-IP budget. No public relay directory or
-new content/resume format is introduced. Fleet operations and external-network
-reach guarantees are not implied by these lab results.
-
-Pre-commit verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`:
-`go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`,
-plus gofmt, `git diff --check`, and the rootless WSS natlab test (18.1 s on the
-final run). An earlier loaded-machine run failed cluster repair and collection
-push timing checks; their focused serial reruns and the subsequent full gate
-passed. The recovery probe retains its short QUIC-only deadline rather than
-spending the larger WSS setup budget on a dead QUIC-only relay.
+Docker QUIC interop passed in both directions for go/rust/js (six cases), plus
+Kubo identify/ping. The result JSON and container/build logs are in the above
+local, ignored output directories. No Ethereum targets were run.
+An initial natlab run caught a doctor wording assertion; preserving the existing
+“UDP appears blocked” diagnostic alongside the explicit unsupported-network
+message fixed it. Two `GOMAXPROCS=4` full-suite runs hit the unrelated collection
+`TestItemPush` range-resume assertion; its focused default-concurrency run and the
+subsequent full `go test ./...` passed without changes to collection/fetch.
+Remaining tracked Go matches for the removed transport names belong only to the
+unrelated Jetstream follow client/tests and synthetic packet/scheduler noise.
+A recursive filesystem grep also sees the ignored upstream go-libp2p checkout in
+`interop/.cache`; that reference implementation is not Nu's build graph.
 
 ### One-sided daemon restart recovery (0075, 2026-10-22)
 
@@ -697,11 +669,12 @@ as authority to evict an existing authenticated connection.
 
 ```
 GOMAXPROCS=4 go test -p 1 -tags natlab ./node/swarm \
-  -run '^(TestDaemonOneSidedRestart|TestDaemonWSSUDPBlocked)$' -count=1 -v
+  -run '^TestDaemonOneSidedRestart$' -count=1 -v
 ```
 
 `TestDaemonOneSidedRestart` uses actual daemons and CLI add/share/get in rootless
-namespaces, forcing direct UDP, relay-only UDP, or WSS-only TCP/443. Each mode:
+namespaces, forcing direct UDP or relay-only UDP with both deterministic inner
+QUIC roles (`quic-relay` and `quic-relay-reverse`). Each mode:
 
 - SIGKILLs **only the provider** after partial verified progress. The **same** get
   process must succeed without caller retry/error, and its output is SHA-256
@@ -723,30 +696,21 @@ requested; no security sign-off is implied. Address-switch recovery is separate.
 
 Final verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`: `go vet ./... &&
 staticcheck ./... && go test ./... && ./scripts/depguard.sh`, gofmt and diff checks.
-The final combined restart/WSS natlab run passed in 65.0 s. The direct, QUIC-relay,
-and WSS-relay provider restarts completed in 1.09 s, 0.57 s, and 0.40 s; recipient
-restarts in 0.24 s, 0.54 s, and 1.16 s. QUIC-relay fixes the provider as the lower
-PeerID and WSS-relay as the higher, so both deterministic inner roles are exercised.
+After 0080, the QUIC-only restart natlab run passed in 33.7 s. Direct, QUIC-relay
+and reverse-role QUIC-relay provider restarts completed in 1.08 s, 0.59 s and
+0.36 s; recipient restarts in 0.29 s, 0.43 s and 0.44 s. The two relay cases fix
+the provider as the lower and higher PeerID, preserving coverage of both inner roles.
 An intermittent concurrent-failure accounting race found during validation was
 fixed: quic-go can return the terminal `net.ErrClosed`-wrapping error to a stream
 before canceling the connection context; error tagging now handles both orders.
 
-### Independent security review request / review plan (0017, 0020, 0041 and 0075)
+### Independent security review request / review plan (0017, 0020 and 0075)
 
 **Requested; pending independent review.** The implementation author is not the
 independent reviewer. A networking/security reviewer should review the following
 before public enablement; record the reviewer, reviewed commit, findings and
 follow-up commits here. Passing the smoke/soak tests is not security approval.
 
-- **0041 independent review requested:** review `p2p/{noise,wss,yamux}`, the Host
-  WSS adapter, `relay/wss.go`, `p2p/homerelay/{manager,endpoints}.go`, and
-  `node/swarm/wss.go` plus its admission integration. Check Web-PKI + Noise
-  identity separation, pin/proxy credential handling, independent fallback
-  budgets, exact endpoint authority, parser/stream/handshake resource bounds,
-  teardown and qpath inner-session recovery. Reproduce the UDP-blocked direct
-  and CONNECT cases and adversarial TLS/Upgrade/CONNECT failures. Specifically
-  examine the 0075 one-sided restart recovery changes above. No independent sign-off has
-  been obtained; the author does not approve their own implementation.
 - **Contract and implementation:** D11's “Path v1 control and probe security
   contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set
   boundary, and the eventual 0020 socket-owner `Authorize`/candidate-disclosure
@@ -911,8 +875,8 @@ Linux/Go environment as above; no external peers or host-root privileges used.
   timed renewal before TTL, and an actual 1s circuit-duration reset. Passed
   rootless in approximately 2.0s and emitted a standalone scenario outcome.
 
-These prove circuit-v2 control/byte-stream interoperability, **not** Noise/yamux
-secure connections, `/nu/qpath/1`, content transfer, physical-network traversal
+These prove circuit-v2 control/byte-stream interoperability, **not** standard-peer
+end-to-end circuit security, `/nu/qpath/1`, content transfer, physical-network traversal
 rates or production public-relay operating capacity. Default public operation and
 operator admission/abuse quotas remain gated on 0039. AutoNAT uses a fresh source
 port; alternate-source-IP profiling request semantics are not provided by the
@@ -1119,7 +1083,7 @@ Fast acceptance evidence:
   in **0.02 s** against go-libp2p **v0.50.0**. Real-address QUIC passed through the
   wrapper, and an upstream peer reached through a real Nu circuit reservation
   answered security-protocol `/nu/qpath/1` with `na`. No virtual slot was allocated
-  and no standard Noise/yamux fallback was attempted.
+  and no alternate security-stack fallback was attempted.
 - Race-enabled tests passed for magicsock, qpath, host and core proto. Darwin arm64
   cross-build passed; this is not macOS runtime/offload evidence. Vet/staticcheck
   include the new tagged lab. The normal pre-commit suite and depguard passed after
@@ -1320,8 +1284,8 @@ showed the seed as the relay with `relay_mode=datagram`, and the inner connectio
 survived. In-process (`TestSwarmPairAwareRelayChoiceWithPeerRelay`, 0.5 s) the same
 switch happens with the far relay simulated through 30 ms ping-reply latency.
 
-Not covered: WSS outer connections (no datagrams, documented), peer relays advertised
-automatically in `nu.node` (devices list the seed in `swarm.relays`), relays behind
+Not covered: peer relays advertised automatically in `nu.node` (devices list the
+seed in `swarm.relays`), relays behind
 asymmetric budgets other than the pinned 1200/1280 cases, and field networks.
 
 ## Nu-path throughput profiling (0015, 2026-10-21)

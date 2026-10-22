@@ -54,8 +54,8 @@ Two first-class workflows share one data model:
 Supporting commitments:
 
 - **Connectivity:** dial PeerIds or DIDs, relay when necessary, upgrade to direct paths,
-  survive network changes. Initial QUIC previews exclude UDP-blocked paths; production
-  public reach adds HTTPS-compatible access/relay paths with declared endpoint requirements.
+  survive network changes. Libp2p interop is QUIC-only; UDP-blocked networks are
+  unsupported until a replacement is accepted.
 - **libp2p wire compatibility:** interoperate with deployed go-, rust- and js-libp2p for the
   [selected profile](docs/networking.md#d8-wire-profile-and-compatibility). Transport/routing
   compatibility does not imply IPFS content or API compatibility.
@@ -210,7 +210,7 @@ connectivity can therefore develop in parallel rather than one waiting for the o
 - Public seed/gateway: explicit HTTPS serving, listings/downloads and `Range` early enough
   for browser magic. Convenience browser reads trust gateway/TLS; Nu-aware clients verify
   hashes/proofs. Verified HTTP range/proof mapping is separately specified before claiming it.
-- HTTPS-compatible public relay fallback ships before broad public recommendation.
+- Peer connectivity requires UDP; UDP-blocked networks are unsupported until a replacement is accepted.
   WebTransport/WebRTC and a future Nu WASM client are later extensions; stock Helia content
   interoperability is not promised without a Nu protocol/client adapter.
 
@@ -282,12 +282,9 @@ Dependencies: stock `quic-go`, `indigo`, `lukechampine.com/blake3`, `go-cid`/`go
 leaf modules, `github.com/decred/dcrd/dcrec/secp256k1/v4` (libp2p and atproto secp256k1;
 stdlib does not implement that curve), `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
 `miekg/dns`, `BurntSushi/toml`, Prometheus client. Adapt Tailscale's
-BSD-3 portmapper/netmon instead of importing `tailscale.com`. WSS/Noise/yamux, when needed
-for reach, belong to networking rather than an import-only build tag. The TCP relay profile
-uses Nu-owned bounded WebSocket and yamux implementations, stdlib `crypto/ecdh` X25519 and
-SHA-256, and the existing `golang.org/x/crypto/chacha20poly1305` for libp2p Noise XX; no
-additional module is selected. Retain stock QUIC/TLS; own security-critical code requires
-parser fuzzing, interop, NAT lab and independent review.
+BSD-3 portmapper/netmon instead of importing `tailscale.com`. Libp2p interop is
+QUIC-only with libp2p TLS; no TCP transport or separate security/multiplexer stack.
+Own security-critical code requires parser fuzzing, interop, NAT lab and independent review.
 
 ## Milestones
 
@@ -312,7 +309,7 @@ gates the gate-1 and gate-2a exits below but not v0.
 | **1 — First magic preview** | Hint/LAN/direct + bounded development relay retrieval, bytes/trees, resumable fetch, CLI/local gateway (incl. RASL, `dag`/`car`), explicitly operated preview HTTPS seed | Fresh users add/share/get/browse without an account on declared networks; two laptops share 10 GB/10k-file tree; 3-peer verified download and restart; HTTPS via a supplied preview seed or operator's domain/TLS, not automatic project hosting; no DHT/hard-NAT prerequisite |
 | **2a — CollGS pilot preview** | Thin private-mode slice parallel with 1, for the [CollGS pilot](docs/validation.md#pilot-candidates): direct/mDNS sessions, signed membership/dataset/writer-head state, collections with `replicas: 0` (selection, rescue, union heads, holdings index), item push API and URL import, versioned index/push JSON API. Excludes placement, readiness evidence, history, public networking, names and RASL | CollGS pilot criteria on a multi-host private deployment with vmx's producer and dashboard; published preview limits (trusted members, no guaranteed copies, measured throughput/catalog/index figures) |
 | **2 — Real users pilot** | Trusted archive track parallel with 1: one-node mirror/archive presets, clusters, basic history, policy readiness, repair/drain, capacity and restore, atproto-account datasets, collection floor placement. Public seed track adds OAuth/names/follow and `at://` record fetch after gate 1 connectivity and naming security | Linux/macOS one-node archive/update/historical read/restore (including APFS crash/sleep/filename tests); 3+ Linux storage members enforce copies/zones and honest unknown/degraded status; repair with surviving data/capacity/authority, crash/disk/partition/key-restore tests. Separately, named publication + exact-seed wait survives laptop sleep |
-| **3 — Production v1 and adoption** | Combine magic + archival, names/public mirrors, HTTPS-compatible relay reach, secure HTTPS gateway (RASL, MASL bundles on isolated origins), FISL discovery client, packaging/upgrades/ops/security review, IPFS migration | Linux/macOS first-run UX; UDP-blocked Nu relay path when declared HTTPS endpoint reachable; tested restore/upgrade, published support limits and operated infrastructure; verified resumable pinset/network import before recommending IPFS cutover |
+| **3 — Production v1 and adoption** | Combine magic + archival, names/public mirrors, QUIC relay reach, secure HTTPS gateway (RASL, MASL bundles on isolated origins), FISL discovery client, packaging/upgrades/ops/security review, IPFS migration | Linux/macOS first-run UX; explicit UDP-required connectivity limits; tested restore/upgrade, published support limits and operated infrastructure; verified resumable pinset/network import before recommending IPFS cutover |
 | **4 — Scale and optimization** | D19/D20 scale targets, full retention schedules/span index, large swarms, hard-NAT tuning/datagram/peer relays, air-gap workflows | Measured representative update/storage/repair costs; 10M-entry churn and 1k-follower PDS-load benchmark; PB/100-member sizing validated progressively; complete/incremental bundle tests; published hardware/field NAT pair results |
 | **5 — Extensions** | Standard-peer DCUtR, FISL serving/Web Tiles rendering, browser-native transports/client adapters, optional gossipsub, encryption/Spaces, self-hosted single-account names, other OSes | Separate negotiated interoperability/security gates; do not imply stock Helia serves Nu formats or encrypted sharing exists sooner |
 
@@ -350,7 +347,7 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
   [collection details](docs/collections.md#details-still-to-specify), version-tree /
   span-index encoding, canonical placement and tombstone/revocation behavior.
 - **Connectivity:** [network verification](docs/networking.md#details-still-to-verify), stock
-  path recovery/MTU/congestion, HTTPS-compatible fallback and independent security review.
+  path recovery/MTU/congestion, QUIC relay reach and independent security review.
 - **Migration:** implementation and evidence remain open for representative Kubo pinset reconciliation, production cutover/readiness workflows, and live Bitswap-over-QUIC interoperability; the v1 import profile and manifest are specified in [migration.md](docs/migration.md).
 - **Lifecycle/portability:** DID-wide following, quotas for future names, macOS metadata
   (xattrs/resource forks are not recorded), signed macOS packaging and native macOS

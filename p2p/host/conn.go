@@ -2,22 +2,19 @@ package host
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/whyrusleeping/nu/p2p/wire"
-	"github.com/whyrusleeping/nu/p2p/wss"
 )
 
-// Conn is an authenticated QUIC-v1 or WSS/Noise/yamux connection. Raw stream
+// Conn is an authenticated QUIC-v1 connection. Raw stream
 // methods are transport primitives; applications should use protocol routing.
 type Conn struct {
 	host     *Host
 	quic     *quic.Conn
-	tcp      *wss.SecureConn
 	peer     wire.PeerID
 	key      wire.PublicKey
 	outbound bool
@@ -27,38 +24,10 @@ type Conn struct {
 
 func (c *Conn) PeerID() wire.PeerID       { return c.peer }
 func (c *Conn) PublicKey() wire.PublicKey { return c.key }
-func (c *Conn) Context() context.Context {
-	if c.tcp != nil {
-		return c.tcp.Context()
-	}
-	return c.quic.Context()
-}
-func (c *Conn) LocalAddr() net.Addr {
-	if c.tcp != nil {
-		return c.tcp.LocalAddr()
-	}
-	return c.quic.LocalAddr()
-}
-func (c *Conn) RemoteAddr() net.Addr {
-	if c.tcp != nil {
-		return c.tcp.RemoteAddr()
-	}
-	return c.quic.RemoteAddr()
-}
-func (c *Conn) Close() error {
-	if c.tcp != nil {
-		return c.tcp.Close()
-	}
-	return c.quic.CloseWithError(0, "closed")
-}
-
-// Transport identifies the authenticated outer transport, for diagnostics.
-func (c *Conn) Transport() string {
-	if c.tcp != nil {
-		return "wss"
-	}
-	return "quic-v1"
-}
+func (c *Conn) Context() context.Context  { return c.quic.Context() }
+func (c *Conn) LocalAddr() net.Addr       { return c.quic.LocalAddr() }
+func (c *Conn) RemoteAddr() net.Addr      { return c.quic.RemoteAddr() }
+func (c *Conn) Close() error              { return c.quic.CloseWithError(0, "closed") }
 
 // ExportKeyingMaterial derives protocol-specific key material from the already
 // authenticated inner TLS session. Callers choose a domain-separated label;
@@ -66,9 +35,6 @@ func (c *Conn) Transport() string {
 func (c *Conn) ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error) {
 	if length < 1 || length > 1024 {
 		return nil, wire.ErrLimit
-	}
-	if c.quic == nil {
-		return nil, errors.New("host: TLS exporter requires inner QUIC, not outer WSS")
 	}
 	state := c.quic.ConnectionState().TLS
 	return state.ExportKeyingMaterial(label, context, length)
@@ -104,7 +70,7 @@ func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	q, err := c.transportStream(ctx, true)
+	q, err := c.quic.OpenStreamSync(ctx)
 	if err != nil {
 		s.release()
 		return nil, err
@@ -121,7 +87,7 @@ func (c *Conn) OpenStream(ctx context.Context) (*Stream, error) {
 	return s, nil
 }
 func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
-	q, err := c.transportStream(ctx, false)
+	q, err := c.quic.AcceptStream(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +115,7 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 type Stream struct {
 	conn     *Conn
 	mu       sync.Mutex
-	quic     transportStream
+	quic     *quic.Stream
 	closed   bool
 	lazy     *wire.LazySelect
 	protocol string

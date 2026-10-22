@@ -27,6 +27,38 @@ type Config struct {
 	Authorize    func(wire.PeerID, Candidate) bool
 	Heartbeat    time.Duration // zero: 25s; shorten for measured mapping lifetime
 	ProbeTimeout time.Duration // zero: 3s
+	// Observe, if set, receives diagnostic events (metrics, per-session path
+	// history). It runs under the service lock: it must return quickly and
+	// never call back into the Service.
+	Observe func(Event)
+}
+
+// EventKind classifies an Event.
+type EventKind uint8
+
+const (
+	ProbeSent     EventKind = iota + 1 // a probe left on Addr
+	ProbeReceived                      // a valid probe arrived from Addr
+	ProbeRejected                      // an unauthorized, replayed or stale probe was dropped
+	PathDirect                         // Addr became the selected direct path; Elapsed is time since session start
+	PathRelay                          // the direct path was revoked; traffic falls back to the relay
+	Candidates                         // the remote candidate set changed; Candidates counts the authorized ones, Offered all received
+)
+
+// Event is one diagnostic notification for Config.Observe.
+type Event struct {
+	Peer       wire.PeerID
+	Kind       EventKind
+	Addr       netip.AddrPort
+	Elapsed    time.Duration
+	Candidates int
+	Offered    int
+}
+
+func (d *Service) observe(e Event) {
+	if d.cfg.Observe != nil {
+		d.cfg.Observe(e)
+	}
 }
 
 type bucket struct {
@@ -273,6 +305,16 @@ func (d *Service) serve(s *session) {
 			return
 		}
 		s.remoteGen = gen
+		// A new generation also follows the peer's network change (RestartProbing):
+		// verify the selected path now rather than at the next heartbeat, so a dead
+		// direct path falls back to the relay within ProbeTimeout.
+		if s.selected.IsValid() {
+			for a := range s.proofs {
+				if !hasPending(s, a) {
+					d.ping(s, a, now)
+				}
+			}
+		}
 		next := make(map[netip.AddrPort]Candidate)
 		for _, c := range list {
 			if d.cfg.Authorize(s.peer, c) {
@@ -290,6 +332,7 @@ func (d *Service) serve(s *session) {
 		d.prune(s, now)
 		if changed {
 			d.restartSchedule(s, now)
+			d.observe(Event{Peer: s.peer, Kind: Candidates, Candidates: len(s.remote), Offered: len(list)})
 		}
 		d.mu.Unlock()
 	}
@@ -416,6 +459,7 @@ func (d *Service) restartSchedule(s *session, now time.Time) { s.round = 0; s.re
 func (d *Service) revoke(s *session) {
 	if s.selected.IsValid() {
 		s.stats.Fallbacks++
+		d.observe(Event{Peer: s.peer, Kind: PathRelay, Addr: s.selected})
 	}
 	s.selected = netip.AddrPort{}
 	clear(s.proofs)
@@ -567,6 +611,7 @@ func (d *Service) send(s *session, p probe, a netip.AddrPort, now time.Time) boo
 		return false
 	}
 	s.stats.Sent++
+	d.observe(Event{Peer: s.peer, Kind: ProbeSent, Addr: a})
 	return true
 }
 func (d *Service) ping(s *session, a netip.AddrPort, now time.Time) {
@@ -628,14 +673,17 @@ func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now tim
 	c, ok := s.remote[from]
 	if !ok || !now.Before(c.Expires) || !d.cfg.Authorize(s.peer, c) {
 		s.stats.Rejected++
+		d.observe(Event{Peer: s.peer, Kind: ProbeRejected, Addr: from})
 		return
 	}
 	p, err := decodeProbe(b, s.rx)
 	if err != nil || p.session != s.id || !s.replay.accept(p.seq) {
 		s.stats.Rejected++
+		d.observe(Event{Peer: s.peer, Kind: ProbeRejected, Addr: from})
 		return
 	}
 	s.stats.Received++
+	d.observe(Event{Peer: s.peer, Kind: ProbeReceived, Addr: from})
 	if p.kind == 1 {
 		d.send(s, probe{kind: 2, challenge: p.challenge, observed: from}, from, now)
 		return
@@ -643,6 +691,7 @@ func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now tim
 	pending, ok := s.pending[p.challenge]
 	if !ok || pending.addr != from || now.Sub(pending.sent) >= d.cfg.ProbeTimeout {
 		s.stats.Rejected++
+		d.observe(Event{Peer: s.peer, Kind: ProbeRejected, Addr: from})
 		return
 	}
 	delete(s.pending, p.challenge)
@@ -666,5 +715,6 @@ func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now tim
 		if s.stats.TimeToDirect == 0 {
 			s.stats.TimeToDirect = now.Sub(s.start)
 		}
+		d.observe(Event{Peer: s.peer, Kind: PathDirect, Addr: from, Elapsed: now.Sub(s.start)})
 	}
 }

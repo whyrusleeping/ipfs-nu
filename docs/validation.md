@@ -183,6 +183,80 @@ hidden pass of the initial invocation.
   recover? Keep their wording/observations and defects, not an expert-only claim.
   Public HTTPS serving is a separate 0043 exercise, not this local-gateway test.
 
+## Phase 0b exit: `nu doctor`, metrics, NAT-lab gate (0024, 2026-10-22)
+
+Implementation: `node/swarm` diagnostics/metrics (`metrics.go`, status), `api`
+`/metrics`, `cmd/nu` doctor checks, `p2p/disco` observer hook and generation
+re-probe, `p2p/magicsock` byte counters and transient-send-error drop,
+`p2p/homerelay` reservation hold time, `p2p/portmap` last error. Rootless Linux
+user/network namespaces, Go 1.26, stock quic-go v0.64.1. Bounded fixtures, **not
+field success rates**.
+
+Reproduce from the worktree root (the `natlab` workflow runs the same suite on PRs
+touching `p2p/**`, `node/swarm/**`, `relay/**`, `proto/**`, `fetch/**`):
+
+```
+go test ./api ./node ./node/swarm ./cmd/nu ./p2p/magicsock ./p2p/disco
+go test -tags natlab -count=1 -v ./p2p/natlab ./p2p/portmap ./p2p/netmon ./p2p/disco
+go test -tags natlab -count=1 -v ./node/swarm -run '^TestDaemonNAT'
+```
+
+Exit-matrix coverage (rows marked reused come from 0003/0014/0017/0020 tests):
+
+| Row | Test | Result (recorded run) |
+|---|---|---|
+| EIM/APDF ↔ EIM/APDF, relay then direct | `node/swarm` failover (0020, extended) | 19,500,000 bytes via circuit link; home SIGKILL at 1,051,616 bytes, same get finished in 11.1 s via backup; both daemons direct 18.7 s after the block lifted (time-to-direct 29.8 s from session start: the probe schedule had reached its 30 s retry while direct was blocked) |
+| ADM/APDF, APDM/APDF, kernel conntrack ↔ same | `node/swarm` relay matrix (0020, extended) | Relayed gets succeeded in 78–132 ms whole CLI operation; `nu doctor` explains each relayed session (see below) |
+| Public IPv4 ↔ EIM/APDF direct | `p2p/disco` `TestNATLabPublicEIM` (reused) | passed |
+| IPv6 ↔ IPv6 direct | `p2p/disco` `TestNATLabIPv6` (reused) | passed |
+| Router-mapped (miniupnpd) direct | `p2p/disco` `TestNATLabMappedMiniUPnPd` (reused; skips without miniupnpd) | passed in CI image; skipped locally |
+| EIM/EIF ↔ EIM/APDF direct, address change mid-transfer (packet core) | `p2p/disco` `TestNATLabDisco` (reused) | passed |
+| AutoNAT, mapping × filtering fixtures, hairpin, rebind, UDP block | `p2p/natlab` (reused) | passed |
+| Port mapping, reaction pipeline | `p2p/portmap`, `p2p/netmon` (reused) | passed |
+| **Wi-Fi → hotspot switch during a real `nu get`** | `node/swarm` failover (new) | Recipient LAN 10.2.0.2→10.2.0.3, router WAN 198.18.0.30→.32, NAT state rebuilt at 1,063,424 of 14,400,000 verified bytes while direct; the same CLI operation finished 14.2 s later with no error/retry, SHA-256 verified; the recipient offered its new reflexive candidate 3.2 s after the switch, the provider revoked the stale direct path 6.2 s after the switch and selected the new one (198.18.0.32:4171) 1 ms later; the relay reservation was held throughout (`held_since` unchanged) |
+| **UDP blocked, fresh recipient** | `node/swarm` failover (0020, extended) | get failed `unavailable` with the UDP action; `nu doctor` exits non-zero with `fail udp: UDP appears blocked: none of the 2 configured relays answered over UDP → allow outbound UDP …` |
+| `/metrics` after the direct upgrade | `node/swarm` failover (new) | `nu_net_path_switches_total{to="direct"} 1`, `nu_net_paths{path="direct"} 1`, `nu_net_time_to_direct_seconds_count 1`, `nu_fetch_first_byte_seconds_count 1`, relayed received bytes > 0, relay reservation gauges present |
+| Doctor session line after the upgrade | `node/swarm` failover (new) | `ok session <peer>: direct 198.18.0.20:4171 via <relay>, direct after 29689 ms` followed by the history (circuit via home, leg closed on SIGKILL, re-dial failures, circuit via backup, direct selected) |
+
+Relay-matrix doctor explanations (`why` on the recipient's relayed session): with
+APDF filtering on both routers and no candidate admitted beyond the exact grant, the
+session reports `N candidate endpoints, M probes sent, none answered: the peer's NAT
+filters unsolicited packets (or UDP toward it is blocked); both sides must be EIM, or
+one public, IPv6 or router-mapped, for a direct path`, preceded by the circuit setup
+and candidate events in its history.
+
+Three fixes fell out of the hotspot scenario and are now in the gate:
+
+1. **quic-go closes a connection on any non-size UDP send error.** While the
+   recipient's link was down, `sendmsg` returned `ENETUNREACH`; stock quic-go tore
+   down the relay connection (`INTERNAL_ERROR (local): … network is unreachable`),
+   the relay then refused the re-dial as a duplicate of the still-live migrated
+   connection, and the get stalled until the deadline. `p2p/magicsock` now drops and
+   counts transient unreachable/down/no-buffer errors on physical writes; QUIC
+   retransmits and the relay connection migrates (quic-go server-side path validation
+   handled the new NAT source address).
+2. **Stale reflexive candidate.** The pipeline's identify stage pushed our addresses
+   but never asked the relays what they now see; the recipient kept offering
+   198.18.0.30. The stage now re-identifies physical peers, so the new external
+   address (198.18.0.32) was offered 3.2 s after the switch.
+3. **Far-side detection waited for the 25 s heartbeat.** A new candidate generation
+   from the peer (sent by `RestartProbing`) now triggers an immediate probe of the
+   selected direct path, so the provider revoked the dead path within the 3 s probe
+   timeout instead of ~28 s.
+
+Not established: the 14 s completion after the switch includes QUIC loss-recovery
+backoff after a ~6 s blackhole; no claim about recovery latency beyond "the operation
+survives" is made. An earlier draft of the disco observer took the connectivity lock
+under the disco lock; relay-matrix gets then took 0.7–6.7 s and one run stalled past
+its deadline. The observer now touches only atomics and a leaf history lock, and the
+matrix is back to ~80 ms gets (8–9 s for all three rows). Lock-order edges into the
+connectivity owner from protocol callbacks are a measured hazard, not a theoretical one. The NAT profile shown by
+doctor is the observation-based estimate (`source: observations`, two observers), not
+a probe-based RFC 4787 classification; the profiler package plugs into
+`swarm.Config.NAT`. Direct re-upgrade after a switch depends on exact probe grants
+covering the new external endpoint (the test grants both). macOS network-change
+behaviour is not covered.
+
 ## Real daemon relay sessions and failover (0020, 2026-10-22)
 
 Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport

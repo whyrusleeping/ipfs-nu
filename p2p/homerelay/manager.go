@@ -40,6 +40,7 @@ type RelayState struct {
 	RTT         time.Duration
 	Expires     time.Time
 	LastSuccess time.Time
+	HeldSince   time.Time // start of the current uninterrupted reservation; zero when not held
 	LastError   string
 }
 
@@ -255,6 +256,7 @@ func (m *Manager) run() {
 			m.cfg.Client.DropReservation(c.state.Peer)
 			c.held = false
 			c.state.Expires = time.Time{}
+			c.state.HeldSince = time.Time{}
 		}
 		m.chosen = nil
 		m.publish()
@@ -297,6 +299,7 @@ func (m *Manager) failed(c *candidate, err error) {
 	c.held = false
 	c.conn = nil
 	c.state.Expires = time.Time{}
+	c.state.HeldSince = time.Time{}
 	c.state.LastError = err.Error()
 	c.failures = min(c.failures+1, 7)
 	delay := min(m.cfg.RetryInterval, time.Minute)
@@ -327,6 +330,9 @@ func (m *Manager) reserve(c *candidate) error {
 	c.renewAt = time.Now().Add(time.Until(r.Expires) / 2)
 	c.retryAt = time.Time{}
 	c.failures = 0
+	if !c.held {
+		c.state.HeldSince = time.Now()
+	}
 	c.held = true
 	return nil
 }
@@ -337,6 +343,7 @@ func (m *Manager) reconcile(force, health bool) error {
 			m.cfg.Client.DropReservation(c.state.Peer)
 			c.held = false
 			c.state.Expires = time.Time{}
+			c.state.HeldSince = time.Time{}
 		}
 		m.chosen = nil
 		m.publish()

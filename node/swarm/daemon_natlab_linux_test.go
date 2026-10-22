@@ -148,12 +148,56 @@ func labAdd(t *testing.T, ns *natlab.Namespace, bin, dir, file string) string {
 	return result.CID
 }
 
+// labMetrics scrapes the daemon's loopback /metrics from inside its namespace
+// (bash's /dev/tcp; no HTTP client is installed in the lab).
+func labMetrics(t *testing.T, ns *natlab.Namespace, dir string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, repo.APIFile))
+	labCheck(t, err)
+	hostport := strings.TrimPrefix(strings.TrimSpace(string(raw)), "http://")
+	_, port, _ := strings.Cut(hostport, ":")
+	script := fmt.Sprintf(`exec 3<>/dev/tcp/127.0.0.1/%s; printf 'GET /metrics HTTP/1.0\r\nHost: 127.0.0.1:%s\r\n\r\n' >&3; cat <&3`, port, port)
+	out, err := ns.Run("bash", "-c", script)
+	labCheck(t, err)
+	return string(out)
+}
+func labDoctor(ns *natlab.Namespace, bin, dir string) ([]struct {
+	Name, Status, Detail, Action string
+}, error) {
+	cmd := ns.Command(bin, "--nu-path", dir, "--json", "doctor")
+	cmd.Stderr = nil
+	out, err := cmd.Output() // stdout only: a failing doctor also writes an error envelope to stderr
+	var checks []struct {
+		Name, Status, Detail, Action string
+	}
+	if jerr := json.Unmarshal(out, &checks); jerr != nil {
+		return nil, fmt.Errorf("doctor output %q: %v", out, jerr)
+	}
+	return checks, err
+}
+
+// labBinary is the ordinary nu binary: NU_NATLAB_BIN (CI builds it unprivileged)
+// or a fresh build from this tree.
+func labBinary(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	if bin := os.Getenv("NU_NATLAB_BIN"); bin != "" {
+		return bin
+	}
+	bin := filepath.Join(t.TempDir(), "nu")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "../../cmd/nu")
+	out, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	return bin
+}
+
 // This runs the actual CLI binary: two daemon processes behind different NATs,
 // two public `nu relay` processes, CLI add/share/get, operator exact-endpoint
 // probe grants and real node/swarm assembly. No raw qpath/disco fixture replaces
 // the daemon. SIGKILL is abrupt relay loss, not a graceful QUIC close.
 func TestDaemonNATShareUpgradeAndRelayFailover(t *testing.T) {
-	if !natlab.IsolateTimeout(t, 90*time.Second) {
+	if !natlab.IsolateTimeout(t, 150*time.Second) {
 		return
 	}
 	daemonNATCase(t, natlab.EndpointIndependent, true)
@@ -169,14 +213,13 @@ func TestDaemonNATRelayMatrix(t *testing.T) {
 }
 
 func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Second)
-	t.Cleanup(cancel)
-	bin := filepath.Join(t.TempDir(), "nu")
-	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "../../cmd/nu")
-	out, err := build.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build: %v %s", err, out)
+	budget := 80 * time.Second
+	if failover {
+		budget = 140 * time.Second
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	t.Cleanup(cancel)
+	bin := labBinary(t, ctx)
 	if _, err := exec.LookPath("tc"); err != nil {
 		t.Fatal("tc is required to hold an in-progress get", err)
 	}
@@ -200,7 +243,11 @@ func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
 		lan, err := routers[i].Segment("lan", fmt.Sprintf("10.%d.0.1/24", i+1))
 		labCheck(t, err)
 		labCheck(t, lan.Attach(clients[i], "eth0", fmt.Sprintf("10.%d.0.2/24", i+1), fmt.Sprintf("10.%d.0.1", i+1)))
-		_, err = routers[i].NAT(natlab.NATConfig{WAN: "wan", LAN: "lan", ExternalIP: netip.MustParseAddr(fmt.Sprintf("198.18.0.%d", 20+10*i)), Mapping: mapping, Filtering: natlab.FilterAddressPortDependent, Inside: []netip.AddrPort{netip.MustParseAddrPort(fmt.Sprintf("10.%d.0.2:4171", i+1))}, Destinations: []netip.AddrPort{netip.MustParseAddrPort("198.18.0.2:4000"), netip.MustParseAddrPort("198.18.0.3:4000"), netip.MustParseAddrPort(fmt.Sprintf("198.18.0.%d:4171", 30-10*i))}})
+		destinations := []netip.AddrPort{netip.MustParseAddrPort("198.18.0.2:4000"), netip.MustParseAddrPort("198.18.0.3:4000"), netip.MustParseAddrPort(fmt.Sprintf("198.18.0.%d:4171", 30-10*i))}
+		if i == 0 {
+			destinations = append(destinations, netip.MustParseAddrPort("198.18.0.32:4171")) // the recipient after its hotspot switch
+		}
+		_, err = routers[i].NAT(natlab.NATConfig{WAN: "wan", LAN: "lan", ExternalIP: netip.MustParseAddr(fmt.Sprintf("198.18.0.%d", 20+10*i)), Mapping: mapping, Filtering: natlab.FilterAddressPortDependent, Inside: []netip.AddrPort{netip.MustParseAddrPort(fmt.Sprintf("10.%d.0.2:4171", i+1))}, Destinations: destinations})
 		labCheck(t, err)
 		// Force the first get through relay, including after home loss. Direct
 		// candidates are allowed by owner policy but packets cannot yet traverse.
@@ -226,10 +273,20 @@ func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
 	}
 	var daemons [2]*daemonLabProcess
 	for i := range clients {
-		labConfig(t, dirs[i], "swarm.listen", labArray(fmt.Sprintf("/ip4/10.%d.0.2/udp/4171/quic-v1", i+1)))
+		listen := fmt.Sprintf("/ip4/10.%d.0.2/udp/4171/quic-v1", i+1)
+		grants := []string{fmt.Sprintf("%s@198.18.0.%d:4171", keys[1-i].Public().PeerID(), 30-10*i)}
+		if failover && i == 1 {
+			// The recipient changes LAN and external addresses mid-transfer: a wildcard
+			// socket survives that (an explicit-IP socket cannot, D12).
+			listen = "/ip4/0.0.0.0/udp/4171/quic-v1"
+		}
+		if failover && i == 0 {
+			grants = append(grants, fmt.Sprintf("%s@198.18.0.32:4171", keys[1].Public().PeerID()))
+		}
+		labConfig(t, dirs[i], "swarm.listen", labArray(listen))
 		labConfig(t, dirs[i], "swarm.mdns", "false")
 		labConfig(t, dirs[i], "swarm.relays", labArray(relayHints...))
-		labConfig(t, dirs[i], "swarm.probe_allow", labArray(fmt.Sprintf("%s@198.18.0.%d:4171", keys[1-i].Public().PeerID(), 30-10*i)))
+		labConfig(t, dirs[i], "swarm.probe_allow", labArray(grants...))
 		labConfig(t, dirs[i], "api.listen", "127.0.0.1:0")
 		labConfig(t, dirs[i], "gateway.listen", "127.0.0.1:0")
 		daemons[i] = labStart(t, clients[i], bin, dirs[i], "daemon")
@@ -282,7 +339,10 @@ func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
 		if path.Path != "relay" || !path.RelayWarm {
 			t.Fatal("matrix did not use relay", path)
 		}
-		t.Logf("%s/APDF: real-daemon nu:// get succeeded in %v; SHA-256 verified %d bytes via %s", mapping, time.Since(start), len(data), path.Relay)
+		if path.Why == "" || len(path.History) == 0 {
+			t.Fatalf("doctor cannot explain the relayed session: %+v", path)
+		}
+		t.Logf("%s/APDF: real-daemon nu:// get succeeded in %v; SHA-256 verified %d bytes via %s; doctor: %s", mapping, time.Since(start), len(data), path.Relay, path.Why)
 		return
 	}
 	// Shape the provider's physical socket so the first progress is demonstrably
@@ -358,6 +418,93 @@ func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
 		return labPath(clients[0], bin, dirs[0], keys[1].Public().PeerID().Base36()).Path == "direct" && labPath(clients[1], bin, dirs[1], keys[0].Public().PeerID().Base36()).Path == "direct"
 	})
 	t.Logf("two NAT'd daemons upgraded to direct in %v: %+v", time.Since(directStart), labPath(clients[1], bin, dirs[1], keys[0].Public().PeerID().Base36()))
+	metrics := labMetrics(t, clients[1], dirs[1])
+	for _, want := range []string{`nu_net_path_switches_total{to="direct"} 1`, `nu_net_paths{path="direct"} 1`, "nu_net_time_to_direct_seconds_count 1", "nu_fetch_first_byte_seconds_count 1", `nu_net_relay_reserved{relay="`} {
+		if !strings.Contains(metrics, want) {
+			t.Fatalf("/metrics lacks %q:\n%s", want, metrics)
+		}
+	}
+	if strings.Contains(metrics, `nu_net_bytes_total{direction="received",path="relay"} 0`) {
+		t.Fatal("relayed bytes were not counted", metrics)
+	}
+	checks, err := labDoctor(clients[1], bin, dirs[1])
+	labCheck(t, err)
+	doctorOK := false
+	for _, c := range checks {
+		if c.Name == "session "+keys[0].Public().PeerID().Base36() && c.Status == "ok" && strings.Contains(c.Detail, "direct after") && strings.Contains(c.Detail, "selected") {
+			doctorOK = true
+		}
+	}
+	if !doctorOK {
+		t.Fatalf("doctor did not show the direct session with its history: %+v", checks)
+	}
+	// Hotspot-style switch during a real transfer: the recipient's LAN address, its
+	// router's external address and all NAT state change while a get is in progress.
+	// The same operation must finish without a caller-visible error or retry.
+	third := filepath.Join(t.TempDir(), "third.bin")
+	labCheck(t, os.WriteFile(third, bytes.Repeat([]byte("hotspot switch mid-transfer fixture\n"), 400000), 0600))
+	thirdRoot := labAdd(t, clients[0], bin, dirs[0], third)
+	labCheck(t, json.Unmarshal(labRun(t, clients[0], bin, dirs[0], "share", thirdRoot), &shared))
+	_, err = clients[0].Run("tc", "qdisc", "add", "dev", "eth0", "root", "tbf", "rate", "16mbit", "burst", "32kb", "latency", "500ms")
+	labCheck(t, err)
+	output = filepath.Join(t.TempDir(), "third-copy.bin")
+	get = clients[1].Command(bin, "--nu-path", dirs[1], "--json", "get", "-o", output, shared.Link)
+	stdout, err = get.StdoutPipe()
+	labCheck(t, err)
+	stderr.Reset()
+	get.Stderr = stderr
+	switchStart := time.Now()
+	labCheck(t, get.Start())
+	defer func() { _ = get.Process.Kill() }()
+	scanner = bufio.NewScanner(stdout)
+	switched := false
+	var progressAtSwitch int64
+	for scanner.Scan() {
+		var event apiv0.Event
+		labCheck(t, json.Unmarshal(scanner.Bytes(), &event))
+		final = event
+		if !switched && event.Progress != nil && event.Progress.Unit == "bytes" && event.Progress.Done > 0 && event.Progress.Done < 14000000 {
+			switched = true
+			progressAtSwitch = event.Progress.Done
+			before := labPath(clients[1], bin, dirs[1], keys[0].Public().PeerID().Base36())
+			labCheck(t, clients[1].Link("eth0", false))
+			labCheck(t, clients[1].Address("eth0", "10.2.0.2/24", "10.2.0.3/24"))
+			labCheck(t, routers[1].Address("wan", "198.18.0.30/24", "198.18.0.32/24"))
+			labCheck(t, routers[1].NFT("delete table ip nu_natlab\n"))
+			_, err = routers[1].NAT(natlab.NATConfig{WAN: "wan", LAN: "lan", ExternalIP: netip.MustParseAddr("198.18.0.32"), Mapping: mapping, Filtering: natlab.FilterAddressPortDependent, Inside: []netip.AddrPort{netip.MustParseAddrPort("10.2.0.3:4171")}, Destinations: []netip.AddrPort{netip.MustParseAddrPort("198.18.0.2:4000"), netip.MustParseAddrPort("198.18.0.3:4000"), netip.MustParseAddrPort("198.18.0.20:4171")}})
+			labCheck(t, err)
+			labCheck(t, clients[1].Link("eth0", true))
+			_, err = clients[1].Run("ip", "route", "replace", "default", "via", "10.2.0.1")
+			labCheck(t, err)
+			_, err = clients[0].Run("tc", "qdisc", "del", "dev", "eth0", "root")
+			labCheck(t, err)
+			t.Logf("hotspot switch at %d verified bytes (%v): path before %s %s", progressAtSwitch, time.Since(switchStart), before.Path, before.Direct)
+		}
+	}
+	labCheck(t, scanner.Err())
+	if err := get.Wait(); err != nil {
+		t.Fatalf("get across the hotspot switch failed: %v %s; last event %+v", err, stderr, final)
+	}
+	if !switched || final.Operation == nil || final.Operation.State != apiv0.StateSucceeded {
+		t.Fatal("did not prove an in-progress get across the switch", switched, final)
+	}
+	copied, err = os.ReadFile(output)
+	labCheck(t, err)
+	if sha256.Sum256(copied) != sha256.Sum256(bytes.Repeat([]byte("hotspot switch mid-transfer fixture\n"), 400000)) {
+		t.Fatal("bytes copied across the switch differ")
+	}
+	after := labPath(clients[1], bin, dirs[1], keys[0].Public().PeerID().Base36())
+	t.Logf("get finished %v after the switch without caller error; %d verified bytes; path now %s %s via %s", time.Since(switchStart), len(copied), after.Path, after.Direct, after.Relay)
+	// Re-upgrading to direct at the new external address is reported, not required:
+	// it needs the relays' fresh observation of the new address and a probe round.
+	reupgrade := time.Now()
+	for time.Since(reupgrade) < 8*time.Second {
+		if p := labPath(clients[0], bin, dirs[0], keys[1].Public().PeerID().Base36()); p.Path == "direct" && p.Direct == "198.18.0.32:4171" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Logf("post-switch path from the provider's view after %v: %+v", time.Since(reupgrade), labPath(clients[0], bin, dirs[0], keys[1].Public().PeerID().Base36()))
 	// A fresh daemon with all UDP blocked must fail clearly, not claim success.
 	// Use a new CID so the completed previous copy cannot satisfy the request.
 	second := filepath.Join(t.TempDir(), "second.bin")
@@ -373,4 +520,17 @@ func daemonNATCase(t *testing.T, mapping natlab.Mapping, failover bool) {
 		t.Fatalf("UDP-blocked get did not fail clearly: %v %s", err, blocked)
 	}
 	t.Logf("UDP-blocked daemon get failed clearly: %s", bytes.TrimSpace(blocked))
+	labWait(t, ctx, "doctor explains blocked UDP", func() bool {
+		checks, err := labDoctor(clients[1], bin, dirs[1])
+		if err == nil {
+			return false // doctor must exit non-zero when UDP is blocked
+		}
+		for _, c := range checks {
+			if c.Name == "udp" && c.Status == "fail" && strings.Contains(c.Detail, "UDP appears blocked") && strings.Contains(c.Action, "allow outbound UDP") {
+				t.Logf("doctor: %s %s: %s → %s", c.Status, c.Name, c.Detail, c.Action)
+				return true
+			}
+		}
+		return false
+	})
 }

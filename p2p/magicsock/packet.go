@@ -1,6 +1,7 @@
 package magicsock
 
 import (
+	"errors"
 	"net"
 	"os"
 	"syscall"
@@ -31,6 +32,20 @@ func destinationCID(b []byte) (cidKey, bool) {
 	}
 	return quic.ConnectionIDFromBytes(b[1 : 1+ConnectionIDLength]), true
 }
+
+// transientSendError reports kernel send failures that accompany link, route or
+// address changes (D12). quic-go closes a connection on any send error other
+// than a message-size error, which would turn a Wi-Fi→hotspot switch into a lost
+// session; such packets are dropped and counted instead, and QUIC retransmits.
+func transientSendError(err error) bool {
+	for _, errno := range []syscall.Errno{syscall.ENETUNREACH, syscall.EHOSTUNREACH, syscall.ENETDOWN, syscall.EHOSTDOWN, syscall.EADDRNOTAVAIL, syscall.ENOBUFS, syscall.EPERM} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Conn) WriteTo(b []byte, a net.Addr) (int, error) {
 	u, ok := a.(*net.UDPAddr)
 	if !ok {
@@ -59,7 +74,14 @@ func (c *Conn) WriteMsgUDP(b, oob []byte, a *net.UDPAddr) (int, int, error) {
 		if IsVirtual(addr) {
 			return 0, 0, ErrPeer
 		}
-		return c.udp.WriteMsgUDP(b, oob, a)
+		n, nn, err := c.udp.WriteMsgUDP(b, oob, a)
+		if err == nil {
+			c.sentBytes.outer.Add(uint64(n))
+		} else if transientSendError(err) {
+			c.dropped.Add(1)
+			return len(b), len(oob), nil
+		}
+		return n, nn, err
 	}
 	direct, relay := p.selected, p.relay
 	c.mu.Unlock()
@@ -77,6 +99,10 @@ func (c *Conn) WriteMsgUDP(b, oob []byte, a *net.UDPAddr) (int, int, error) {
 		n, _, err := c.udp.WriteMsgUDP(b, filtered, net.UDPAddrFromAddrPort(direct))
 		if err == nil {
 			c.directSent.Add(uint64((len(b) + segment - 1) / segment))
+			c.sentBytes.direct.Add(uint64(n))
+		} else if transientSendError(err) {
+			c.dropped.Add(1)
+			return len(b), len(oob), nil
 		}
 		return n, len(oob), err
 	}
@@ -92,6 +118,7 @@ func (c *Conn) WriteMsgUDP(b, oob []byte, a *net.UDPAddr) (int, int, error) {
 			c.dropped.Add(1)
 		case relay.queue <- data:
 			c.relayed.Add(1)
+			c.sentBytes.relay.Add(uint64(len(data)))
 		default:
 			c.dropped.Add(1)
 		}

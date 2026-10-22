@@ -75,6 +75,21 @@ type Conn struct {
 	received                    atomic.Uint64
 	relayed                     atomic.Uint64
 	directSent                  atomic.Uint64
+	sentBytes, receivedBytes    byteCounters
+}
+
+// byteCounters split UDP payload bytes by path: Direct is inner packets on a
+// validated direct endpoint, Relay is inner packets carried over a relay leg
+// and Outer is everything else on the physical socket (wire-compatible QUIC,
+// relay carrier traffic, probes). Relay-carried bytes therefore also appear
+// in Outer once, as their carrier.
+type byteCounters struct{ direct, relay, outer atomic.Uint64 }
+
+// Bytes is a byteCounters snapshot.
+type Bytes struct{ Direct, Relay, Outer uint64 }
+
+func (b *byteCounters) snapshot() Bytes {
+	return Bytes{b.direct.Load(), b.relay.Load(), b.outer.Load()}
 }
 
 func New(cfg Config) (*Conn, error) {
@@ -358,12 +373,13 @@ func drainPackets(ch chan datagram) {
 type Stats struct {
 	Received, Relayed, DirectSent, Dropped uint64
 	Peers, CIDs                            int
+	Sent, Recv                             Bytes // payload bytes by path (see byteCounters)
 }
 
 func (c *Conn) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return Stats{c.received.Load(), c.relayed.Load(), c.directSent.Load(), c.dropped.Load(), len(c.peers), len(c.cids)}
+	return Stats{c.received.Load(), c.relayed.Load(), c.directSent.Load(), c.dropped.Load(), len(c.peers), len(c.cids), c.sentBytes.snapshot(), c.receivedBytes.snapshot()}
 }
 func (c *Conn) deliver(d datagram) {
 	select {

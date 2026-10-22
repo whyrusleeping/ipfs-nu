@@ -141,6 +141,7 @@ func (c *Conn) AttachRelay(id wire.PeerID, stream io.ReadWriteCloser) (*Relay, e
 			if err != nil {
 				return
 			}
+			c.receivedBytes.relay.Add(uint64(len(b)))
 			c.deliver(datagram{b: b, addr: net.UDPAddrFromAddrPort(p.addr)})
 		}
 	}()

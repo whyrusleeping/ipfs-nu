@@ -82,6 +82,9 @@ type Config struct {
 	PortMapping *portmap.Config
 	// DHT configures Amino participation and the public lookup sources (dht.go).
 	DHT DHTConfig
+	// NAT, when set, supplies the NAT profile for `nu doctor`; nil estimates it from
+	// identify observations (see NATProfiler).
+	NAT NATProfiler
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -100,6 +103,7 @@ type Swarm struct {
 	closeErr     error
 	connectivity *connectivity
 	dht          *dht
+	metrics      *netMetrics
 }
 
 // Start binds the host and starts the services. The returned Swarm is independent of
@@ -123,7 +127,7 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 		cfg.AllowPeer = func(id wire.PeerID) bool { return members[id] && (gate == nil || gate(id)) }
 	}
-	s := &Swarm{cfg: cfg, log: log}
+	s := &Swarm{cfg: cfg, log: log, metrics: newNetMetrics()}
 	bg, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	ok := false
@@ -358,17 +362,18 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	if src != nil {
 		opts.Source = src
 	}
-	if progress != nil {
-		opts.Progress = func(p fetch.Progress) {
-			if p.Stage == fetch.StageBlobs || p.Stage == fetch.StageDone {
-				progress(p.Bytes, p.BytesTotal)
-			}
+	observed := s.fetchObserved(time.Now(), progress)
+	opts.Progress = func(p fetch.Progress) {
+		if p.Stage == fetch.StageBlobs || p.Stage == fetch.StageDone {
+			observed(p.Bytes, p.BytesTotal)
 		}
 	}
 	_, err := s.fetcher.Fetch(ctx, root, opts)
+	s.metrics.fetches.Add(1)
 	if err == nil {
 		return nil
 	}
+	s.metrics.fetchFailures.Add(1)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

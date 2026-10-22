@@ -1,10 +1,10 @@
 ---
 id: "0017"
 title: '0b: disco `/nu/path/1`: candidates, authenticated probes, path selection, continuous re-probing'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-24"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0015"
     - "0010"

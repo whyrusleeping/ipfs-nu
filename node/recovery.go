@@ -135,13 +135,13 @@ func (n *Local) ExportContent(ctx context.Context, dir string) (*ExportManifestD
 	if err != nil {
 		return nil, err
 	}
-	seen := map[cid.Multihash]bool{}
+	seen := map[cid.CID]bool{} // full CID: raw and DRISL readings of the same bytes are two blocks (0079)
 	for _, p := range pins {
 		st, err := n.Store.Walk(ctx, p, func(c cid.CID, held bool) error {
-			if !held || seen[c.Multihash()] {
+			if !held || seen[c] {
 				return nil
 			}
-			seen[c.Multihash()] = true
+			seen[c] = true
 			return n.exportObject(dir, c, cw, m)
 		})
 		if err != nil {

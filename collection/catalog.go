@@ -101,24 +101,26 @@ func catalogKids(c cid.CID, data []byte) (structure, leaves []cid.CID, err error
 // needs more than maxDeltaFetch fetches.
 func (m *Manager) deltaCatalog(ctx context.Context, target cid.CID, known []cid.CID) (bool, error) {
 	st := m.cfg.Store
-	oldSeen := map[cid.Multihash]bool{}
-	newSeen := map[cid.Multihash]bool{target.Multihash(): true}
+	// Keyed by full CID: bytes known as a leaf do not make the same bytes linked as a
+	// node complete (0079).
+	oldSeen := map[cid.CID]bool{}
+	newSeen := map[cid.CID]bool{target: true}
 	var oldFront []cid.CID
 	for _, k := range known {
-		if !oldSeen[k.Multihash()] {
-			oldSeen[k.Multihash()] = true
+		if !oldSeen[k] {
+			oldSeen[k] = true
 			oldFront = append(oldFront, k)
 		}
 	}
 	// shared are known objects target also has; their subtrees need no look, and parent
 	// links let a level of known objects already expanded below one be skipped (when the
 	// MST above it grew by a level).
-	shared := map[cid.Multihash]bool{}
-	parent := map[cid.Multihash]cid.Multihash{}
+	shared := map[cid.CID]bool{}
+	parent := map[cid.CID]cid.CID{}
 	expandOld := func() error {
 		var next []cid.CID
 		for _, o := range oldFront {
-			h := o.Multihash()
+			h := o
 			if p, ok := parent[h]; newSeen[h] || shared[h] || (ok && shared[p]) {
 				shared[h] = true
 				continue
@@ -132,12 +134,12 @@ func (m *Manager) deltaCatalog(ctx context.Context, target cid.CID, known []cid.
 				return err
 			}
 			for _, l := range leaves {
-				oldSeen[l.Multihash()] = true
+				oldSeen[l] = true
 			}
 			for _, s := range structure {
-				if !oldSeen[s.Multihash()] {
-					oldSeen[s.Multihash()] = true
-					parent[s.Multihash()] = h
+				if !oldSeen[s] {
+					oldSeen[s] = true
+					parent[s] = h
 					next = append(next, s)
 				}
 			}
@@ -157,8 +159,8 @@ func (m *Manager) deltaCatalog(ctx context.Context, target cid.CID, known []cid.
 		}
 		var check, missing []cid.CID
 		for _, c := range front {
-			if oldSeen[c.Multihash()] {
-				shared[c.Multihash()] = true
+			if oldSeen[c] {
+				shared[c] = true
 				continue
 			}
 			info, ok, err := st.Has(c)
@@ -195,8 +197,8 @@ func (m *Manager) deltaCatalog(ctx context.Context, target cid.CID, known []cid.
 				return false, fmt.Errorf("catalog object %s: %w", c, err)
 			}
 			for _, k := range append(structure, leaves...) {
-				if !newSeen[k.Multihash()] {
-					newSeen[k.Multihash()] = true
+				if !newSeen[k] {
+					newSeen[k] = true
 					next = append(next, k)
 				}
 			}

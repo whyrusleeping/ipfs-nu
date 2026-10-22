@@ -218,7 +218,11 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   the node, its left subtree, then per entry its target (subdirectory or inline blob), its
   meta record and its right subtree. Along `path` only the search path of each name is
   walked; it proves presence or absence. Each item is sent once per response (a repeated CID
-  is skipped). Both sides run the same walk, so every frame is checked against the CID its
+  is skipped). Repeats are by full CID, not multihash: the same bytes linked as a raw blob
+  and as a DRISL node are two items, since a store holds a DRISL reading only for bytes
+  stored as DRISL (0077). Peers before 0079 skipped by multihash. Between such a peer and a
+  newer one, only a tree that links the same bytes both ways fails the frame check as
+  corrupt, and the fetcher drops that peer for the rest of that fetch. Both sides run the same walk, so every frame is checked against the CID its
   verified parent links: a hash mismatch, an inline blob over `inline_max`, an unknown tag,
   a payload on a marker or a frame after the end is corrupt. MST nodes are also checked
   against their parent's key range and layer.

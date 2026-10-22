@@ -349,6 +349,11 @@ func TestSafeRelease(t *testing.T) {
 			t.Fatalf("R14: %s released the previous head during concurrent heads", nd.Name)
 		}
 	}
+	// Key revocation (0069 CLI/API): b's key is frozen at its last commit.
+	if _, err := a.Local.ClusterKeyRevoke(ctx(t), k.DID); err != nil {
+		t.Fatal(err)
+	}
+	converged(t, n, "revocation", func(v *cluster.View) bool { return v.Keys[k.DID] == nil || v.Keys[k.DID].Revoked != nil }, b, c)
 }
 
 func isolate(n *nutest.Network, x *nutest.Node, others ...*nutest.Node) {
@@ -385,6 +390,17 @@ func TestDrainRemove(t *testing.T) {
 	}
 	if r, err := rm(b, true, false); err != nil || r.Safe || len(r.Reasons) == 0 {
 		t.Fatalf("rm of an active owner: %+v %v", r, err)
+	}
+	// Invite revocation (0069 CLI/API).
+	inv, err := a.Local.ClusterInvite(ctx(t), apiv0.ClusterInviteRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Local.ClusterInviteRevoke(ctx(t), inv.InviteID); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := a.Local.NetCluster().View().LiveInvite(inv.InviteID, time.Now()); live {
+		t.Fatal("revoked invite still live")
 	}
 
 	isolate(n, c, a, b, d)

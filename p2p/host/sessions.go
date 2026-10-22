@@ -51,6 +51,12 @@ func (e *DialError) Unwrap() []error {
 type SessionConfig struct {
 	Lookup lookup.Resolver
 	Cache  *lookup.Cache
+	// Dial, when set, prepares/dials a route (for example a circuit hint) on this
+	// manager's Host. It must honor cancellation and join setup workers before
+	// returning. The result must be an authenticated connection on that Host to
+	// peer. Nil uses Host.Dial. Session/host gates still apply before and after it.
+	// Public relay policy belongs to the owner, not to this transport seam.
+	Dial func(context.Context, wire.PeerID, wire.Multiaddr) (*Conn, error)
 	// Peers is explicit addressing, and also the initial authorization list when
 	// Private is true. Private mode never calls Lookup (including custom sources).
 	Peers                                                 map[wire.PeerID][]wire.Multiaddr
@@ -77,6 +83,9 @@ type Session struct {
 	mu      sync.Mutex
 	attempt *connectionAttempt
 	closed  bool
+	// Only a successful dial to the actual physical endpoint refreshes this;
+	// reusing an inner or unrelated direct connection does not.
+	lastDirect time.Time
 }
 type connectionAttempt struct {
 	done   chan struct{}

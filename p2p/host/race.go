@@ -14,7 +14,7 @@ import (
 )
 
 // AddressRank gives LAN/loopback first, then IPv6, then public IPv4, then
-// unsupported DNS/circuit hints. These are ordering hints, never authorization.
+// DNS/circuit hints. These are ordering hints, never authorization.
 func AddressRank(a wire.Multiaddr) int {
 	if a.Opaque() {
 		return 4
@@ -49,6 +49,24 @@ func AddressRank(a wire.Multiaddr) int {
 	return 2
 }
 
+// IsCircuitAddress reports a circuit hop, not whether the route is supported or
+// authorized. Transport owners must separately parse and validate the full route.
+func IsCircuitAddress(a wire.Multiaddr) bool {
+	if a.Opaque() {
+		return false
+	}
+	m, err := ma.NewMultiaddrBytes(a.Bytes())
+	if err != nil {
+		return false
+	}
+	for _, p := range m {
+		if p.Code() == ma.P_CIRCUIT {
+			return true
+		}
+	}
+	return false
+}
+
 type dialResult struct {
 	address wire.Multiaddr
 	conn    *Conn
@@ -57,6 +75,9 @@ type dialResult struct {
 
 func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 	m := s.owner
+	s.mu.Lock()
+	recentDirect := !s.lastDirect.IsZero() && time.Since(s.lastDirect) < 10*time.Minute
+	s.mu.Unlock()
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup
@@ -160,7 +181,20 @@ func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 			select {
 			case m.dials <- struct{}{}:
 				dialctx, stop := context.WithTimeout(child, m.config.DialTimeout)
-				r.conn, r.err = m.host.Dial(dialctx, a.Addr)
+				if r.err = m.allowed(s.peer); r.err == nil {
+					r.err = m.host.checkDial(s.peer)
+				}
+				if r.err == nil {
+					if m.config.Dial != nil {
+						r.conn, r.err = m.config.Dial(dialctx, s.peer, a.Addr)
+					} else {
+						r.conn, r.err = m.host.Dial(dialctx, a.Addr)
+					}
+				}
+				if r.err == nil && r.conn != nil && (r.conn.host != m.host || r.conn.PeerID() != s.peer) {
+					_ = r.conn.Close()
+					r.conn, r.err = nil, wire.ErrSignature
+				}
 				stop()
 				<-m.dials
 			case <-child.Done():
@@ -191,6 +225,21 @@ func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 				break drain
 			}
 		}
+		// A cold peer must not wait behind dead direct candidates before starting
+		// relay setup. Start one relay immediately, with the first direct dial in
+		// the same turn if capacity permits. Once a direct route has worked recently,
+		// use the normal LAN -> IPv6 -> IPv4 -> relay staggers instead.
+		if !recentDirect && active < parallel {
+			for i, a := range queue {
+				if IsCircuitAddress(a.Addr) {
+					queue = append(queue[:i], queue[i+1:]...)
+					launch(a)
+					recentDirect = true // only one bypass per attempt
+					ready = true
+					break
+				}
+			}
+		}
 		if len(queue) > 0 && active < parallel && (ready || active == 0) {
 			a := queue[0]
 			queue = queue[1:]
@@ -212,9 +261,12 @@ func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 					return nil, e
 				}
 				winner = r.conn
-				if m.config.Cache != nil {
-					remote, _, _, parseErr := dialAddress(r.address)
-					if parseErr == nil && !m.host.IsLocalOnlyAddress(remote) && remote.String() == winner.RemoteAddr().String() {
+				remote, _, _, parseErr := dialAddress(r.address)
+				if parseErr == nil && !m.host.IsLocalOnlyAddress(remote) && remote.String() == winner.RemoteAddr().String() {
+					s.mu.Lock()
+					s.lastDirect = time.Now()
+					s.mu.Unlock()
+					if m.config.Cache != nil {
 						if cacheErr := m.config.Cache.Remember(child, lookup.Hint{Peer: s.peer, Addresses: []wire.Multiaddr{r.address}}, "verified", 1, 7*24*time.Hour); cacheErr != nil {
 							slog.Warn("peer address cache update failed", "peer", s.peer.String(), "err", cacheErr)
 						}

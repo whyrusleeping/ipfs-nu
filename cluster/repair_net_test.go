@@ -18,14 +18,17 @@ import (
 )
 
 // tune sets short repair/release/evidence settings for the nodes a test starts, and
-// restores the defaults afterwards.
+// restores the defaults afterwards. They keep production's ratio to the heartbeat
+// (ClusterInterval 100 ms here): evidence is fresh for 10 heartbeats, a member is down
+// after 5 missed ones. Waits below are condition-based; the few fixed sleeps are
+// negative assertions sized from these settings.
 func tune(t *testing.T, fn func(s *node.ClusterSettings)) {
 	t.Helper()
 	saved, fresh := node.ClusterDefaults, node.EvidenceFresh
 	t.Cleanup(func() { node.ClusterDefaults, node.EvidenceFresh = saved, fresh })
-	node.EvidenceFresh = 2 * time.Second
+	node.EvidenceFresh = time.Second
 	s := node.ClusterDefaults
-	s.Repair, s.DownAfter, s.UpAfter = false, time.Second, time.Second
+	s.Repair, s.DownAfter, s.UpAfter = false, 500*time.Millisecond, 500*time.Millisecond
 	s.Settle, s.Grace, s.AuditInterval = 300*time.Millisecond, 0, 0
 	fn(&s)
 	node.ClusterDefaults = s
@@ -138,7 +141,7 @@ func TestRepairAfterLoss(t *testing.T) {
 	if err != nil || !hasAlert(st.Network.Alerts, apiv0.AlertNoRepairAuthority) || st.Network.Repair.Online {
 		t.Fatalf("cluster status without authority: %+v %v", st.Network, err)
 	}
-	time.Sleep(2 * time.Second) // well past down_after: still nobody marks d
+	time.Sleep(2 * node.ClusterDefaults.DownAfter) // well past down_after: still nobody marks d
 	if s := memberState(b, d); s != cluster.StateActive {
 		t.Fatalf("d marked %s without an authority", s)
 	}
@@ -162,7 +165,7 @@ func TestRepairAfterLoss(t *testing.T) {
 	full(a)
 	restarted := time.Now()
 	eventually(t, "d marked unavailable", func() bool { return memberState(b, d) == cluster.StateUnavailable })
-	if time.Since(restarted) < time.Second {
+	if time.Since(restarted) < node.ClusterDefaults.DownAfter {
 		t.Fatalf("marked %s after the authority started, before down_after", time.Since(restarted))
 	}
 	if m := b.Local.NetCluster().View().Members[d.ID]; !m.Value.Auto {
@@ -172,7 +175,7 @@ func TestRepairAfterLoss(t *testing.T) {
 		cs := content(t, b, "photos")
 		return cs.State == cluster.ReadyDegraded && cs.Repair == "in_progress" && hasAlert(cs.Alerts, apiv0.AlertDegraded) && cs.Copies != nil && cs.Copies.Below > 0
 	})
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(3 * node.ClusterInterval)
 	if cs := content(t, b, "photos"); cs.State != cluster.ReadyDegraded {
 		t.Fatalf("blocked repair reported %s", cs.State)
 	}
@@ -237,7 +240,7 @@ func deferredBy(r *apiv0.ReleaseReport, prefix string) bool {
 // (R10, R11); an epoch change defers release until it settles (R12); concurrent heads
 // from two writers defer every release and both writers see the displaced head (R14).
 func TestSafeRelease(t *testing.T) {
-	tune(t, func(s *node.ClusterSettings) { s.ReleaseAuto, s.Settle = true, 2*time.Second })
+	tune(t, func(s *node.ClusterSettings) { s.ReleaseAuto, s.Settle = true, 500*time.Millisecond })
 	n := nutest.New(t, 3)
 	a, b, c := n.Nodes[0], n.Nodes[1], n.Nodes[2]
 	all := []*nutest.Node{a, b, c}
@@ -267,7 +270,8 @@ func TestSafeRelease(t *testing.T) {
 	n.Partition(b, c)
 	t3 := addDir(t, n, a, 6)
 	update(t, a, "docs", t3)
-	deadline := time.Now().Add(node.EvidenceFresh + 3*time.Second)
+	// Past the settle window and c's evidence going stale, t2 is still pinned.
+	deadline := time.Now().Add(node.EvidenceFresh + node.ClusterDefaults.Settle + 5*node.ClusterInterval)
 	for time.Now().Before(deadline) {
 		for _, nd := range all {
 			if !pinned(t, nd, "docs", t2) {
@@ -374,7 +378,7 @@ func rejoin(n *nutest.Network, x *nutest.Node, others ...*nutest.Node) {
 // copies once the new owners confirm them and the removal is safe; `--force` removes
 // anyway and reports what it left unconfirmed.
 func TestDrainRemove(t *testing.T) {
-	tune(t, func(s *node.ClusterSettings) { s.ReleaseAuto, s.Settle = true, 500*time.Millisecond })
+	tune(t, func(s *node.ClusterSettings) { s.ReleaseAuto = true })
 	n := nutest.New(t, 4)
 	a, b, c, d := n.Nodes[0], n.Nodes[1], n.Nodes[2], n.Nodes[3]
 	storageCluster(t, a, b, c, d)
@@ -407,10 +411,18 @@ func TestDrainRemove(t *testing.T) {
 	if _, err := a.Local.ClusterMemberSet(ctx(t), apiv0.MemberSetRequest{Peer: d.ID.String(), State: cluster.StateDraining}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(node.EvidenceFresh + time.Second)
+	// Once c's evidence is stale (or its epoch old), a dry run names it; the removal
+	// is then refused for the same reason.
+	unconfirmedBy := func(r *apiv0.MemberRemoval, nd *nutest.Node) bool {
+		return r != nil && !r.Removed && len(r.Unconfirmed) > 0 &&
+			slices.ContainsFunc(r.Unconfirmed[0].Missing, func(m apiv0.MissingOwner) bool { return m.Peer == nd.ID.Base36() })
+	}
+	eventually(t, "drain blocked by the partitioned owner", func() bool {
+		r, _ := rm(d, true, false)
+		return r != nil && !r.Safe && unconfirmedBy(r, c)
+	})
 	r, err := rm(d, false, false)
-	if waitCode(err) != apiv0.CodeFailed || r == nil || r.Removed || len(r.Unconfirmed) == 0 ||
-		!slices.ContainsFunc(r.Unconfirmed[0].Missing, func(m apiv0.MissingOwner) bool { return m.Peer == c.ID.Base36() }) {
+	if waitCode(err) != apiv0.CodeFailed || !unconfirmedBy(r, c) {
 		t.Fatalf("R16: rm while an owner is partitioned: %+v %v", r, err)
 	}
 	if !pinned(t, d, "logs", root) {
@@ -433,7 +445,10 @@ func TestDrainRemove(t *testing.T) {
 	if _, err := a.Local.ClusterMemberSet(ctx(t), apiv0.MemberSetRequest{Peer: c.ID.String(), State: cluster.StateDraining}); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(node.EvidenceFresh + time.Second)
+	eventually(t, "forced drain blocked by the partitioned owner", func() bool {
+		r, _ := rm(c, true, false)
+		return r != nil && !r.Safe && unconfirmedBy(r, b)
+	})
 	r, err = rm(c, false, true)
 	if err != nil || !r.Removed || !r.Forced || len(r.Unconfirmed) == 0 {
 		t.Fatalf("forced rm: %+v %v", r, err)

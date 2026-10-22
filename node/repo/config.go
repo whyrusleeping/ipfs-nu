@@ -224,6 +224,7 @@ type SwarmConfig struct {
 	// off keeps every relayed leg on the circuit stream (D11c §5: datagram legs lost
 	// under random loss, so they stay opt-in until a loss-aware policy exists).
 	RelayDatagram string `toml:"relay_datagram,omitempty"`
+	HardNAT       string `toml:"hard_nat,omitempty"` // auto (default) or off
 	// DHT: auto (default; Amino client when a non-loopback address is bound, server
 	// once AutoNAT confirms public reachability), client (always a client, never a
 	// server) or off. Private/isolated modes never run it.

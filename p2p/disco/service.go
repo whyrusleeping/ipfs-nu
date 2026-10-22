@@ -31,6 +31,9 @@ type Config struct {
 	// history). It runs under the service lock: it must return quickly and
 	// never call back into the Service.
 	Observe func(Event)
+	// Hard enables the separately capability-negotiated hard-NAT extension.
+	// Nil leaves the exact-endpoint v1 contract and budgets unchanged.
+	Hard *HardConfig
 }
 
 // EventKind classifies an Event.
@@ -96,6 +99,7 @@ type session struct {
 	peer                     wire.PeerID
 	id, nonce                [16]byte
 	ready                    bool
+	readyChan                chan struct{}
 	done                     chan struct{}
 	tx, rx                   []byte
 	seq, remoteGen, localGen uint64
@@ -111,32 +115,53 @@ type session struct {
 	round, retry             int
 	dead                     bool
 	stats                    Status
+	controls                 chan []byte
+	hardCap                  bool
+	capable                  bool // immutable preflight result; hello confirms bilateral use
+	asserted                 map[netip.AddrPort]Candidate
+	localHard, remoteHard    *hardOffer
+	hard                     *hardAttempt
+	hardID                   [16]byte
+	hardReplay               replayWindow
+	hardPending              map[[16]byte]hardChallenge
+	hardProven, hardAnchor   netip.AddrPort
+	auxiliary                *net.UDPConn
+	hardNext                 time.Time
+	hardFailures             int
+	hardSeen                 map[[16]byte]struct{}
 }
 
 // Status is a snapshot, including observed addresses for diagnostics only.
 type Status struct {
-	Selected                            netip.AddrPort
-	Observed                            netip.AddrPort
-	TimeToDirect                        time.Duration
-	RTT                                 time.Duration
-	Sent, Received, Rejected, Fallbacks uint64
-	Candidates, Validated, Pending      int
+	Selected                                           netip.AddrPort
+	Observed                                           netip.AddrPort
+	TimeToDirect                                       time.Duration
+	RTT                                                time.Duration
+	Sent, Received, Rejected, Fallbacks                uint64
+	Candidates, Validated, Pending                     int
+	HardAttempts, HardSent, HardReceived, HardBackoffs uint64
+	HardSockets, HardSocketPeak                        int
+	HardResult                                         string
 }
 
 // Service owns the sole disco queue consumer, bounded session state and workers.
 // Close before closing Host/Socket; Close resets its control streams and joins
 // workers, without closing the inner connections, relay legs or shared socket.
 type Service struct {
-	cfg      Config
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	sessions map[wire.PeerID]*session
-	ids      map[[16]byte]*session
-	global   bucket
-	closed   bool
-	wg       sync.WaitGroup
-	once     sync.Once
+	cfg          Config
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	sessions     map[wire.PeerID]*session
+	ids          map[[16]byte]*session
+	global       bucket
+	closed       bool
+	wg           sync.WaitGroup
+	once         sync.Once
+	capabilities map[*host.Conn]time.Time
+	hardActive   *session
+	hardSockets  int
+	hardPeers    map[wire.PeerID]hardPeerState
 }
 
 func New(ctx context.Context, cfg Config) (*Service, error) {
@@ -154,7 +179,14 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	d := &Service{cfg: cfg, ctx: ctx, cancel: cancel, sessions: make(map[wire.PeerID]*session), ids: make(map[[16]byte]*session)}
+	if err := d.initHard(); err != nil {
+		cancel()
+		return nil, err
+	}
 	if err := cfg.Host.Handle(Protocol, 128, d.handle); err != nil {
+		if cfg.Hard != nil {
+			cfg.Host.RemoveHandler(HardCapability)
+		}
 		cancel()
 		return nil, err
 	}
@@ -174,6 +206,9 @@ func (d *Service) Close() error {
 		}
 		d.mu.Unlock()
 		d.cfg.Host.RemoveHandler(Protocol)
+		if d.cfg.Hard != nil {
+			d.cfg.Host.RemoveHandler(HardCapability)
+		}
 		d.wg.Wait()
 	})
 	return nil
@@ -184,6 +219,7 @@ func (d *Service) Close() error {
 // owner designates one initiator to call Open (Swarm uses the lower inner TLS
 // PeerID); the other endpoint's registered handler accepts.
 func (d *Service) Open(ctx context.Context, c *host.Conn) error {
+	d.negotiateHard(ctx, c)
 	s, err := c.OpenStream(ctx)
 	if err != nil {
 		return err
@@ -241,6 +277,11 @@ func (d *Service) admit(stream *host.Stream) (*session, error) {
 	if len(d.sessions) >= 128 || d.sessions[peer] != nil {
 		return nil, wire.ErrLimit
 	}
+	s.controls = make(chan []byte, 4)
+	s.readyChan = make(chan struct{})
+	s.hardPending = make(map[[16]byte]hardChallenge)
+	s.capable = d.capabilities[c].After(now)
+	delete(d.capabilities, c)
 	d.sessions[peer] = s
 	d.wg.Add(1)
 	return s, nil
@@ -268,7 +309,7 @@ func (d *Service) serve(s *session) {
 	defer func() { s.stream.Reset(); close(s.done); <-writerDone }()
 	_ = s.stream.SetReadDeadline(time.Now().Add(5 * time.Second))
 	hello, err := readControl(s.stream)
-	if err != nil || len(hello) != 18 || hello[0] != 1 || hello[1] != 0 {
+	if err != nil || (len(hello) != 18 && len(hello) != 19) || hello[0] != 1 || hello[1] != 0 || (len(hello) == 19 && hello[18] != 1) {
 		return
 	}
 	var remoteNonce [16]byte
@@ -286,7 +327,9 @@ func (d *Service) serve(s *session) {
 	s.tx = tx
 	s.rx = rx
 	s.ready = true
+	s.hardCap = s.capable && len(hello) == 19
 	d.ids[id] = s
+	close(s.readyChan)
 	d.mu.Unlock()
 	_ = s.stream.SetReadDeadline(time.Time{})
 	for {
@@ -295,6 +338,15 @@ func (d *Service) serve(s *session) {
 			return
 		}
 		now := time.Now()
+		if len(b) >= 2 && b[0] == 1 && b[1] >= 2 {
+			d.mu.Lock()
+			ok := !d.closed && !s.dead && s.hardCap && s.in.take(now, 1, 4) && d.hardControl(s, b, now)
+			d.mu.Unlock()
+			if !ok {
+				return
+			}
+			continue
+		}
 		gen, list, err := decodeControl(b, now)
 		if err != nil {
 			return
@@ -305,6 +357,10 @@ func (d *Service) serve(s *session) {
 			return
 		}
 		s.remoteGen = gen
+		s.asserted = make(map[netip.AddrPort]Candidate, len(list))
+		for _, c := range list {
+			s.asserted[c.Addr] = c
+		}
 		// A new generation also follows the peer's network change (RestartProbing):
 		// verify the selected path now rather than at the next heartbeat, so a dead
 		// direct path falls back to the relay within ProbeTimeout.
@@ -328,6 +384,11 @@ func (d *Service) serve(s *session) {
 				changed = true
 			}
 		}
+		if d.hardAuthorized(s, s.hardProven, now) {
+			c := s.asserted[s.hardAnchor]
+			c.Addr = s.hardProven
+			next[c.Addr] = c
+		}
 		s.remote = next
 		d.prune(s, now)
 		if changed {
@@ -340,12 +401,23 @@ func (d *Service) serve(s *session) {
 func (d *Service) writeUpdates(s *session) {
 	_ = s.stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	hello := make([]byte, 18)
+	if s.capable {
+		hello = append(hello, 1)
+	}
 	hello[0] = 1
 	copy(hello[2:], s.nonce[:])
 	if err := writeControl(s.stream, hello); err != nil {
 		return
 	}
+	select {
+	case <-s.readyChan:
+	case <-s.done:
+		return
+	case <-d.ctx.Done():
+		return
+	}
 	var last time.Time
+	var queued []byte
 	for {
 		if !last.IsZero() {
 			wait := time.Until(last.Add(time.Second))
@@ -365,28 +437,46 @@ func (d *Service) writeUpdates(s *session) {
 				}
 			}
 		}
-		list := d.cfg.Candidates(s.peer)
-		now := time.Now()
-		// Local providers may retain an expired lease; don't advertise it again.
-		clean := make([]Candidate, 0, len(list))
-		for _, c := range list {
-			if c.Expires.Sub(now) >= time.Second {
-				clean = append(clean, c)
+		b := queued
+		queued = nil
+		if b == nil {
+			list := d.cfg.Candidates(s.peer)
+			now := time.Now()
+			clean := make([]Candidate, 0, len(list))
+			for _, c := range list {
+				if c.Expires.Sub(now) >= time.Second {
+					clean = append(clean, c)
+				}
 			}
-		}
-		if s.localGen == math.MaxUint64 {
-			return
-		}
-		s.localGen++
-		b, err := encodeControl(s.localGen, clean, now)
-		if err != nil {
-			return
+			if s.localGen == math.MaxUint64 {
+				return
+			}
+			s.localGen++
+			var err error
+			b, err = encodeControl(s.localGen, clean, now)
+			if err != nil {
+				return
+			}
+			d.refreshHardOffer(s, clean, now)
 		}
 		_ = s.stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if err = writeControl(s.stream, b); err != nil {
+		if err := writeControl(s.stream, b); err != nil {
 			return
 		}
+		if len(b) == 34 && b[1] == 5 {
+			d.mu.Lock()
+			if a := s.hard; a != nil && a.phase == 4 && string(b[2:18]) == string(a.id[:]) && d.cfg.Host.ID() < s.peer {
+				d.startHard(s, time.Now())
+			}
+			d.mu.Unlock()
+		}
 		last = time.Now()
+		// Drain queued handshake frames before coalesced candidate refreshes.
+		select {
+		case queued = <-s.controls:
+			continue
+		default:
+		}
 		select {
 		case <-d.ctx.Done():
 			return
@@ -395,6 +485,7 @@ func (d *Service) writeUpdates(s *session) {
 		case <-s.stream.Conn().Context().Done():
 			return
 		case <-s.updates:
+		case queued = <-s.controls:
 		}
 	}
 }
@@ -449,7 +540,7 @@ func (d *Service) Status(peer wire.PeerID) (Status, bool) {
 	st.Selected = s.selected
 	st.Candidates = len(s.remote)
 	st.Validated = len(s.proofs)
-	st.Pending = len(s.pending)
+	st.Pending = len(s.pending) + len(s.hardPending)
 	if p, ok := s.proofs[s.selected]; ok {
 		st.RTT = p.rtt
 	}
@@ -457,6 +548,7 @@ func (d *Service) Status(peer wire.PeerID) (Status, bool) {
 }
 func (d *Service) restartSchedule(s *session, now time.Time) { s.round = 0; s.retry = 0; s.next = now }
 func (d *Service) revoke(s *session) {
+	d.cancelHard(s)
 	if s.selected.IsValid() {
 		s.stats.Fallbacks++
 		d.observe(Event{Peer: s.peer, Kind: PathRelay, Addr: s.selected})
@@ -478,7 +570,7 @@ func (d *Service) syncPaths(s *session) {
 func (d *Service) prune(s *session, now time.Time) {
 	changed := false
 	for a, c := range s.remote {
-		if !now.Before(c.Expires) || !d.cfg.Authorize(s.peer, c) {
+		if !now.Before(c.Expires) || !(d.cfg.Authorize(s.peer, c) || d.hardAuthorized(s, a, now)) {
 			delete(s.remote, a)
 		}
 	}
@@ -537,6 +629,7 @@ func (d *Service) run() {
 					continue
 				}
 				d.prune(s, now)
+				d.hardTick(s, now)
 				if !now.Before(s.refresh) {
 					signal(s)
 					s.refresh = now.Add(2 * time.Minute)
@@ -615,6 +708,10 @@ func (d *Service) send(s *session, p probe, a netip.AddrPort, now time.Time) boo
 	return true
 }
 func (d *Service) ping(s *session, a netip.AddrPort, now time.Time) {
+	if a == s.hardProven && a.IsValid() {
+		d.hardPing(s, a, s.auxiliary, now)
+		return
+	}
 	c, ok := s.remote[a]
 	if !ok || !now.Before(c.Expires) || !d.cfg.Authorize(s.peer, c) {
 		return
@@ -670,6 +767,10 @@ func (d *Service) receive() {
 	}
 }
 func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now time.Time) {
+	if len(b) == probeSize && string(b[2:18]) != string(s.id[:]) {
+		d.handleHardProbe(s, b, from, nil, now)
+		return
+	}
 	c, ok := s.remote[from]
 	if !ok || !now.Before(c.Expires) || !d.cfg.Authorize(s.peer, c) {
 		s.stats.Rejected++
@@ -709,7 +810,12 @@ func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now tim
 	if old, ok := s.proofs[s.selected]; ok && from != s.selected && now.Sub(s.selectedAt) >= 5*time.Second && rtt*5 < old.rtt*4 && old.rtt-rtt > 5*time.Millisecond {
 		switchPath = true
 	}
-	if switchPath && d.cfg.Socket.UseDirect(s.peer, from) == nil {
+	if switchPath {
+		d.cancelHard(s) // a cheaper method won; release its speculative sockets
+		d.syncPaths(s)
+		if d.cfg.Socket.UseDirect(s.peer, from) != nil {
+			return
+		}
 		s.selected = from
 		s.selectedAt = now
 		if s.stats.TimeToDirect == 0 {

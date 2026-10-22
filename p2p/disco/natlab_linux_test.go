@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
 	"github.com/whyrusleeping/nu/p2p/natlab"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -33,6 +35,9 @@ type labConfig struct {
 	Key                              []byte
 	Peer, Relay, Advertise           string
 	Listen, Scope, Gateway, Internal string
+	Hard                             bool
+	Observers                        []netcheck.Observer
+	Noise                            time.Duration
 }
 type labCommand struct {
 	Op, Address string
@@ -44,6 +49,7 @@ type labReply struct {
 	Progress int64
 	Alive    bool
 	Mapping  portmap.Mapping
+	Report   netcheck.Report
 }
 type labPeer struct {
 	in  io.WriteCloser
@@ -60,6 +66,26 @@ func (p *labPeer) call(t *testing.T, c labCommand) labReply {
 	}
 	return r
 }
+
+type noisePacket struct {
+	net.PacketConn
+	observer netip.AddrPort
+	once     sync.Once
+}
+
+func (p *noisePacket) WriteTo(b []byte, a net.Addr) (int, error) {
+	p.once.Do(func() {
+		u, err := net.ListenUDP("udp4", &net.UDPAddr{})
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			_, _ = netcheck.Observe(ctx, u, p.observer)
+			cancel()
+			u.Close()
+		}
+	})
+	return p.PacketConn.WriteTo(b, a)
+}
+
 func TestDiscoLabHelper(t *testing.T) {
 	if os.Getenv("NU_DISCO_HELPER") != "1" {
 		return
@@ -83,6 +109,48 @@ func TestDiscoLabHelper(t *testing.T) {
 	check(t, err)
 	udp, err := net.ListenUDP(network, bind)
 	check(t, err)
+	var report netcheck.Report
+	if cfg.Hard {
+		noiseDone := make(chan struct{})
+		defer close(noiseDone)
+		if cfg.Noise > 0 {
+			go func() {
+				tick := time.NewTicker(cfg.Noise)
+				defer tick.Stop()
+				for {
+					select {
+					case <-noiseDone:
+						return
+					case <-tick.C:
+						u, e := net.ListenUDP("udp4", &net.UDPAddr{})
+						if e == nil {
+							_, _ = u.WriteToUDPAddrPort([]byte("background allocation"), cfg.Observers[0].Primary)
+							u.Close()
+						}
+					}
+				}
+			}()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		probeCfg := netcheck.Config{Timeout: 100 * time.Millisecond, Retransmit: 40 * time.Millisecond}
+		if cfg.Noise > 0 {
+			opens := 0
+			probeCfg.ListenPacket = func(network string) (net.PacketConn, error) {
+				opens++
+				pc, err := net.ListenPacket(network, ":0")
+				if err == nil && opens%2 == 0 {
+					return &noisePacket{PacketConn: pc, observer: cfg.Observers[0].Primary}, nil
+				}
+				return pc, err
+			}
+		}
+		report, err = netcheck.Probe(ctx, probeCfg, cfg.Observers)
+		check(t, err)
+		observed, e := netcheck.Observe(ctx, udp, cfg.Observers[0].Primary)
+		check(t, e)
+		cfg.Advertise = observed.String()
+	}
 	// Reflexive candidates imply an existing observer mapping. Prime only the
 	// IPv4 EIM fixtures, avoiding conntrack's cached pre-mapping DNAT miss.
 	if network == "udp4" {
@@ -114,7 +182,11 @@ func TestDiscoLabHelper(t *testing.T) {
 	scope := netip.MustParsePrefix(cfg.Scope)
 	var lease atomic.Value
 	lease.Store(portmap.Mapping{})
-	d, err := New(ctx, Config{Host: h, Socket: m, Candidates: func(wire.PeerID) []Candidate {
+	var hard *HardConfig
+	if cfg.Hard {
+		hard = &HardConfig{Profile: func() (netcheck.Report, bool) { return report, true }, Authorize: func(p wire.PeerID, ip netip.Addr) bool { return p == peer && scope.Contains(ip) }}
+	}
+	d, err := New(ctx, Config{Host: h, Socket: m, Hard: hard, Candidates: func(wire.PeerID) []Candidate {
 		if m := lease.Load().(portmap.Mapping); m.External.IsValid() {
 			c, ok := FromMapping(m, netip.AddrPort{}, time.Now())
 			if !ok {
@@ -123,6 +195,9 @@ func TestDiscoLabHelper(t *testing.T) {
 			return []Candidate{c}
 		}
 		c := candidate(advertised.Load().(netip.AddrPort))
+		if cfg.Hard {
+			c.Kind = Reflexive
+		}
 		if c.Addr.Addr().Is6() {
 			c.Kind = IPv6
 		}
@@ -230,6 +305,8 @@ func TestDiscoLabHelper(t *testing.T) {
 			}()
 		case "result":
 			err = <-transferDone
+		case "profile":
+			r.Report = report
 		case "status":
 		default:
 			err = fmt.Errorf("unknown lab op")

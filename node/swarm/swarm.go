@@ -94,6 +94,8 @@ type Config struct {
 	// RelayDatagram opts relayed legs into the Nu datagram relay extension, both
 	// as the upgrading dialer and as an accepting target. Off by default.
 	RelayDatagram bool
+	// HardNAT is auto (default) or off; only consenting Nu path sessions use it.
+	HardNAT string
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -119,6 +121,9 @@ type Swarm struct {
 // Start binds the host and starts the services. The returned Swarm is independent of
 // ctx once started; ctx bounds Start itself.
 func Start(ctx context.Context, cfg Config) (*Swarm, error) {
+	if cfg.HardNAT != "" && cfg.HardNAT != "auto" && cfg.HardNAT != "off" {
+		return nil, errors.New("swarm.hard_nat: expected auto or off")
+	}
 	if cfg.Key == nil {
 		return nil, errors.New("swarm: Key is required")
 	}

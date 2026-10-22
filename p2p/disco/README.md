@@ -77,10 +77,23 @@ outbound budgets; source authentication never implicitly permits a new endpoint.
   long matrices and no-reconnect exit gates remain 0024/0025. Physical socket
   replacement, constrained-MTU paths and capacity changes need further evidence. Small disco probes do not certify the required 1200-byte
   inner packet budget; owners must restrict eligible paths accordingly.
-- NAT profiles, prediction, port ranges, spray sockets, priming strategies and
-  datagram relay optimization are not v1. Unknown control/probe encodings fail
-  closed; 0021 must negotiate a separate extension and independent quotas /
-  destination authorization, not silently widen v1 permission.
-- Daemon/CLI wiring, circuit crossing/admission policy and public destination
-  policy are intentionally **not** installed here. Review them independently
-  before enabling this protocol for untrusted Internet peers.
+- Baseline v1 does not permit prediction, port ranges or auxiliary sockets.
+  Optional `Config.Hard` negotiates `/nu/path/hard/1` capability on the exact inner
+  connection, then type-2 profile offers and request/accept/commit/cancel frames
+  on `/nu/path/1`. Both peers' measured netcheck profiles select prediction or a
+  bounded birthday rendezvous; both-random EDM stays relayed. Unknown encodings
+  and unnegotiated extensions still fail closed. See D11's 0021 contract for
+  the one-IP/high-port destination scope, fresh attempt IDs, per-socket RTT proof,
+  persistent cooldown and independent quotas. The daemon exposes `swarm.hard_nat
+  = auto|off`; private/isolated mode never enables it.
+- `go test -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -timeout=30m`
+  measures dynamic sequential/random APDM against EIM/EIF, EIM/APDF and APDM/APDF,
+  using real nft conntrack allocation, real netcheck observers and the stable
+  Unix framing leg. Default is three trials per pair; `NU_HARD_TRIALS=1..200`
+  and `NU_HARD_CASE=random-eim-apdf` select a focused campaign. Negative traversal
+  results are measurements, not a silently waived success-rate gate; every case
+  must still transfer verified bytes on the same inner connection, directly or
+  through the relay. IPS-like drops must trigger backoff and socket release.
+- Daemon/CLI wiring, circuit admission and public IP policy live in `node/swarm`.
+  Review them independently; session authentication does not prove ownership of
+  the peer-reported public IP. No field/security-review claim follows from the lab.

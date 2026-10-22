@@ -18,7 +18,7 @@ func TestConnectivityConfigAndRuntimePrivacy(t *testing.T) {
 	if !cfg.Private || len(cfg.Relays) != 1 || len(cfg.Peers[id]) != 1 || len(cfg.ProbeAllowed[id]) != 1 || cfg.PortMapping == nil {
 		t.Fatal("config incomplete", cfg)
 	}
-	for _, bad := range []repo.SwarmConfig{{Mode: "typo"}, {Relays: []string{"/ip4/240.0.0.1/udp/1/quic-v1/p2p/" + id.String()}}, {ProbeAllow: []string{id.String() + "@10.0.0.0/8"}}, {PortmapGateway: "gateway.example"}} {
+	for _, bad := range []repo.SwarmConfig{{HardNAT: "typo"}, {Mode: "typo"}, {Relays: []string{"/ip4/240.0.0.1/udp/1/quic-v1/p2p/" + id.String()}}, {ProbeAllow: []string{id.String() + "@10.0.0.0/8"}}, {PortmapGateway: "gateway.example"}} {
 		var out Config
 		if err := applyConnectivityConfig(&out, bad); err == nil {
 			t.Fatal("accepted malformed connectivity config", bad)
@@ -32,7 +32,7 @@ func TestConnectivityConfigAndRuntimePrivacy(t *testing.T) {
 		t.Fatal(status)
 	}
 	for _, p := range s.host.Protocols() {
-		if p == disco.Protocol || p == circuit.StopProtocol {
+		if p == disco.Protocol || p == disco.HardCapability || p == circuit.StopProtocol {
 			t.Fatal("public handler survived runtime privacy transition", p)
 		}
 	}

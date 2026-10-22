@@ -641,8 +641,8 @@ Endpoint encoding is `family:u8 (4 or 6), address:16 bytes, port:u16`; IPv4 uses
 12 zero bytes followed by its four address bytes. IPv4-mapped IPv6, zones, unspecified,
 multicast, broadcast, link-local and magicsock virtual addresses are forbidden.
 Loopback is allowed only by explicit local destination policy (for tests/local peers).
-There is no NAT-profile payload yet; profiles and new candidate kinds require explicit
-version/extension negotiation, never reinterpretation of v1 entries.
+Without the explicitly negotiated hard-NAT capability below, there is no NAT-profile
+payload; reject new frame types and candidate kinds, never reinterpret v1 entries.
 
 The socket envelope remains `01 6e 75 64 01 | uint16(96) | payload`. The fixed
 96-byte probe payload has offsets:
@@ -705,14 +705,94 @@ A D12 RestartProbing hook first revokes stale path proofs and selects relay, the
 re-exchanges candidates and starts the early schedule. This does not replace sockets,
 renew circuits or reconnect inner QUIC; those remain owner responsibilities.
 
-**0021 extension boundary:** v1 authorizes only exact endpoints, has no prediction,
-port ranges, spray sockets, low-TTL priming or NAT profiles. Reject such encodings.
-A future negotiated extension needs mutually acknowledged, expiring attempt IDs, exact
-IP and bounded port-set authorization, independent local policy, per-attempt packet/
-socket quotas within shared global limits, cancellation and replay binding. Neither
-this MAC nor peer consent alone authorizes arbitrary scanning. Independent security
-review of this contract and its owner policy is required before public enablement;
-negative tests and loopback/NAT-lab evidence are not that review.
+### Cooperative hard-NAT extension (0021)
+
+The exact-endpoint v1 behavior above remains unchanged for ordinary libp2p peers,
+legacy Nu peers, `swarm.hard_nat = "off"`, or unmeasured profiles. In `auto` (default),
+the path initiator first negotiates `/nu/path/hard/1` on a **separate stream of the
+same authenticated inner connection**. This backwards-compatible capability handshake
+returns exactly byte `1`; rejection/timeouts simply use ordinary `/nu/path/1`.
+It sends no UDP and grants no destination permission. Each side records capability
+for that exact connection for at most ten seconds, consumed by admission of the next
+`/nu/path/1` session. At most 128 such entries and 16 concurrent capability handlers
+exist. All actual profile exchange, offer/accept/commit/cancel negotiation and consent
+below occurs on that session's existing `/nu/path/1` stream, with unchanged fresh
+hello nonces, TLS exporter keys, 363-byte frame bound and 1 frame/s (burst 4) pacing.
+After successful preflight, append exactly byte `1` to the ordinary 18-byte hello
+(19 bytes total). New receivers accept either form, but enable the extension only
+when **both** their preflight and the remote hello flag agree. A partial/lost preflight
+therefore degrades to exact-endpoint v1 rather than breaking that session. Do not
+send profiles until hello completes, or extension frames without bilateral support.
+
+Additional control frames (big-endian, version byte still 1):
+
+- **Profile/offer, type 2, 49 bytes:** `version:u8, type:u8, candidate_generation:u64,
+  netcheck_profile:18, base_endpoint:19, predicted_port:u16`. Base must be one of the
+  peer's current unexpired **IPv4 reflexive** candidates, not a LAN/PCP-PEER/mapped
+  assertion or a UDP observation. Generation must match its candidate list. Prediction
+  stays on that base IP; all ports are 1024–65535. The full profile has the canonical
+  D11c encoding. Sequential prediction uses the last local allocation sample plus
+  measured delta, with jitter informing the search window; preserving uses the base
+  port. Stale/busy allocators can defeat prediction; profiles are hints, not proof.
+- **Request=3, accept=4, commit=5, cancel=6, each 34 bytes:** `version:u8, type:u8,
+  random_attempt_id:16, transcript_hash:16`. Hash is the first 16 bytes of SHA-256 of
+  the two complete type-2 frames ordered by raw PeerID. Only the lower PeerID proposes;
+  the other independently checks both offers and local policy, then accepts. The
+  proposer commits before the scheduled UDP wave; the receiver starts only on commit.
+  Handshake states expire after ten seconds. Unknown/stale acknowledgements do not
+  start an attempt; malformed/unnegotiated frames terminate control as for v1.
+
+**Consent and destination scope:** each side independently applies `Hard.Authorize`
+to the single peer-reported NAT IP. The daemon excludes private, loopback, CGNAT,
+link-local, multicast, reserved, benchmark and documentation destinations by default;
+an operator's exact `probe_allow` grant may explicitly admit a trusted peer's IP.
+No hostname is resolved, subnet searched, third IP inferred or UDP observation treated
+as permission. Unlike v1, the jointly consented extension permits **only ports
+1024–65535 on that one IP**, for a finite attempt. Prediction transmits to at most
+513 ports in an adaptive ±64–256 window; random search transmits to 1024 distinct
+cryptographically sampled ports. A valid incoming ping on that consented IP can be
+answered and challenged at its source port, within the same budget. A successful
+round trip admits **only the proven remote endpoint and local socket**, while the
+original reflexive anchor remains current/unexpired and policy still permits it.
+Candidate withdrawal, D12 invalidation, lost control or failed heartbeat revokes this
+permission. The baseline `Authorize` policy is never silently widened.
+
+The reported IP is **not proof of IP ownership**: a malicious authenticated peer can
+lie about a public IP. Capability, consent and MACs do not remove that risk. Excluding
+sensitive address ranges, high-port-only scope, finite quotas, bounded concurrency and
+persistent backoff limit it; deployments may impose a stricter trusted-peer/IP policy.
+Independent security review and field validation remain outstanding, not established
+by the namespace tests. This is not a general-purpose public UDP discovery service.
+
+**Probe/key binding:** use the same fixed 96-byte MAC'd ping/pong schema and directional
+exporter keys, but put the fresh attempt ID in `session_id`. It has a separate replay
+window and demux entry, removed on cancellation. Never reuse an attempt ID within a
+key session (at most 64 attempts per session); old-attempt packets cannot elicit a
+reply. Pong consumption requires the outstanding random challenge, exact remote
+endpoint **and exact local socket**, and the normal ≤3 s expiry. A ping alone cannot
+install a QUIC route. Auxiliary QUIC admission also requires the selected socket,
+exact proven endpoint and a routed CID of that peer; unknown CIDs never create outer
+connections there. Preserve the 1200-byte inner packet budget, splitting any GSO batch
+into complete datagrams on the auxiliary socket rather than forwarding primary-socket
+ancillary data. No additional reader competes on the primary socket.
+
+**Hard limits:** one pending/active attempt per service, an eight-second UDP window,
+4096 outgoing packets per direction/attempt **including pongs and failed sends**, at
+most 1280 pending challenges, 256 auxiliary sockets service-wide **including retained
+winners**, and at most one retained winning socket per peer. The random EDM side
+primes up to 256 fresh sockets toward the other endpoint; the other side probes the
+bounded port set from its primary socket. During an attempt the shared token buckets
+permit at most 512 packets/s/peer (burst 32) and 512 packets/s/service (burst 128);
+ordinary v1 traffic still uses its lower 20/100 rates and shares those buckets, not
+an independent unlimited allowance. Established-path keepalives return to v1 rates.
+Eight send errors or packet exhaustion cancels immediately. No authenticated response
+before the deadline also cancels: packet loss, an IPS drop and an uncooperative NAT
+are deliberately not distinguished. Retry backs off 30 s → 2 min → 10 min; per-peer
+cooldown survives control-stream replacement in a bounded 128-peer table. Neither a
+network/profile update nor reopening control refills the quota. Release all temporary
+sockets on failure/cancel and all but the winning socket on success. Shutdown joins
+all socket readers; path invalidation closes the retained socket after revocation.
+Low-TTL priming is not implemented.
 
 ### Stock-stack constraints
 
@@ -895,8 +975,8 @@ full measured profile in `detail` (including allocation and lifetime bounds).
 Before the first report or without netcheck observers, diagnostics fall back to the
 explicitly labelled identify estimate (`source: observations`). An explicit
 `Config.NAT` overrides the default; returning nil still requests that fallback.
-Private/isolated mode starts none of this. Public Nu peers running observers and
-disco's use of remote profiles are not wired yet.
+Private/isolated mode starts none of this. Public Nu peers running observers remain
+unwired; disco exchanges these profiles on its capability-negotiated hard-NAT session.
 
 **Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
 
@@ -919,10 +999,10 @@ ipv6=unavailable portmap=none observers=3`.
 
 **Exchange `/nu/natprofile/1`.** The requester writes `max_version:u8` (≥ 1) and half-closes;
 the responder writes `len:u8 | profile` (len 0 = not measured yet). Any Nu peer may serve
-it; it is a separate protocol rather than an identify field (no libp2p field-number
-squatting) or a `/nu/path/1` frame (v1 forbids profile payloads). Path owners fetch it when
-a path session starts and when the peer's candidate generation changes; a profile informs
-probe scheduling and escalation only, never destination authorization. Reports with
+it; it is separate from identify (no libp2p field-number squatting) and from baseline
+`/nu/path/1`. The optional hard-NAT capability additionally exchanges the same canonical
+profile in its type-2 session offers. A profile informs scheduling and escalation only;
+it is never destination authorization or proof that a predicted port will exist. Reports with
 mapped addresses stay local (`nu doctor`).
 
 Evidence (`go test -tags natlab -run TestNetcheckNATLab ./p2p/netcheck`, about 31 s with
@@ -973,8 +1053,8 @@ origins and the full BSD-3 license are in `NOTICE`; no Tailscale runtime is impo
 Probe candidate pairs concurrently, ordered LAN → IPv6 → mapped → EIM reflexive → predicted.
 Initial schedule: approximately 0, 20, 50, 100, 200, 500 ms, 1 s, 2 s; then back off.
 While relayed, retry on address/profile/network changes and a 30 s → 2 min → 10 min timer.
-Optional low-TTL priming opens the local mapping without reaching the far NAT; keep or drop
-it based on NAT-lab results.
+Hard-NAT escalation waits at least three seconds for the cheap schedule to fail and
+requires measured, usable profiles and per-session consent. Low-TTL priming is not used.
 
 ### 4. Escalation
 
@@ -984,22 +1064,26 @@ it based on NAT-lab results.
 | Same NAT / LAN | LAN candidates, mDNS and hairpinning |
 | EIM ↔ EIM | Simultaneous probing |
 | EIM ↔ predictable EDM | Report predicted port; probe a window of ±64–256 ports |
-| EIM ↔ random EDM | Birthday spraying: EDM side opens 256 sockets toward EIM; EIM probes random ports on the EDM IP |
-| EDM ↔ EDM, at least one predictable | Prediction on the predictable side, spraying on the other |
+| EIM ↔ random EDM | Bounded birthday rendezvous: up to 256 EDM sockets toward EIM; 1024 random ports on the consented EDM IP |
+| EDM ↔ EDM, at least one predictable | Attempt prediction/fanout within the same bounds; current dynamic APDM/APDF lab cases failed, retain relay |
 | EDM ↔ EDM, both random | Relay by default; do not attempt the much larger random search |
 | UDP blocked | QUIC preview fails clearly; production public reach uses tested HTTPS-compatible relay fallback |
 
 The birthday-search estimates (256/1024/2048 probes against 256 mappings: approximately
 64%/98%/99.97%) are conditional estimates, not measured guarantees for arbitrary NATs.
 
-Prediction and spraying require both Nu peers to agree via `/nu/path/1`. Do not use them
-with other libp2p peers. Apply per-peer and global rates, cap spray sockets at 256 by default,
-release temporary sockets after the attempt, back off on ICMP/IPS-like failures, and support
-`holepunch.aggressive = false`. These methods consume NAT table space and can resemble port
-scans. Destination authorization, replay resistance and probe validation require a precise
-security contract and independent review before these features ship; rate caps/MAC checks
-alone are insufficient. Hard-NAT direct-rate targets are scale-track experiments, not release
-gates for first sharing or trusted archival.
+`swarm.hard_nat = "auto" | "off"` controls this optimizer; `auto` is the default,
+never overriding private/isolated mode. The library `disco.Config.Hard` is nil/off by
+default and requires a profile provider and independent IP policy when enabled. Both
+peers must negotiate capability and agree on the current `/nu/path/1` transcript;
+other libp2p peers receive no hard-NAT packets. The finite port/socket/packet quotas,
+retained winning socket, source checks and persistent backoff are specified in D11's
+[extension contract](#cooperative-hard-nat-extension-0021). These attempts consume NAT
+table space and can resemble port scans; rate caps/MAC checks are not proof of IP
+ownership or a substitute for independent security review. The local 32-trial random
+APDM ↔ EIM/APDF campaign did not establish the conditional ≥98% hypothesis (see
+[validation](validation.md#cooperative-hard-nat-rendezvous-0021)). Hard-NAT direct-rate
+targets remain optimizer experiments, not gates for first sharing or trusted archival.
 
 ### 5. Relay optimization
 

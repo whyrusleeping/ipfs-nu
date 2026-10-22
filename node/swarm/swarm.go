@@ -56,6 +56,9 @@ type Config struct {
 	// in-process test uses loopback); nil selects the up multicast interfaces.
 	MDNS           bool
 	MDNSInterfaces []net.Interface
+	// MDNSCluster, when set, keeps mDNS on in Private/Isolated mode under the service name
+	// derived from this cluster ID (lookup.ServiceName); peers found still pass the gate.
+	MDNSCluster string
 	// AllowPeer, if set, gates every connection from the moment the host listens.
 	AllowPeer host.ConnectionGater
 	// Fetch tunes the fetcher (Store is filled in); zero values are the defaults.
@@ -159,8 +162,8 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	} else {
 		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
 	}
-	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private || cfg.Isolated, MDNS: lookup.MDNSConfig{
-		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces}}
+	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || (cfg.Private || cfg.Isolated) && cfg.MDNSCluster == "", MDNS: lookup.MDNSConfig{
+		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces, ClusterID: cfg.MDNSCluster}}
 	s.lookup, err = lookup.New(bg, lcfg)
 	if err != nil && cfg.MDNS {
 		log.Warn("LAN discovery (mDNS) unavailable; peers need addresses in links", "err", err)

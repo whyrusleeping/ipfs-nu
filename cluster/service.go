@@ -91,6 +91,33 @@ type Service struct {
 	learned  map[wire.PeerID][]string  // member addresses relayed by other members' heartbeats
 	started  time.Time                 // this node's clock at service start (repair)
 	upSince  map[wire.PeerID]time.Time // start of each member's current run of heartbeats
+	idle     map[wire.PeerID]bool      // non-members admitted by a live invite: false until they send join
+}
+
+// JoinIdleTimeout is how long a private/isolated node keeps a connection from a
+// non-member, admitted only because an invite is live, that has not sent `join`.
+var JoinIdleTimeout = 10 * time.Second
+
+// watchJoin closes peer's connection after JoinIdleTimeout unless it sent `join`
+// (joined, now or by then) or became trusted meanwhile.
+func (s *Service) watchJoin(peer wire.PeerID, joined bool) {
+	s.mu.Lock()
+	if _, ok := s.idle[peer]; ok {
+		s.idle[peer] = s.idle[peer] || joined
+		s.mu.Unlock()
+		return
+	}
+	s.idle[peer] = joined
+	s.mu.Unlock()
+	time.AfterFunc(JoinIdleTimeout, func() {
+		s.mu.Lock()
+		joined := s.idle[peer]
+		delete(s.idle, peer)
+		s.mu.Unlock()
+		if !joined && s.ctx.Err() == nil && !s.trusted(s.c.View(), peer) {
+			s.h.Disconnect(peer)
+		}
+	})
 }
 
 // Gate is the connection policy of c for this node (self): in private and isolated mode
@@ -145,7 +172,7 @@ func StartService(cfg ServiceConfig) (*Service, error) {
 	s := &Service{cfg: cfg, c: cfg.Cluster, h: cfg.Host, self: cfg.Host.ID(), log: cfg.Logger.With("cluster", cfg.Cluster.ID.String()),
 		kick: make(chan struct{}, 1), peers: map[wire.PeerID]*PeerStatus{}, pulling: map[string]bool{}, changed: make(chan struct{}),
 		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{}), learned: map[wire.PeerID][]string{},
-		started: cfg.Cluster.Now(), upSince: map[wire.PeerID]time.Time{}}
+		started: cfg.Cluster.Now(), upSince: map[wire.PeerID]time.Time{}, idle: map[wire.PeerID]bool{}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	private := s.c.Mode() == ModePrivate || s.c.Mode() == ModeIsolated
 	if private {
@@ -214,8 +241,11 @@ func (s *Service) run() {
 			for _, c := range s.h.Connections() {
 				id := c.PeerID()
 				now[id] = true
-				if !connected[id] && s.trusted(s.c.View(), id) {
+				switch trusted := s.trusted(s.c.View(), id); {
+				case !connected[id] && trusted:
 					s.exchange(id)
+				case !trusted && id != s.self && (s.c.Mode() == ModePrivate || s.c.Mode() == ModeIsolated):
+					s.watchJoin(id, false)
 				}
 			}
 			connected = now
@@ -719,6 +749,9 @@ func (s *Service) serve(st *host.Stream) {
 		}
 		reply(response{}, framed.Bytes())
 	case OpJoin, OpAdmit:
+		if req.Op == OpJoin && !member {
+			s.watchJoin(peer, true)
+		}
 		joiner := peer
 		if req.Op == OpAdmit {
 			id, err := wire.PeerIDFromBytes(req.Peer)

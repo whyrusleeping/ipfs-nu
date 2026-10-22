@@ -371,8 +371,34 @@ func (s *Store) Put(c cid.CID, data []byte) error {
 	return s.putBlock(c.Codec(), c.Multihash(), data)
 }
 
+// StateStore is the store as signed cluster state writes it (D17 A5): Put may use the
+// state reserve that content admission leaves free, so an authority with a full store
+// can still write member and head records.
+type StateStore struct{ s *Store }
+
+// State returns the store's view for signed cluster-state writes.
+func (s *Store) State() StateStore { return StateStore{s} }
+
+// Get is Store.Get.
+func (w StateStore) Get(c cid.CID) ([]byte, error) { return w.s.Get(c) }
+
+// Put is Store.Put admitted against the full headroom, the state reserve included.
+func (w StateStore) Put(c cid.CID, data []byte) error {
+	if c.Codec() == cid.Raw && len(data) > inlineMax {
+		return w.s.Put(c, data) // state is DRISL; a large raw blob is content
+	}
+	if err := c.Verify(data); err != nil {
+		return err
+	}
+	return w.s.putBlockAs(c.Codec(), c.Multihash(), data, true)
+}
+
 func (s *Store) putBlock(codec cid.Codec, m cid.Multihash, data []byte) error {
-	if err := s.admit(int64(len(data))); err != nil {
+	return s.putBlockAs(codec, m, data, false)
+}
+
+func (s *Store) putBlockAs(codec cid.Codec, m cid.Multihash, data []byte, state bool) error {
+	if err := s.admitAs(int64(len(data)), state); err != nil {
 		return err
 	}
 	s.gcMu.RLock()

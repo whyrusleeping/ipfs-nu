@@ -33,6 +33,17 @@ type Limits struct {
 	Watermark float64
 	// Grace is GCOptions.Grace for automatic collections.
 	Grace time.Duration
+	// StateReserve is store.state_reserve: headroom only signed cluster-state writes
+	// (Store.State) may use, capped at an eighth of Physical; content admission leaves it.
+	StateReserve int64
+}
+
+// stateReserve is the effective state reserve.
+func (l Limits) stateReserve() int64 {
+	if l.Physical > 0 {
+		return min(l.StateReserve, l.Physical/8)
+	}
+	return l.StateReserve
 }
 
 func (l Limits) withDefaults() Limits {
@@ -58,7 +69,7 @@ func (s *Store) SetLimits(l Limits) {
 // admitCache is the last accounting snapshot admission worked from.
 type admitCache struct {
 	at       time.Time
-	headroom int64 // -1 unlimited
+	headroom int64 // full headroom (state reserve included); -1 unlimited
 	used     int64 // admitted since at
 }
 
@@ -93,11 +104,15 @@ type Stats struct {
 	NoCopy int64
 	// Free is the free space on the store's filesystem.
 	Free int64
-	// Limit and Reserve echo Limits.Physical and Limits.FreeReserve.
-	Limit, Reserve int64
+	// Limit and Reserve echo Limits.Physical and Limits.FreeReserve; StateReserve is the
+	// effective state reserve.
+	Limit, Reserve, StateReserve int64
 	// Headroom is min(Limit − Bytes − Reserved, Free − Reserve) over the terms that apply,
-	// never below 0; -1 when neither applies.
+	// less StateReserve, never below 0; -1 when neither applies. It is what content
+	// admission may use.
 	Headroom int64
+	// full is Headroom with the state reserve (what signed state writes may use).
+	full int64
 	// Pressure is set while Headroom is 0.
 	Pressure bool
 }
@@ -175,6 +190,10 @@ func (s *Store) stats() (Stats, error) {
 			st.Headroom = h
 		}
 	}
+	st.full, st.StateReserve = st.Headroom, l.stateReserve()
+	if st.Headroom >= 0 {
+		st.Headroom = max(st.Headroom-st.StateReserve, 0)
+	}
 	st.Pressure = st.Headroom == 0
 	return st, nil
 }
@@ -207,12 +226,25 @@ func (e *BudgetError) Error() string {
 // what it admitted meanwhile, so small writes do not pay a stat and a query each.
 const admitCacheTTL = 250 * time.Millisecond
 
-// admit checks that need more bytes fit the budgets, after one rate-limited reclaim when
-// they do not. Callers hold no store lock.
-func (s *Store) admit(need int64) error {
+// admit checks that need more bytes of content fit the budgets, after one rate-limited
+// reclaim when they do not. Callers hold no store lock.
+func (s *Store) admit(need int64) error { return s.admitAs(need, false) }
+
+// admitAs is admit; a state write may also use the state reserve.
+func (s *Store) admitAs(need int64, state bool) error {
+	avail := func(st Stats) int64 {
+		if state {
+			return st.full
+		}
+		return st.Headroom
+	}
+	keep := int64(0) // what this write must leave of the cached full headroom
+	if !state {
+		keep = s.Limits().stateReserve()
+	}
 	s.resMu.Lock()
 	c := s.admitted
-	if !c.at.IsZero() && s.now().Sub(c.at) < admitCacheTTL && (c.headroom < 0 || need <= c.headroom-c.used) {
+	if !c.at.IsZero() && s.now().Sub(c.at) < admitCacheTTL && (c.headroom < 0 || need <= c.headroom-c.used-keep) {
 		s.admitted.used += need
 		s.resMu.Unlock()
 		return nil
@@ -222,9 +254,9 @@ func (s *Store) admit(need int64) error {
 	if err != nil {
 		return err
 	}
-	if st.Headroom < 0 || need <= st.Headroom {
+	if avail(st) < 0 || need <= avail(st) {
 		s.resMu.Lock()
-		s.admitted = admitCache{at: s.now(), headroom: st.Headroom, used: need}
+		s.admitted = admitCache{at: s.now(), headroom: st.full, used: need}
 		s.resMu.Unlock()
 		return nil
 	}
@@ -232,11 +264,11 @@ func (s *Store) admit(need int64) error {
 		if st, err = s.stats(); err != nil {
 			return err
 		}
-		if st.Headroom < 0 || need <= st.Headroom {
+		if avail(st) < 0 || need <= avail(st) {
 			return nil
 		}
 	}
-	e := &BudgetError{Reason: "store_limit", Need: need, Headroom: st.Headroom, Physical: st.Bytes + st.Reserved,
+	e := &BudgetError{Reason: "store_limit", Need: need, Headroom: avail(st), Physical: st.Bytes + st.Reserved,
 		Limit: st.Limit, Free: st.Free, Reserve: st.Reserve}
 	if st.Free >= 0 && st.Reserve > 0 && (st.Limit == 0 || st.Free-st.Reserve < st.Limit-e.Physical) {
 		e.Reason = "free_space"

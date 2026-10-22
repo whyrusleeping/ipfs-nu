@@ -98,6 +98,9 @@ type StoreConfig struct {
 	FreeReserve Size `toml:"free_reserve"`
 	// GCWatermark is the fraction of Limit above which GC runs (default 0.9).
 	GCWatermark float64 `toml:"gc_watermark"`
+	// StateReserve is headroom only signed cluster-state writes may use (default 16M,
+	// at most an eighth of Limit).
+	StateReserve Size `toml:"state_reserve"`
 }
 
 // DefaultFreeReserve is the free-space reserve written at init.
@@ -214,7 +217,7 @@ func DefaultConfig() *Config {
 			fmt.Sprintf("/ip4/0.0.0.0/udp/%d/quic-v1", DefaultSwarmPort),
 			fmt.Sprintf("/ip6/::/udp/%d/quic-v1", DefaultSwarmPort),
 		}, MDNS: true},
-		Store: StoreConfig{FreeReserve: DefaultFreeReserve, GCWatermark: 0.9},
+		Store: StoreConfig{FreeReserve: DefaultFreeReserve, GCWatermark: 0.9, StateReserve: 16 << 20},
 	}
 }
 

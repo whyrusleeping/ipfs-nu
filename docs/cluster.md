@@ -66,7 +66,9 @@ Each authorized key has its own **state repository**: a byte-exact atproto v3 re
 (SHA-256 MST, signed commits with `rev`; [D21](dasl.md#atproto-repository-profile)) signed
 by that key's `did:key` and served only inside the cluster. It is not hosted on a PDS or
 visible on the firehose, which lets the same design run air-gapped. Its CAR export can be
-inspected and verified with stock atproto tooling.
+inspected and verified with stock atproto tooling (checked against indigo's
+`atproto/repo` in `experiments/clusterstate_indigo_test.go`: load, P-256 signature, MST,
+TID rev, records).
 
 ```text
 io.ipfs.nu.cluster.key/<did>          { role: "admin"|"writer", revoked?: {after: <commit cid>}, hlc }
@@ -414,6 +416,7 @@ over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-
   below 1). The weight is `capacity`, or 1 TiB when the record has none (0). Ties rank by
   PeerId bytes, ascending. *Eligible* means role `storage`, state `active` and every
   `where` tag present with an allowed value; `replicas: all` makes `k` the eligible count.
+  It is encoded `{replicas: 0, all: true}` (vectors: `testdata/vectors/nu-cluster`).
   With `spread`, the first pass takes, in rank order, the best member of each distinct
   non-empty value of the tag (untagged members have none). Readiness counts confirmed
   copies per blob against these owners ([E6](operations.md#e-readiness-evidence)); a
@@ -498,8 +501,8 @@ over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-
   automatically. Several authorities may write the same record; LWW keeps one. A
   partitioned authority marks the members it cannot hear (re-placing their blobs on its
   side), which is transient over-replication, released after healing and settling.
-  Signed-state writes need store headroom: a member whose store is full cannot write
-  member records (finding; state writes have no reserved budget yet).
+  Signed-state writes use the store's state reserve (`store.state_reserve`, D17 A5), so
+  an authority whose store is full for content still writes member records.
 - **Release:** per member, in `replica` (`release.go`), as
   [operations S1–S4](operations.md#s-safe-release) with the readings in the 0048 gate:
   *version* candidates are unpinned once the head and live set are confirmed `k` times by
@@ -707,8 +710,19 @@ Neither mode sends any traffic, even encrypted, through third parties.
   (pnet PSK) are unavailable over QUIC; go-libp2p rejects that combination. Isolation
   therefore comes from mutual authentication and connection gating. Private and isolated
   nodes accept and dial only PeerIds with non-removed member records. Joiners are admitted
-  only for the join exchange on `/nu/cluster/1`. In public mode, gating covers cluster
-  protocols, and local datasets are served only to members unless `announce` is set.
+  only for the join exchange on `/nu/cluster/1`; while an invite is live a non-member's
+  connection that has not sent `join` within 10 s is closed (refused joins after 2 s). In
+  public mode, gating covers cluster protocols, and local datasets are served only to
+  members unless `announce` is set. *Current build (0069 decision):* `announce` is not
+  implemented, so every networked cluster dataset is member-only. Enforced: state, heads,
+  holdings and heartbeats only over the member-gated `/nu/cluster/1`; no provider, DHT or
+  `nu.name` records for dataset roots; `nu public add` refuses a dataset head or retained
+  version (`forbidden`). Not enforced per object: the content protocols (`/nu/bytes/1`,
+  `/nu/have/1`, `/nu/tree/1`, Bitswap) answer any connected peer that names a held CID,
+  so in public mode a CID of member-only content is a read capability (as is a
+  `nu share` link a member hands out). Per-object serving policy (a member-only object
+  set consulted per request, as the public listener does for its public set) lands with
+  `announce`.
 - **Exposure:** a non-member that reaches a listening port can complete the server's half of
   the TLS handshake and learn its PeerId, but cannot open streams. Deployments needing
   concealment rely on network isolation, which isolated mode assumes, or a VPN.
@@ -719,14 +733,20 @@ Neither mode sends any traffic, even encrypted, through third parties.
   circuit reservations, AutoNAT, port mapping, nu-path or hole punching. Members dial the
   addresses in member records and heartbeats. `nu cluster status` and `nu doctor` report a
   pair of members that cannot connect as a configuration error, not a condition to work
-  around. mDNS uses a service name derived from the cluster ID and can be disabled.
+  around. mDNS uses a service name derived from the cluster ID
+  (`_p2p-<first 5 bytes of sha256(cluster ID) hex>._udp.local.`) and can be disabled with
+  `swarm.mdns = false`; peers it finds are still gated to members.
 - **Egress safety:** at startup, isolated mode refuses configuration that names a non-member
   endpoint, including bootstrap, relay, lookup, PDS or telemetry endpoints, and compiled-in
   defaults are inactive. Private mode applies the same check to everything except the
   name-plane hosts of its `name` sources and, on members receiving collection pushes, the
   dataset's `ingest.hosts`. CI runs an isolated cluster in network namespaces
   with no default route. A packet capture must show no packets to non-member addresses and no
-  DNS queries for public names.
+  DNS queries for public names. *Implemented (0069):* the daemon of an isolated-cluster
+  member refuses to start when config sets `swarm.relays`, `swarm.portmap_gateway`,
+  `follow.jetstream`, `public.listen`, or `swarm.peers`/`swarm.probe_allow` entries whose
+  peer is not a member; the error names each key. The private-mode variant of the check
+  is not implemented yet (private nodes already run no relays or port mapping).
 - **Clocks:** HLC ordering tolerates skew. Heartbeats measure it, and status warns above
   `clock.warn_skew` (default 30 s).
 

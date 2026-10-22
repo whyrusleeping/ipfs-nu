@@ -32,7 +32,7 @@ daemon is not a consistent backup. Linux servers use `NU_PATH=/var/lib/nu`
 Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:8171"`,
 `swarm.listen = ["/ip4/0.0.0.0/udp/4171/quic-v1", "/ip6/::/udp/4171/quic-v1"]`,
 `store.limit = "0"` (physical budget, unlimited), `store.free_reserve = "1G"`,
-`store.gc_watermark = 0.9` ([D17 A5](data.md#accounting-and-budgets); sizes take a
+`store.gc_watermark = 0.9`, `store.state_reserve = "16M"` ([D17 A5](data.md#accounting-and-budgets); sizes take a
 K/M/G/T/P suffix or a bare byte count). The daemon refuses non-loopback API/gateway
 listeners until authentication exists. `[public]` (off by default) configures the
 [public listener](#public-listener-0043).

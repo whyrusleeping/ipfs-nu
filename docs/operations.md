@@ -330,6 +330,11 @@ mechanics are [D17 A1–A8](data.md#accounting-and-budgets).
   physical bytes (A5): unique blob bytes plus outboards, structure/DB, retained versions,
   staging/partials and surplus, each charged once. Per-scope `unique`/`shared` (A4) say
   what a release would free. A member's `store_limit` in cluster state is this budget.
+  `store.state_reserve` (default 16 MiB, at most an eighth of `store.limit`) is headroom
+  only signed cluster-state writes use: content stops that far short of the limit, so a
+  member or repair authority with a full store still writes member, head and key records
+  (and applies pulled state). A store full past the reserve too refuses state writes as
+  well; free space or raise the limit.
 - **C3 Transfer budget.** T1–T4 below: received bytes over an interval plus bandwidth and
   concurrency caps. Repeated retargeting consumes it even while every version fits C1.
 - **C4 Preflight.** Before syncing a target, report the logical size, the additional unique

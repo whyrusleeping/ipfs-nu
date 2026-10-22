@@ -340,13 +340,19 @@ func (n *Local) DatasetUpdate(ctx context.Context, scope, name string, req apiv0
 // writeHead writes a head record and, for a dataset with history, its version record in
 // the same commit (restoredFrom names the version a rollback restores).
 func (n *Local) writeHead(ctx context.Context, c *cluster.Cluster, name string, d *cluster.Dataset, target cid.CID, kind string, size int64, note, restoredFrom string) (*apiv0.Dataset, error) {
+	return n.writeHeadImported(ctx, c, name, d, target, kind, size, note, restoredFrom, nil)
+}
+
+// writeHeadImported is writeHead whose version record also carries an import reference.
+func (n *Local) writeHeadImported(ctx context.Context, c *cluster.Cluster, name string, d *cluster.Dataset, target cid.CID, kind string, size int64, note, restoredFrom string, imported *cluster.Imported) (*apiv0.Dataset, error) {
 	ops := []cluster.Op{{Collection: cluster.NSHead, RKey: name, Value: &cluster.Head{Target: target.String(), Kind: kind, Size: size, Note: note}}}
 	var tid string
 	if d.Policy.History != nil {
-		op, _, t, err := n.versionOp(ctx, histFor(c, name, d), ops[0], target, kind, note, restoredFrom)
+		op, ver, t, err := n.versionOp(ctx, histFor(c, name, d), ops[0], target, kind, note, restoredFrom)
 		if err != nil {
 			return nil, writeErr(err)
 		}
+		ver.Imported = imported
 		ops, tid = append(ops, op), t
 	}
 	w, err := c.Write(ops...)

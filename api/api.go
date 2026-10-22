@@ -76,6 +76,7 @@ var Routes = []Route{
 	{"POST", "/operations/{id}/cancel"},
 	{"POST", "/add"},
 	{"POST", "/import/ipfs"},
+	{"POST", "/import/ipfs/cutover"},
 	{"GET", "/cat"},
 	{"GET", "/ls"},
 	{"GET", "/pins"},
@@ -100,6 +101,7 @@ func (s *Server) register() {
 		{"POST", "/operations/{id}/cancel"}: s.operationCancel,
 		{"POST", "/add"}:                    s.add,
 		{"POST", "/import/ipfs"}:            s.importIPFS,
+		{"POST", "/import/ipfs/cutover"}:    s.importCutover,
 		{"GET", "/cat"}:                     s.cat,
 		{"GET", "/ls"}:                      s.ls,
 		{"GET", "/pins"}:                    s.pins,
@@ -405,6 +407,19 @@ func (s *Server) importIPFS(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	writeJSON(w, http.StatusAccepted, o)
+	return nil
+}
+
+func (s *Server) importCutover(w http.ResponseWriter, r *http.Request) error {
+	var req apiv0.ImportCutoverRequest
+	if err := readJSON(r, &req); err != nil {
+		return err
+	}
+	out, err := s.n.ImportCutover(r.Context(), req)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 

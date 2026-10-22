@@ -14,6 +14,7 @@ import (
 
 	"github.com/whyrusleeping/nu/bridge"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
 const (
@@ -145,6 +146,9 @@ func (d *DAG) CAR(root bridge.IPFSCID) []byte {
 	out.Write(binary.AppendUvarint(nil, uint64(len(hdr))))
 	out.Write(hdr)
 	for _, c := range d.Reachable(root) {
+		if _, ok := d.Blocks[c]; !ok {
+			continue // deleted by the test: the CAR is incomplete
+		}
 		sec := append(c.Bytes(), d.Blocks[c]...)
 		out.Write(binary.AppendUvarint(nil, uint64(len(sec))))
 		out.Write(sec)
@@ -173,22 +177,26 @@ func (d *DAG) ServeBitswap(h *host.Host, serve func(bridge.IPFSCID) bool) error 
 		for _, c := range wants(msg) {
 			b, ok := d.Blocks[c]
 			if !ok || (serve != nil && !serve(c)) {
+				presence := pbVarint(pbBytes(nil, 1, c.Bytes()), 2, 1) // DONT_HAVE
+				send(h, remote, pbBytes(nil, 4, presence))
 				continue
 			}
 			prefix := binary.AppendUvarint(nil, c.Version)
 			prefix = binary.AppendUvarint(prefix, c.Codec)
 			prefix = binary.AppendUvarint(prefix, 0x12)
 			prefix = binary.AppendUvarint(prefix, 32) // CIDv0 is [0, dag-pb, sha2-256, 32], as Kubo sends
-			payload := pbBytes(pbBytes(nil, 1, prefix), 2, b)
-			reply, err := h.OpenStream(context.Background(), remote, bridge.BitswapProtocol)
-			if err != nil {
-				return
-			}
-			out := pbBytes(nil, 3, payload)
-			_, _ = reply.Write(append(binary.AppendUvarint(nil, uint64(len(out))), out...))
-			_ = reply.Close()
+			send(h, remote, pbBytes(nil, 3, pbBytes(pbBytes(nil, 1, prefix), 2, b)))
 		}
 	})
+}
+
+func send(h *host.Host, to wire.PeerID, msg []byte) {
+	reply, err := h.OpenStream(context.Background(), to, bridge.BitswapProtocol)
+	if err != nil {
+		return
+	}
+	_, _ = reply.Write(append(binary.AppendUvarint(nil, uint64(len(msg))), msg...))
+	_ = reply.Close()
 }
 
 // wants extracts the CIDs of a Bitswap wantlist message.

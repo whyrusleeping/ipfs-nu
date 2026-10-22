@@ -16,6 +16,9 @@ const (
 	hashSHA256 uint64 = 0x12
 )
 
+// ErrDigestMismatch is returned when block bytes do not hash to their original CID.
+var ErrDigestMismatch = errors.New("ipfs cid: block digest mismatch")
+
 type IPFSCID struct {
 	Version, Codec, Hash uint64
 	Digest               [32]byte
@@ -101,7 +104,7 @@ func (c IPFSCID) Verify(b []byte) error {
 	}
 	d := sha256.Sum256(b)
 	if d != c.Digest {
-		return errors.New("ipfs cid: block digest mismatch")
+		return ErrDigestMismatch
 	}
 	return nil
 }

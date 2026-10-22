@@ -48,7 +48,29 @@ type ImportResult struct {
 	Bytes                  uint64        `drisl:"bytes" json:"bytes"`
 	EstimatedPhysicalBytes uint64        `json:"estimated_physical_bytes"`
 	Mappings               []FileMapping `drisl:"files_map" json:"mappings,omitempty"`
+	Transformations        []Item        `json:"transformations,omitempty"`
 }
+
+// Item is one reported path: a metadata transformation, a missing block or an
+// unsupported object.
+type Item struct {
+	Path   string `drisl:"path" json:"path"`
+	CID    string `drisl:"cid,omitempty" json:"cid,omitempty"`
+	Reason string `drisl:"reason" json:"reason"`
+}
+
+// MissingBlockError reports an original block the source could not supply (as opposed to
+// one that was supplied and failed verification or is unsupported).
+type MissingBlockError struct {
+	CID IPFSCID
+	Err error
+}
+
+func (e *MissingBlockError) Error() string {
+	return fmt.Sprintf("bridge: block %s unavailable: %v", e.CID.String(), e.Err)
+}
+func (e *MissingBlockError) Unwrap() error { return e.Err }
+
 type importer struct {
 	ctx      context.Context
 	src      BlockSource
@@ -59,6 +81,23 @@ type importer struct {
 	blocks   int
 	mappings []FileMapping
 	files    uint64
+	changes  []Item
+}
+
+// noteMeta records the metadata the D3 conversion cannot carry for one UnixFS node.
+func (i *importer) noteMeta(path string, c IPFSCID, u UnixFSData) {
+	if u.HasMtime {
+		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: "mtime dropped"})
+	}
+	if u.HasMode && u.Type == UnixFSFile && u.Mode&0o7777 != 0o644 && u.Mode&0o7777 != 0o755 {
+		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: fmt.Sprintf("mode %04o reduced to the executable bit", u.Mode&0o7777)})
+	}
+	if u.HasMode && u.Type != UnixFSFile {
+		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: fmt.Sprintf("mode %04o dropped", u.Mode&0o7777)})
+	}
+	if u.Type == UnixFSSymlink {
+		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: "symlink kept as a D3 symlink entry; extraction skips it (X3)"})
+	}
 }
 
 // Import verifies and converts one UnixFS root into Nu's D3 tree and stores a canonical,
@@ -107,7 +146,7 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 	} else {
 		return ImportResult{}, errors.New("bridge: a standalone UnixFS symlink has no directory entry name; import its containing directory")
 	}
-	result := ImportResult{IPFSRoot: root.String(), Root: nuRoot, Files: i.files, Mappings: i.mappings}
+	result := ImportResult{IPFSRoot: root.String(), Root: nuRoot, Files: i.files, Mappings: i.mappings, Transformations: i.changes}
 	for _, mapping := range i.mappings {
 		result.Bytes += mapping.Size
 		result.EstimatedPhysicalBytes += mapping.Size
@@ -115,7 +154,7 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 			result.EstimatedPhysicalBytes += blob.OutboardSize(mapping.Size)
 		}
 	}
-	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": nuRoot, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": result.Bytes, "mappings": i.mappings, "metadata_transformations": []string{"only the executable bit is retained; timestamps, ownership, xattrs and MIME are omitted"}}
+	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": nuRoot, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": result.Bytes, "mappings": i.mappings, "metadata_transformations": append([]Item{{Reason: "only the executable bit is retained; timestamps, ownership, xattrs and MIME are omitted"}}, i.changes...)}
 	mc, mb, err := drisl.Sum(manifest)
 	if err != nil {
 		return ImportResult{}, err
@@ -129,12 +168,22 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 
 func (i *importer) block(c IPFSCID) ([]byte, error) {
 	if i.blocks >= i.opts.MaxBlocks {
-		return nil, errors.New("bridge: block limit exceeded")
+		return nil, errBlockLimit
 	}
 	i.blocks++
 	b, e := i.src.GetBlock(i.ctx, c)
 	if e != nil {
-		return nil, e
+		if i.ctx.Err() != nil {
+			return nil, i.ctx.Err()
+		}
+		if errors.Is(e, ErrDigestMismatch) {
+			return nil, fmt.Errorf("bridge: verify %s: %w", c.String(), e)
+		}
+		var missing *MissingBlockError
+		if errors.As(e, &missing) {
+			return nil, e
+		}
+		return nil, &MissingBlockError{CID: c, Err: e}
 	}
 	if e = c.Verify(b); e != nil {
 		return nil, fmt.Errorf("bridge: verify %s: %w", c.String(), e)
@@ -168,6 +217,7 @@ func (i *importer) node(c IPFSCID, p string, depth int) (tree.Entry, error) {
 	if e != nil {
 		return tree.Entry{}, e
 	}
+	i.noteMeta(p, c, u)
 	switch u.Type {
 	case UnixFSFile:
 		return i.file(c, p, u, pb.Links)
@@ -277,7 +327,9 @@ func (i *importer) file(root IPFSCID, p string, u UnixFSData, links []Link) (tre
 	}())
 	if e != nil {
 		_ = pr.CloseWithError(e)
-		<-errCh
+		if pe := <-errCh; pe != nil {
+			return tree.Entry{}, pe // the source/verification cause, not the sink's view of it
+		}
 		return tree.Entry{}, e
 	}
 	// AddBlob consumes the declared filesize. Close the read side before awaiting the

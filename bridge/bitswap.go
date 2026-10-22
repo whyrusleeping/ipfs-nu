@@ -76,6 +76,9 @@ func (s *BitswapSource) receive(st *host.Stream) {
 		if e != nil {
 			return
 		}
+		for _, dont := range parseDontHaves(msg) {
+			s.deliver(dont, bitswapReply{err: &MissingBlockError{CID: dont, Err: fmt.Errorf("provider %s answered DONT_HAVE", st.Conn().PeerID())}})
+		}
 		data, id, e := parseBitswapPayload(msg)
 		s.mu.Lock()
 		chs := append([]chan bitswapReply(nil), s.pending[id]...)
@@ -91,6 +94,55 @@ func (s *BitswapSource) receive(st *host.Stream) {
 		}
 	}
 }
+func (s *BitswapSource) deliver(id IPFSCID, reply bitswapReply) {
+	s.mu.Lock()
+	chs := append([]chan bitswapReply(nil), s.pending[id]...)
+	s.mu.Unlock()
+	for _, ch := range chs {
+		select {
+		case ch <- reply:
+		default:
+		}
+	}
+}
+
+// parseDontHaves returns the CIDs of a message's DONT_HAVE block presences (Bitswap 1.2
+// field 4: {cid = 1, type = 2; DontHave = 1}).
+func parseDontHaves(b []byte) []IPFSCID {
+	var out []IPFSCID
+	for len(b) > 0 {
+		f, w, v, rest, e := pbField(b)
+		if e != nil {
+			return out
+		}
+		b = rest
+		if f != 4 || w != 2 {
+			continue
+		}
+		var id IPFSCID
+		var ok, dont bool
+		for len(v) > 0 {
+			ff, ww, vv, rr, e := pbField(v)
+			if e != nil {
+				break
+			}
+			v = rr
+			switch {
+			case ff == 1 && ww == 2:
+				id, e = ParseIPFSBytes(vv)
+				ok = e == nil
+			case ff == 2 && ww == 0:
+				t, _ := binary.Uvarint(vv)
+				dont = t == 1
+			}
+		}
+		if ok && dont {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
 	if s.Providers == nil {
 		return nil, errors.New("bitswap: provider finder required")

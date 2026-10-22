@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -66,7 +67,7 @@ func TestSessionTransportColdRelayAndJoinedLoser(t *testing.T) {
 }
 
 func TestSessionTransportCannotBypassGatesOrIdentity(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	a, _ := sessionHost(t, nil, "")
 	b, _ := sessionHost(t, nil, "")

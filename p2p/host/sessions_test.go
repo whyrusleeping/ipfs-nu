@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -182,7 +183,7 @@ func TestSessionsVerifiedResume(t *testing.T) {
 	}
 }
 func TestSessionFailuresAndBounds(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	a, _ := sessionHost(t, nil, "")
 	b, _ := sessionHost(t, nil, "")
@@ -243,7 +244,7 @@ func (s *lookupSpy) Lookup(context.Context, wire.PeerID) <-chan lookup.Result {
 	return ch
 }
 func TestPrivateSessionsAndPartitionGate(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	a, _ := sessionHost(t, nil, "")
 	b, _ := sessionHost(t, nil, "")

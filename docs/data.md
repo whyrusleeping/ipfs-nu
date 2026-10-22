@@ -334,8 +334,9 @@ steps 5–6.
 
 HTTPS sources complement libp2p providers. RASL hints from links (`fetch.Source`,
 implemented by `rasl.Source`, asked for each object alongside the peers; [D21](dasl.md#rasl)),
-and configured FISL indexers ([D21](dasl.md#fisl)), yield URLs that are fetched
-statelessly and verified by CID. Private and isolated clusters do not query public
+and configured FISL indexers (`fisl.indexers`, `fisl.Source`, asked for each object the
+same way; [D21](dasl.md#fisl)), yield URLs that are fetched statelessly and verified by
+CID through one retrieval path (`rasl.Retriever`). Private and isolated clusters do not query public
 indexers; isolated members make no RASL fetches.
 
 Announce pinned blob, file-node and tree-root CIDs through Amino and, if configured, delegated

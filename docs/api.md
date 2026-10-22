@@ -492,7 +492,8 @@ nu add <https-url> [--hash sha256] [--meta meta.json]
   category.
 - Item URLs and `nu add https://…` use `httpsrc` with trusted node config
   `ingest.allow_http` (default false) and `ingest.allow_ips` (address prefixes exempt from
-  the SSRF guard). `nu add` imports a URL as a BLAKE3 file node named after the URL's last
+  the SSRF guard); RASL hints and `fisl.indexers` lookups and locations ([D21](dasl.md#fisl))
+  use the same client and keys. `nu add` imports a URL as a BLAKE3 file node named after the URL's last
   path segment (`download` otherwise), with up to 4 attempts that resume on a strong
   validator; `--hash sha256` keeps the 8 MiB limit; isolated-cluster nodes refuse it.
   `--meta` stores a metadata record (adding the provenance under `source` unless present),

@@ -1170,7 +1170,7 @@ symlink target bytes were compared against `ipfs get` output. The large director
 Kubo's sharded-directory representation and conversion completed. This is a local opt-in
 fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in pinned-Kubo
 Bitswap test also passes: a Nu host requests a 1 MiB CIDv1 raw block over QUIC-v1 and receives
-and verifies the payload (0.87 s locally). That probe uses a static provider result; live Amino
+and verifies the payload (0.96 s locally). That probe uses a static provider result; live Amino
 DHT provider discovery against Kubo/the public network is not verified. The CAR import is
 exposed through CLI/API and durable operation recovery is tested, but CAR jobs persist the
 request/stage/result and replay from the CAR rather than retaining per-block checkpoints.

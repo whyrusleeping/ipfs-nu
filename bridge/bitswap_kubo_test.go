@@ -32,7 +32,10 @@ head -c 1048576 /dev/urandom > payload
 ipfs block put --format=raw --mhtype=sha2-256 payload > cid
 ipfs pin add "$(cat cid)" >/dev/null
 ipfs id -f='<id>' > peer
-exec ipfs daemon
+ipfs daemon >daemon.log 2>&1 &
+pid=$!
+for i in $(seq 1 300); do if grep -q 'Daemon is ready' daemon.log; then touch ready; break; fi; sleep 0.1; done
+wait "$pid"
 `)
 	out, e := cmd.CombinedOutput()
 	if e != nil {
@@ -44,7 +47,8 @@ exec ipfs daemon
 	for i := 0; i < 300; i++ {
 		cidBytes, cidErr := os.ReadFile(filepath.Join(dir, "cid"))
 		peerBytes, peerErr := os.ReadFile(filepath.Join(dir, "peer"))
-		if cidErr == nil && peerErr == nil && len(cidBytes) > 0 && len(peerBytes) > 0 {
+		_, readyErr := os.Stat(filepath.Join(dir, "ready"))
+		if cidErr == nil && peerErr == nil && readyErr == nil && len(cidBytes) > 0 && len(peerBytes) > 0 {
 			ready = true
 			break
 		}

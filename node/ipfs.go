@@ -251,7 +251,7 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 	}
 	for _, protocol := range h.Protocols() {
 		if protocol == kad.Protocol {
-			return nil, nil, errors.New("Amino provider discovery is already owned by another service")
+			return nil, nil, errors.New("amino provider discovery is already owned by another service")
 		}
 	}
 	dht, err := kad.New(ctx, kad.Config{Host: h, Sessions: stack.Sessions()})
@@ -269,9 +269,9 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 	if len(dht.Table().Peers()) == 0 {
 		_ = dht.Close()
 		if bootstrapErr != nil {
-			return nil, nil, fmt.Errorf("Amino bootstrap failed: %w", bootstrapErr)
+			return nil, nil, fmt.Errorf("amino bootstrap failed: %w", bootstrapErr)
 		}
-		return nil, nil, errors.New("Amino returned no usable routing peers")
+		return nil, nil, errors.New("amino returned no usable routing peers")
 	}
 	src := bridge.NewBitswapSource(h, dht)
 	return src, func() { src.Close(); _ = dht.Close() }, nil

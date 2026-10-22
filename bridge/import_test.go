@@ -60,6 +60,15 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	symPB := []byte{0x0a, byte(len(symData))}
 	symPB = append(symPB, symData...)
 	sym := add(codecDagPB, symPB)
+	execLeaf := add(codecRaw, []byte("exec"))
+	execData := []byte{0x08, 0x02, 0x18, 0x04, 0x38, 0xed, 0x03} // UnixFS File, 4 bytes, mode 0755
+	execLink := []byte{0x0a, byte(len(execLeaf.Bytes()))}
+	execLink = append(execLink, execLeaf.Bytes()...)
+	execPB := []byte{0x0a, byte(len(execData))}
+	execPB = append(execPB, execData...)
+	execPB = append(execPB, 0x12, byte(len(execLink)))
+	execPB = append(execPB, execLink...)
+	execFile := add(codecDagPB, execPB)
 	dirData := []byte{0x08, 0x01}
 	encodeLink := func(c IPFSCID, name string) []byte {
 		l := []byte{0x0a, byte(len(c.Bytes()))}
@@ -71,6 +80,7 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	dirPB := append([]byte{0x0a, byte(len(dirData))}, dirData...)
 	dirPB = append(dirPB, encodeLink(file, "f")...)
 	dirPB = append(dirPB, encodeLink(sym, "s")...)
+	dirPB = append(dirPB, encodeLink(execFile, "x")...)
 	root := add(codecDagPB, dirPB)
 	st := &sink{MemStore: mst.MemStore{}, blobs: map[cid.CID][]byte{}}
 	delete(blocks, sym) // simulate interruption after the file block was verified/stored
@@ -82,7 +92,7 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Files != 1 || !result.Manifest.Defined() {
+	if result.Files != 2 || !result.Manifest.Defined() {
 		t.Fatalf("result: %+v", result)
 	}
 	headerBytes, err := st.Get(result.Root)
@@ -97,6 +107,10 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	f, ok, err := entries.Get("f")
 	if err != nil || !ok || f.Kind != tree.KindFile {
 		t.Fatalf("file entry %+v %v %v", f, ok, err)
+	}
+	x, ok, err := entries.Get("x")
+	if err != nil || !ok || x.Kind != tree.KindFile || x.Mode != tree.ModeExec {
+		t.Fatalf("UnixFS executable mode not preserved: %+v %v %v", x, ok, err)
 	}
 	s, ok, err := entries.Get("s")
 	if err != nil || !ok || s.Kind != tree.KindSymlink {

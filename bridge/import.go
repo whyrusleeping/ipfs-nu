@@ -368,6 +368,9 @@ func (i *importer) hamtLinksAt(c IPFSCID, u UnixFSData, links []Link, depth, con
 	for v := fanout; v > 1; v >>= 1 {
 		bitsPerLevel++
 	}
+	if (len(parentSlots)+1)*bitsPerLevel > 64 {
+		return nil, errors.New("bridge: HAMT exceeds Murmur3 hash depth")
+	}
 	digits := (bitsPerLevel + 3) / 4
 	if len(u.Data) == 0 || len(u.Data) > int(fanout/8) {
 		return nil, fmt.Errorf("bridge: HAMT bitfield has invalid size: got %d bytes for fanout %d", len(u.Data), fanout)

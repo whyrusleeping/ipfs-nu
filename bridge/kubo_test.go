@@ -25,13 +25,15 @@ func TestKuboCARImports(t *testing.T) {
 ipfs config Import.UnixFSHAMTDirectorySizeThreshold 1
 mkdir -p files/sub
 printf 'small-data\n' > files/hello.txt
+printf '#!/bin/sh\n' > files/executable
+chmod 755 files/executable
 head -c 3145728 /dev/urandom > files/sub/large.bin
 for i in $(seq -w 0 1200); do printf 'fixture-%s\n' "$i" > "files/f$i"; done
 ln -s 'hello.txt' files/link
 ipfs add -Q -r --cid-version=1 --raw-leaves=true files > root-v1
 ipfs dag export "$(cat root-v1)" > root-v1.car
 ipfs get "$(cat root-v1)" -o get-v1 >/dev/null
-ipfs add -Q -r --cid-version=0 files > root-v0
+ipfs add -Q -r --preserve-mode --cid-version=0 files > root-v0
 ipfs dag export "$(cat root-v0)" > root-v0.car
 ipfs get "$(cat root-v0)" -o get-v0 >/dev/null
 `)
@@ -133,6 +135,13 @@ func compareTree(t *testing.T, st *store.Store, root cid.CID, dir string) {
 			}
 			if !bytesEqual(b, want) {
 				return false, fmt.Errorf("bytes differ at %s", path)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				return false, err
+			}
+			if (e.Mode == tree.ModeExec) != (info.Mode().Perm()&0o100 != 0) {
+				return false, fmt.Errorf("executable mode differs at %s: imported=%o extracted=%o", path, e.Mode, info.Mode().Perm())
 			}
 		case tree.KindSymlink:
 			target, err := os.Readlink(path)

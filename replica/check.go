@@ -144,18 +144,20 @@ func (m *Manager) walk(target cid.CID, size uint64, profile string, removals uin
 	links := linksFor(profile)
 	st := m.cfg.Store
 	tm := &treeMemo{removals: removals, witness: -1}
-	seen := map[cid.Multihash]bool{}
+	// Keyed by full CID, and every answer is per CID (store.HasMany/GetMany apply Has's
+	// codec rules): bytes held only as raw are not held DRISL structure (0077), even when
+	// the same tree also links them as a raw blob.
+	seen := map[cid.CID]bool{}
 	structMissing := 0
 	frontier := []fetch.Link{{CID: target, Size: size}}
 	for len(frontier) > 0 {
 		var level []fetch.Link
 		var cs []cid.CID
 		for _, l := range frontier {
-			mh := l.CID.Multihash()
-			if seen[mh] {
+			if seen[l.CID] {
 				continue
 			}
-			seen[mh] = true
+			seen[l.CID] = true
 			level = append(level, l)
 			cs = append(cs, l.CID)
 		}
@@ -165,7 +167,7 @@ func (m *Manager) walk(target cid.CID, size uint64, profile string, removals uin
 		}
 		var structs []cid.CID
 		for _, l := range level {
-			info, ok := has[l.CID.Multihash()]
+			info, ok := has[l.CID]
 			held := ok && info.Complete
 			if l.CID.Codec() == cid.Raw {
 				sz := l.Size
@@ -190,13 +192,10 @@ func (m *Manager) walk(target cid.CID, size uint64, profile string, removals uin
 		}
 		frontier = nil
 		for _, c := range structs {
-			data := blocks[c.Multihash()].Data
-			if b, ok := blocks[c.Multihash()]; !ok || b.Codec != c.Codec() {
-				// Removed since the lookup, or stored under another codec: Get decides.
-				if data, err = st.Get(c); err != nil {
-					structMissing++
-					continue
-				}
+			data, ok := blocks[c]
+			if !ok { // removed since the lookup
+				structMissing++
+				continue
 			}
 			kids, err := links(c, data)
 			if err != nil {
@@ -250,7 +249,7 @@ func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full
 		missing = -1
 		cs := make([]cid.CID, len(idx))
 		for j, i := range idx {
-			cs[j] = cid.New(cid.Raw, tm.blobs[i])
+			cs[j] = cid.New(cid.Raw, tm.blobs[i]) // blobs are raw CIDs (walk)
 		}
 		has, err := st.HasMany(cs)
 		if err != nil {
@@ -258,8 +257,8 @@ func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full
 		}
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
-		for _, i := range idx {
-			info, ok := has[tm.blobs[i]]
+		for j, i := range idx {
+			info, ok := has[cs[j]]
 			if !ok || !info.Complete {
 				if missing < 0 {
 					missing = i

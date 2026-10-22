@@ -22,76 +22,99 @@ const manyBatch = 500
 // Read it before the lookups whose results are cached.
 func (s *Store) Removals() uint64 { return s.removals.Load() }
 
-// HasMany is Has for many objects: the result maps the multihash of every object held
-// (complete or partial, as Has reports it) to its Info; absent objects are missing from it.
-// --nocopy sources are re-verified as Has does.
-func (s *Store) HasMany(cs []cid.CID) (map[cid.Multihash]Info, error) {
-	out := make(map[cid.Multihash]Info, len(cs))
-	keys := make([]any, 0, len(cs))
+// HasMany is Has for many objects: the result maps every requested CID that Has would
+// report held (complete or partial) to the Info Has returns for it; absent objects are
+// missing from it. Like Has it is codec-aware per CID (0077): a raw CID is held by
+// multihash, a DRISL CID only when its bytes were stored as DRISL (codec or alt), so the
+// same multihash may be held as raw and not as DRISL. --nocopy sources are re-verified.
+func (s *Store) HasMany(cs []cid.CID) (map[cid.CID]Info, error) {
+	// What the store holds per multihash: a blocks row (codec, alt) or a raw blob/partial.
+	type row struct {
+		block      bool
+		codec, alt int
+		info       Info
+	}
+	rows := make(map[cid.Multihash]row, len(cs))
+	var keys []any
+	rawWanted := map[cid.Multihash]bool{}
 	seen := make(map[cid.Multihash]bool, len(cs))
 	for _, c := range cs {
 		m := c.Multihash()
+		if c.Codec() == cid.Raw {
+			rawWanted[m] = true
+		}
 		if !seen[m] {
 			seen[m] = true
 			keys = append(keys, mhKey(m))
 		}
 	}
 	var nocopy []blobRow
-	pending := map[cid.Multihash]bool{}
+	pending := map[cid.Multihash]bool{} // --nocopy rows awaiting verification
 	for len(keys) > 0 {
 		batch := keys[:min(len(keys), manyBatch)]
 		keys = keys[len(batch):]
-		in := placeholders(len(batch))
-		if err := s.scanMany(`SELECT mh, codec, length(data) FROM blocks WHERE mh IN (`+in+`)`, batch, func(m cid.Multihash, rows *sql.Rows) error {
-			var codec int
+		if err := s.scanMany(`SELECT mh, codec, alt, length(data) FROM blocks WHERE mh IN (`+placeholders(len(batch))+`)`, batch, func(m cid.Multihash, r *sql.Rows) error {
+			var codec, alt int
 			var size int64
-			if err := rows.Scan(new([]byte), &codec, &size); err != nil {
+			if err := r.Scan(new([]byte), &codec, &alt, &size); err != nil {
 				return err
 			}
-			out[m] = Info{Codec: cid.Codec(codec), Size: uint64(size), Complete: true, Physical: uint64(size)}
+			rows[m] = row{block: true, codec: codec, alt: alt, info: Info{Size: uint64(size), Complete: true, Physical: uint64(size)}}
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		rest := remaining(batch, out, nil)
+		// The blob tables hold raw bytes only: look there for raw requests not in blocks.
+		var rest []any
+		for _, k := range batch {
+			if m, err := cid.DecodeMultihash(k.([]byte)); err == nil && rawWanted[m] {
+				if _, ok := rows[m]; !ok {
+					rest = append(rest, k)
+				}
+			}
+		}
 		if len(rest) == 0 {
 			continue
 		}
-		in = placeholders(len(rest))
-		if err := s.scanMany(`SELECT mh, size, outboard, src_path, src_mtime FROM blobs WHERE mh IN (`+in+`)`, rest, func(m cid.Multihash, rows *sql.Rows) error {
-			r := blobRow{m: m}
+		if err := s.scanMany(`SELECT mh, size, outboard, src_path, src_mtime FROM blobs WHERE mh IN (`+placeholders(len(rest))+`)`, rest, func(m cid.Multihash, r *sql.Rows) error {
+			br := blobRow{m: m}
 			var size int64
 			var src sql.NullString
 			var mtime sql.NullInt64
-			if err := rows.Scan(new([]byte), &size, &r.outboard, &src, &mtime); err != nil {
+			if err := r.Scan(new([]byte), &size, &br.outboard, &src, &mtime); err != nil {
 				return err
 			}
-			r.size, r.srcPath, r.srcMtime = uint64(size), src.String, mtime.Int64
-			if r.srcPath != "" {
-				nocopy = append(nocopy, r) // verified below, outside the query
+			br.size, br.srcPath, br.srcMtime = uint64(size), src.String, mtime.Int64
+			if br.srcPath != "" {
+				nocopy = append(nocopy, br) // verified below, outside the query
 				pending[m] = true
 				return nil
 			}
-			info := Info{Codec: cid.Raw, Size: r.size, Complete: true, Physical: r.size}
-			if r.outboard {
-				info.Physical += blob.OutboardSize(r.size)
+			info := Info{Codec: cid.Raw, Size: br.size, Complete: true, Physical: br.size}
+			if br.outboard {
+				info.Physical += blob.OutboardSize(br.size)
 			}
-			out[m] = info
+			rows[m] = row{info: info}
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		rest = remaining(rest, out, pending)
-		if len(rest) == 0 {
+		var parts []any
+		for _, k := range rest {
+			m, _ := cid.DecodeMultihash(k.([]byte))
+			if _, ok := rows[m]; !ok && !pending[m] {
+				parts = append(parts, k)
+			}
+		}
+		if len(parts) == 0 {
 			continue
 		}
-		in = placeholders(len(rest))
-		if err := s.scanMany(`SELECT mh, size, held FROM partials WHERE mh IN (`+in+`)`, rest, func(m cid.Multihash, rows *sql.Rows) error {
+		if err := s.scanMany(`SELECT mh, size, held FROM partials WHERE mh IN (`+placeholders(len(parts))+`)`, parts, func(m cid.Multihash, r *sql.Rows) error {
 			var size, held int64
-			if err := rows.Scan(new([]byte), &size, &held); err != nil {
+			if err := r.Scan(new([]byte), &size, &held); err != nil {
 				return err
 			}
-			out[m] = Info{Codec: cid.Raw, Size: uint64(size), Physical: uint64(held) + blob.OutboardSize(uint64(size))}
+			rows[m] = row{info: Info{Codec: cid.Raw, Size: uint64(size), Physical: uint64(held) + blob.OutboardSize(uint64(size))}}
 			return nil
 		}); err != nil {
 			return nil, err
@@ -107,23 +130,39 @@ func (s *Store) HasMany(cs []cid.CID) (map[cid.Multihash]Info, error) {
 			if r.outboard {
 				info.Physical = blob.OutboardSize(r.size)
 			}
-			out[r.m] = info
+			rows[r.m] = row{info: info}
+		}
+	}
+	out := make(map[cid.CID]Info, len(cs))
+	for _, c := range cs {
+		r, ok := rows[c.Multihash()]
+		switch {
+		case !ok:
+		case r.block:
+			if !codecMatch(c.Codec(), r.codec, r.alt) {
+				continue // raw bytes asked for as DRISL
+			}
+			info := r.info
+			info.Codec = cid.Codec(r.codec)
+			if r.alt == int(c.Codec()) {
+				info.Codec = c.Codec()
+			}
+			out[c] = info
+		case c.Codec() == cid.Raw:
+			out[c] = r.info
 		}
 	}
 	return out, nil
 }
 
-// Block is a database block with the codec it was first stored under.
-type Block struct {
-	Codec cid.Codec
-	Data  []byte
-}
-
-// GetMany is Get for many blocks: the result maps the multihash of every block held in
-// the database (structure or an inline blob) to its codec and bytes. Callers that decode
-// a block by the codec of the CID they asked for should compare it with Block.Codec.
-func (s *Store) GetMany(cs []cid.CID) (map[cid.Multihash]Block, error) {
-	out := make(map[cid.Multihash]Block, len(cs))
+// GetMany is Get for many blocks: the result maps every requested CID that Get would
+// answer (structure or an inline blob, codec-checked per CID like Get) to its bytes.
+func (s *Store) GetMany(cs []cid.CID) (map[cid.CID][]byte, error) {
+	type row struct {
+		codec, alt int
+		data       []byte
+	}
+	rows := make(map[cid.Multihash]row, len(cs))
 	keys := make([]any, 0, len(cs))
 	for _, c := range cs {
 		keys = append(keys, mhKey(c.Multihash()))
@@ -131,17 +170,21 @@ func (s *Store) GetMany(cs []cid.CID) (map[cid.Multihash]Block, error) {
 	for len(keys) > 0 {
 		batch := keys[:min(len(keys), manyBatch)]
 		keys = keys[len(batch):]
-		if err := s.scanMany(`SELECT mh, codec, data FROM blocks WHERE mh IN (`+placeholders(len(batch))+`)`, batch, func(m cid.Multihash, rows *sql.Rows) error {
-			var b Block
-			var codec int
-			if err := rows.Scan(new([]byte), &codec, &b.Data); err != nil {
+		if err := s.scanMany(`SELECT mh, codec, alt, data FROM blocks WHERE mh IN (`+placeholders(len(batch))+`)`, batch, func(m cid.Multihash, r *sql.Rows) error {
+			var w row
+			if err := r.Scan(new([]byte), &w.codec, &w.alt, &w.data); err != nil {
 				return err
 			}
-			b.Codec = cid.Codec(codec)
-			out[m] = b
+			rows[m] = w
 			return nil
 		}); err != nil {
 			return nil, err
+		}
+	}
+	out := make(map[cid.CID][]byte, len(cs))
+	for _, c := range cs {
+		if r, ok := rows[c.Multihash()]; ok && codecMatch(c.Codec(), r.codec, r.alt) {
+			out[c] = r.data
 		}
 	}
 	return out, nil
@@ -184,39 +227,25 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// remaining returns the keys of batch neither in found nor in skip.
-func remaining(batch []any, found map[cid.Multihash]Info, skip map[cid.Multihash]bool) []any {
-	var out []any
-	for _, k := range batch {
-		m, err := cid.DecodeMultihash(k.([]byte))
-		if err != nil {
-			continue
-		}
-		if _, ok := found[m]; !ok && !skip[m] {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
 // prefetchMax bounds the objects a walk looks up in batches before it visits them; past
 // it the walk falls back to one lookup per object.
 const prefetchMax = 1 << 17
 
 type prefetched struct {
-	info  Info
-	ok    bool
-	codec cid.Codec
-	data  []byte // structure block bytes (nil for blobs and missing objects)
+	info Info
+	ok   bool
+	data []byte // structure block bytes (nil for blobs and missing objects)
 }
 
-type prefetchSet struct{ objs map[cid.Multihash]prefetched }
+// prefetchSet holds lookups by full CID: the same multihash requested as raw and as DRISL
+// are separate answers (0077).
+type prefetchSet struct{ objs map[cid.CID]prefetched }
 
 // prefetch looks up root's reachable objects level by level (HasMany, then GetMany for
 // held DRISL structure under links), so a depth-first walk can visit them from memory in
 // its own order. links nil: only root.
 func (s *Store) prefetch(ctx context.Context, root cid.CID, links LinksFunc) (prefetchSet, error) {
-	ps := prefetchSet{objs: map[cid.Multihash]prefetched{}}
+	ps := prefetchSet{objs: map[cid.CID]prefetched{}}
 	frontier := []cid.CID{root}
 	for len(frontier) > 0 && len(ps.objs) < prefetchMax {
 		if err := ctx.Err(); err != nil {
@@ -224,8 +253,8 @@ func (s *Store) prefetch(ctx context.Context, root cid.CID, links LinksFunc) (pr
 		}
 		var level []cid.CID
 		for _, c := range frontier {
-			if _, ok := ps.objs[c.Multihash()]; !ok {
-				ps.objs[c.Multihash()] = prefetched{} // dedupes the level; set below
+			if _, ok := ps.objs[c]; !ok {
+				ps.objs[c] = prefetched{} // dedupes the level; set below
 				level = append(level, c)
 			}
 		}
@@ -235,8 +264,8 @@ func (s *Store) prefetch(ctx context.Context, root cid.CID, links LinksFunc) (pr
 		}
 		var structs []cid.CID
 		for _, c := range level {
-			info, ok := has[c.Multihash()]
-			ps.objs[c.Multihash()] = prefetched{info: info, ok: ok}
+			info, ok := has[c]
+			ps.objs[c] = prefetched{info: info, ok: ok}
 			if links != nil && ok && info.Complete && c.Codec() == cid.DRISL {
 				structs = append(structs, c)
 			}
@@ -247,14 +276,14 @@ func (s *Store) prefetch(ctx context.Context, root cid.CID, links LinksFunc) (pr
 		}
 		frontier = nil
 		for _, c := range structs {
-			b, ok := blocks[c.Multihash()]
-			if !ok || b.Codec != c.Codec() {
+			data, ok := blocks[c]
+			if !ok {
 				continue // the walk reads it itself
 			}
-			e := ps.objs[c.Multihash()]
-			e.codec, e.data = b.Codec, b.Data
-			ps.objs[c.Multihash()] = e
-			kids, err := links(c, b.Data)
+			e := ps.objs[c]
+			e.data = data
+			ps.objs[c] = e
+			kids, err := links(c, data)
 			if err != nil {
 				continue // the walk reports it in order
 			}

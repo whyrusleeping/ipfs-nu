@@ -13,6 +13,7 @@ import (
 	"github.com/whyrusleeping/nu/p2p/disco"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/proto/autonat"
@@ -37,6 +38,7 @@ type networkControl struct {
 	generation   uint64
 	lastReaction netmon.Reaction
 	confirm      chan struct{}
+	natProfile   *netcheck.Monitor // 0018, see netcheck.go
 }
 
 func literalEndpoint(a wire.Multiaddr) (netip.AddrPort, bool) {
@@ -251,6 +253,9 @@ func (c *connectivity) runNetwork() error {
 		if _, err := pipeline.Register(netmon.Stage(stage), hook); err != nil {
 			return err
 		}
+	}
+	if err := c.startNetcheck(pipeline); err != nil { // 0018 NAT profile
+		return err
 	}
 	mon, err := netmon.Start(c.ctx, netmon.Options{})
 	if err != nil {

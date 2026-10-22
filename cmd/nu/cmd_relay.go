@@ -16,6 +16,7 @@ import (
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/relay"
@@ -44,11 +45,12 @@ type relayStatus struct {
 	Advertise []string `json:"advertise"` // addresses handed to reserving peers
 	Admitted  int      `json:"admitted"`
 	WSSListen string   `json:"wss_listen,omitempty"`
+	Netcheck  []string `json:"netcheck,omitempty"` // NAT-profiling observer UDP sockets (0018)
 }
 
 var cmdRelay = &command{
 	name:    "relay",
-	args:    "[--listen <addr>]... [--advertise <addr>]... [--admit <peer-id>]...",
+	args:    "[--listen <addr>]... [--advertise <addr>]... [--admit <peer-id>]... [--netcheck <ip:port>]...",
 	summary: "run a circuit relay (identify, AutoNAT v2, circuit v2 HOP) with this repo's identity",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
@@ -66,6 +68,10 @@ var cmdRelay = &command{
 		wssCert := fs.String("wss-cert", "", "WSS Web-PKI TLS certificate PEM path")
 		wssKey := fs.String("wss-key", "", "WSS TLS private key PEM path")
 		wssMax := fs.Int("wss-max-connections", 0, "WSS connection slots including TLS/HTTP handshakes (default 128)")
+		var ncPrimary, ncAltIP listFlag
+		fs.Var(&ncPrimary, "netcheck", "serve /nu/netcheck/1 NAT profiling from this literal UDP ip:port, one per address family (repeatable)")
+		ncAltPort := fs.Int("netcheck-alt-port", 0, "alternate UDP port on each --netcheck IP (enables port-filtering and mapping classes)")
+		fs.Var(&ncAltIP, "netcheck-alt-ip", "second local IP of the same family as a --netcheck address, same port (enables address-filtering tests)")
 		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
@@ -169,7 +175,11 @@ var cmdRelay = &command{
 			}
 			wssConfig = &relay.WSSConfig{Listen: *wssListen, TLS: &tls.Config{Certificates: []tls.Certificate{cert}}, MaxConnections: pick(*wssMax, rc.WSSMaxConnections)}
 		}
-		s, err := relay.New(relay.Config{Host: host.Config{Key: key, Listen: hostListen}, Server: srv, WSS: wssConfig})
+		nc, err := relayNetcheckConfig(ncPrimary, *ncAltPort, ncAltIP)
+		if err != nil {
+			return err
+		}
+		s, err := relay.New(relay.Config{Host: host.Config{Key: key, Listen: hostListen}, Server: srv, WSS: wssConfig, Netcheck: nc})
 		if err != nil {
 			return apiv0.Errorf(apiv0.CodeFailed, "cannot start the relay: %v", err).
 				WithAction("check that the listen port is free and bindable (UDP 443 may need privileges), and that limits are within range")
@@ -190,12 +200,25 @@ var cmdRelay = &command{
 		if len(st.Advertise) == 0 {
 			st.Advertise = st.Listen
 		}
+		if s.Netcheck != nil {
+			for _, set := range s.Netcheck.Descriptor().Sets {
+				for _, ep := range []netip.AddrPort{set.Primary, set.AltPort, set.AltIP} {
+					if ep.IsValid() {
+						st.Netcheck = append(st.Netcheck, ep.String())
+					}
+				}
+			}
+		}
 		if err := e.emit(st, func(w io.Writer) {
+			fmt.Fprintf(w, "%s %s relay serving (identify, AutoNAT v2, circuit v2 HOP)\n  peer id    %s\n  listen     %s\n  advertise  %s\n  admitted   %d peers\n",
+				nu.Name, nu.Version, st.PeerID, strings.Join(st.Listen, ", "), strings.Join(st.Advertise, ", "), st.Admitted)
 			if st.WSSListen != "" {
 				fmt.Fprintf(w, "  WSS listen %s (TLS/Noise/yamux)\n", st.WSSListen)
 			}
-			fmt.Fprintf(w, "%s %s relay serving (identify, AutoNAT v2, circuit v2 HOP)\n  peer id    %s\n  listen     %s\n  advertise  %s\n  admitted   %d peers\npress Ctrl-C to stop\n",
-				nu.Name, nu.Version, st.PeerID, strings.Join(st.Listen, ", "), strings.Join(st.Advertise, ", "), st.Admitted)
+			if len(st.Netcheck) > 0 {
+				fmt.Fprintf(w, "  netcheck   %s\n", strings.Join(st.Netcheck, ", "))
+			}
+			fmt.Fprintln(w, "press Ctrl-C to stop")
 		}); err != nil {
 			return err
 		}
@@ -233,6 +256,49 @@ func relayListenAddrs(listen []string) ([]string, bool, error) {
 		out = append(out, net.JoinHostPort(ip.String(), p))
 	}
 	return out, wildcard, nil
+}
+
+// relayNetcheckConfig builds the 0018 observer sets from the --netcheck flags
+// (nil when none are given). Observer sockets need literal, non-wildcard IPs.
+func relayNetcheckConfig(primaries []string, altPort int, altIPs []string) (*netcheck.ServerConfig, error) {
+	if len(primaries) == 0 {
+		if altPort != 0 || len(altIPs) != 0 {
+			return nil, usagef("--netcheck-alt-port/--netcheck-alt-ip need --netcheck <ip:port>")
+		}
+		return nil, nil
+	}
+	if altPort < 0 || altPort > 65535 {
+		return nil, usagef("--netcheck-alt-port must be a UDP port")
+	}
+	cfg := &netcheck.ServerConfig{}
+	used := make([]bool, len(altIPs))
+	for _, p := range primaries {
+		ep, err := netip.ParseAddrPort(p)
+		if err != nil || ep.Addr().IsUnspecified() || ep.Port() == 0 {
+			return nil, usagef("--netcheck %q must be a literal ip:port (no wildcard or zero port)", p)
+		}
+		set := netcheck.EndpointSet{Primary: netip.AddrPortFrom(ep.Addr().Unmap(), ep.Port())}
+		if altPort != 0 {
+			set.AltPort = netip.AddrPortFrom(set.Primary.Addr(), uint16(altPort))
+		}
+		for i, a := range altIPs {
+			ip, err := netip.ParseAddr(a)
+			if err != nil {
+				return nil, usagef("--netcheck-alt-ip %q is not an IP", a)
+			}
+			if !used[i] && ip.Unmap().Is4() == set.Primary.Addr().Is4() {
+				used[i], set.AltIP = true, netip.AddrPortFrom(ip.Unmap(), set.Primary.Port())
+				break
+			}
+		}
+		cfg.Sets = append(cfg.Sets, netcheck.ServerSet{Listen: set})
+	}
+	for i, u := range used {
+		if !u {
+			return nil, usagef("--netcheck-alt-ip %s has no --netcheck address of its family", altIPs[i])
+		}
+	}
+	return cfg, nil
 }
 
 // relayAdvertiseAddr parses a public relay address, appending /p2p/<id> when absent.

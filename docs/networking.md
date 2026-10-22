@@ -731,6 +731,129 @@ At startup, on network changes and periodically, measure:
 
 Exchange the compact NAT profile during candidate exchange and display it in `nu doctor`.
 
+#### v1 netcheck observers and profile (0018)
+
+`p2p/netcheck` implements this step. AutoNAT v2 and circuit v2 are **not** extended: AutoNAT
+answers reachability from a fresh port only, and NAT profiling needs replies from a chosen
+alternate IP/port and to a chosen port, so it has its own small observer protocol.
+
+**Descriptor stream `/nu/netcheck/1`.** On an authenticated connection the client writes the
+single byte `01` and half-closes; the observer replies `version=1:u8 | count:u8 (1–6) |
+count × (role:u8, endpoint:19)` and closes (endpoint encoding as in `/nu/path/1`). Roles are
+primary=1, alternate port=2 (same IP, different port) and alternate IP=3 (same family and port,
+different IP); at most one set per family, primary first, roles in order, sets contiguous.
+Other encodings are rejected. Handler concurrency is 16 streams; 5 s deadline. `nu relay`
+serves it when configured with literal (never wildcard) observer sockets; a set may advertise
+1:1-NAT public addresses that differ from its bound addresses. The descriptor only names
+UDP sockets: it is not reachability evidence and grants nothing.
+
+**UDP probes.** Every packet in either direction is exactly 64 bytes:
+
+```
+0-3   magic 02 6e 63 01        // no QUIC fixed bit, not the disco envelope
+4     type: 1 request, 2 response, 3 hairpin (client-to-client)
+5     request flags: 1 reply from alternate port, 2 from alternate IP (at most one)
+6-7   request target port, 0 = reply to the source port
+8-23  random transaction ID
+24-39 cookie (requests: zero for plain requests); response: fresh cookie for the source IP
+40-58 response: observed source endpoint of the request
+59    response: role of the replying socket
+60-63 reserved zero
+```
+
+Fields that are not defined for a type must be zero. Observers answer a plain request from
+the receiving socket to its source. A request with flags or a target port needs an unexpired
+cookie issued to the **same source IP**: `expiry:u32 (unix seconds) | HMAC-SHA256(key,
+"nu-netcheck-1 cookie" | expiry | ip16)[:12]`, a per-process random key, 10-minute default
+lifetime (1 min–1 h). Cookies prove return routability to an IP, never a port. Change flags
+are honoured only on the primary socket and only for roles the observer has; the target port
+always uses the requester's observed IP. Replies are never larger than requests (no
+amplification) and leave from the observer's own sockets only. Budgets: 20 replies/s per
+source IP (burst 40, at most 4096 tracked IPs) and 2000/s globally (burst 4000). Malformed,
+unauthorised and over-budget requests are dropped silently. An observer is thus at most an
+equal-size reflector toward an IP that already proved it receives its replies, like STUN
+with CHANGE-REQUEST/RESPONSE-PORT; it cannot be aimed at other hosts. Hosts sharing one
+CGNAT IP can receive these fixed-format packets on their mappings; that is accepted.
+
+**Measurement** (one family at a time, dedicated sockets, never the shared QUIC socket):
+
+1. A mapping socket asks each observer's primary (≤ 4 observers per family, preferring those
+   with an alternate IP, then an alternate port), then the first answering observer's
+   alternates. Equal mapped endpoints everywhere: EIM (`none` when equal to the local
+   endpoint). Different across ports of one IP: APDM. Equal per IP but different across IPs:
+   ADM; if no same-IP pair exists, unresolved EDM. At least three observer endpoints on two
+   IPs are needed for a full class. Differing external IPs set `varying-ip`.
+2. Five fresh sockets map toward that observer back to back. Preserving when most keep their
+   local port; otherwise delta = median consecutive port difference, jitter = maximum
+   deviation; sequential when 0 < |delta| ≤ 256 and jitter ≤ 64, else random.
+3. The first of those sockets is the filtering socket: it never contacts anything else. It
+   requests an alternate-port reply, and an alternate-IP reply when available; otherwise
+   another observer IP (never contacted from it) sends to its mapping via a target-port
+   request from the mapping socket. Both received: EIF; port only: ADF; neither: APDF.
+4. Hairpin: one fresh socket sends a type-3 packet to another's external endpoint. Received:
+   yes; missing under EIF: no; missing under ADF/APDF: unknown (filtering may drop it).
+5. Lifetime (IPv4): one fresh socket per rung maps once and idles. At rung time a separate
+   control socket asks the observer to send, from the endpoint the rung contacted, to that
+   rung's mapping (the rung never sends again). Coarse rungs double from 5 s to 240 s; three
+   fine rungs split the failing octave in quarter-octave steps; the estimate is the geometric
+   mean of the alive/expired bracket (≤ 9 % bracket error). Never expired: `>=max`; already
+   expired at the first rung: `<min`. Keepalive owners may shorten the 25 s default from it.
+6. UDP blocked: IPv4 sockets work but no observer answers. IPv6: `unavailable` without a
+   routed IPv6 socket, `blocked` without answers, else `ok` with its mapping/filtering (a
+   stateful IPv6 firewall shows as ADF/APDF with mapping `none`). Port mapping protocols come
+   from the socket owner's `p2p/portmap` client, not from netcheck.
+
+A quick IPv4 profile sends about 15 requests (unanswered probes are retransmitted up to three times within
+their 1 s wait) and takes roughly 1–3 s; the lifetime ladder adds 11 sockets (one per rung
+plus a control socket) and takes up to about 3 × the measured lifetime.
+`netcheck.Monitor` runs the quick profile on start, after each network-change hook
+(`Monitor.Hook`, register on the D12 pipeline; it only triggers and returns) and every 30
+minutes; the ladder runs on start, after network changes and at most every 6 h. A network
+change cancels an in-flight run and discards the old lifetime; runs without observers
+retry after 1 minute. Observers come from the owner. `nu relay --netcheck <ip:port>
+[--netcheck-alt-port <port>] [--netcheck-alt-ip <ip>]` serves them (literal IPs, one set
+per family; not yet a `[relay]` config key). A public-mode daemon profiles against its
+connected configured relays that serve `/nu/netcheck/1`, registers `Monitor.Hook` at the
+`RestartProbing` stage, serves `/nu/natprofile/1` and exposes `Swarm.NATProfile()` for
+status/`nu doctor`; private/isolated mode starts none of this. Public Nu peers running
+observers and disco's use of remote profiles are not wired yet.
+
+**Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
+
+```
+0 version=1 | 1 udp4 (ok=1, blocked=2) | 2 mapping4 | 3 filtering4 | 4 allocation4 |
+5-6 delta:int16 | 7-8 jitter:u16 | 9-10 lifetime seconds:u16 |
+11 flags (bit0 lifetime is a lower bound, bit1 an upper bound, bit2 varying external IP) |
+12 hairpin (yes=1, no=2) | 13 ipv6 (unavailable=1, blocked=2, ok=3) | 14 mapping6 |
+15 filtering6 | 16 portmap (bit0 PCP, bit1 NAT-PMP, bit2 UPnP, bit7 checked) | 17 observer IPs
+```
+
+Mapping: none=1, EIM=2, ADM=3, APDM=4, unresolved EDM=5. Filtering: EIF=1, ADF=2, APDF=3.
+Allocation: preserving=1, sequential=2, random=3. Decoders accept exactly one canonical
+encoding: other versions/lengths, out-of-range enums, reserved bits, delta/jitter outside
+sequential allocation, bounds without a lifetime, or IPv4/IPv6 results without working UDP
+are errors, never guessed. Vectors and fuzz seeds are in `p2p/netcheck`; a new field or
+enum value needs version 2. The doctor form is one line, e.g. `udp=ok mapping=apdm
+filtering=apdf allocation=sequential(delta=+1,jitter=0) lifetime=30s hairpin=no
+ipv6=unavailable portmap=none observers=3`.
+
+**Exchange `/nu/natprofile/1`.** The requester writes `max_version:u8` (≥ 1) and half-closes;
+the responder writes `len:u8 | profile` (len 0 = not measured yet). Any Nu peer may serve
+it; it is a separate protocol rather than an identify field (no libp2p field-number
+squatting) or a `/nu/path/1` frame (v1 forbids profile payloads). Path owners fetch it when
+a path session starts and when the peer's candidate generation changes; a profile informs
+probe scheduling and escalation only, never destination authorization. Reports with
+mapped addresses stay local (`nu doctor`).
+
+Evidence (`go test -tags natlab -run TestNetcheckNATLab ./p2p/netcheck`, about 31 s with
+scenarios in parallel): real packets through rootless netns fixtures, observers running
+`relay.New` with the descriptor stream. EIM/EIF/preserving/hairpin, EIM/EIF/sequential via a
+cross-observer (no alternate IP), ADM/ADF/sequential, APDM/APDF/random, EIM/APDF/random,
+APDM/EIF/preserving, EIM home NAT behind an ADM/ADF/sequential CGNAT, and UDP blocking
+(descriptor fetched first) are each classified exactly, with the fixture's sequential
+delta, and lifetimes of 4–9 s within ±20 %. The fixture ports are reserved in advance, so
+this does not show allocator jitter; real routers and IPv6 firewalls remain field work.
+
 ### 2. Candidates
 
 Gather LAN addresses on all interfaces, global IPv6, observed/reflexive addresses,

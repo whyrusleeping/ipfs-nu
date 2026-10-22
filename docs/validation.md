@@ -1566,26 +1566,67 @@ Verification before commit: gofmt, `git diff --check`, `go vet ./...`,
 watchdog concurrently with stream completion; its instrumentation-heavy rates
 are not included in the performance tables. No backlog edits or pushes.
 
-## IPFS bridge (0042) — early fixture evidence
+## IPFS bridge (0042)
 
-The default bridge package tests are offline and fast (`go test ./bridge`): hand-built
-fixtures cover verified raw/dag-pb blocks, CIDv0/v1 parsing, UnixFS file/directory/symlink
-conversion, tampered CAR blocks, decoder fuzz seeds, and a retry after a source block is
-missing. The retry re-runs conversion from the CAR and relies on deterministic content addressing/store
-deduplication. A node test persists a running CAR job, closes/reopens `Local`, and confirms
-the same operation ID recovers to success; this is a restart/recovery test, not a power-loss
-or forced process-kill campaign.
+The default bridge tests are offline and fast (`go test ./bridge ./node -run 'IPFS|Bitswap'`,
+`go test ./nutest -run TestImportCutover`): hand-built fixtures (`bridge/ipfsfix`) cover
+verified raw/dag-pb blocks, CIDv0/v1 parsing, UnixFS file/directory/symlink conversion,
+tampered CAR blocks, decoder fuzz seeds and a retry after a missing source block. Evidence per
+acceptance clause, all measured locally on 2026-10-22:
 
-Opt-in Kubo test: `NU_DOCKER=1 go test ./bridge -run TestKuboCARImports -v`, using the
-same digest-pinned `ipfs/kubo:v0.40.0` image recorded in `interop/run.py`. It passed locally
-(16.4 s): Kubo created a directory with 1,201 generated entries, a 3 MiB file, raw UnixFS
-leaves, a symlink, and CARs for CIDv1/raw-leaf and CIDv0 imports; imported file bytes and
-symlink target bytes were compared against `ipfs get` output. The large directory exercised
-Kubo's sharded-directory representation and conversion completed. This is a local opt-in
-fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in pinned-Kubo
-Bitswap test also passes: a Nu host requests a 1 MiB CIDv1 raw block over QUIC-v1 and receives
-and verifies the payload (about 1 s locally). That probe uses a static provider result; live Amino
-DHT provider discovery against Kubo/the public network is not verified. The CAR import is
-exposed through CLI/API and durable operation recovery is tested, but CAR jobs persist the
-request/stage/result and replay from the CAR rather than retaining per-block checkpoints.
-Cutover readiness and representative-installation reconciliation remain unverified.
+- **Resumable import, process kill.** `bridge.TestBitswapImportResumesAfterKill` (0.15 s)
+  imports a 28-block directory over Bitswap 1.2 between two Nu QUIC hosts in a child process;
+  the provider stalls after 10 blocks and the parent SIGKILLs the child. A fresh process with
+  a fresh provider resumes from the 10 checkpointed blocks: the provider sees exactly the 18
+  other wants, none for a checkpointed block, and the Nu root equals the uninterrupted
+  conversion. `node.TestIPFSImportResumesAfterKill` (0.11 s) does the same for a CAR job
+  through the product path: the child is killed mid-conversion, the next `NewLocal` recovers
+  the job under its original operation ID, reads only the 18 unverified blocks from the CAR,
+  and yields the planned root and byte-identical file contents.
+- **Dry runs.** `node.TestIPFSNetworkDryRun` (0.03 s): a Bitswap dry run walks structure only
+  (no raw leaf requested), reports 3 files / 1 directory / 1 symlink, declared bytes, the
+  symlink transformation, one missing file node (`DONT_HAVE`) with `complete: false`, the
+  blob estimate against store headroom, and leaves the store unchanged. CAR dry runs also plan
+  the Nu root and manifest.
+- **Pinset reconciliation, corrupt/unsupported originals.** `node.TestIPFSPinsetReconciliation`
+  (0.18 s): a `{"Keys":…}` inventory of six pins with a CAR directory is dry-run (no store
+  change), then imported: imported (planned root = imported root, symlink transformation
+  reported), missing (CAR absent; CAR lacking one leaf, naming that leaf), unsupported
+  (standalone symlink root), failed (tampered CAR rejected) and skipped (direct pin). The
+  inventory and CAR files are byte-identical afterwards.
+- **Kubo installation, no source mutation.** `NU_DOCKER=1 go test ./node -run
+  TestKuboPinsetMigration -v` (2.5 s, pinned `ipfs/kubo:v0.40.0`): a Kubo repo with a CIDv1
+  raw-leaf directory (executable file, symlink, 600 kB file), a named CIDv0 file pin and the
+  init pin is inventoried with `ipfs pin ls --type recursive --enc=json --names` and exported
+  per root with `ipfs dag export`; one CAR is removed. The CAR pinset dry run and import report
+  3 imported + 1 missing, and imported bytes match the source file. Every file under the Kubo
+  repo hashes identically after the import. A second Nu node then imports the same inventory
+  over Bitswap/QUIC-v1 from the Kubo daemon (4 imported, including the CIDv0 root, which needed
+  CIDv0 Bitswap prefixes) with Nu roots identical to the CAR import; after `ipfs shutdown`,
+  `ipfs pin ls` and `ipfs refs local` are unchanged.
+- **Signed provenance and cutover.** `nutest.TestImportCutover` (0.8 s): two nodes in a public
+  cluster, an archive dataset with 2 replicas. A plain head is refused (no `imported`
+  reference; readiness unmet while partitioned). A CAR import with `--dataset` writes a
+  version whose `imported: {source: ipfs://<cid>, manifest}` matches the import result; the
+  cutover check fetches the head with a fresh node (new key, empty store) over QUIC from the
+  members (2 files, 43 KiB), waits for ready with 2 of 2 copies confirmed, and only then
+  recommends cutover. The CLI path (`nu import ipfs --pins … --car-dir … [--dry-run]`,
+  `nu dataset create web --archive`, `nu import ipfs --car … --dataset web`, `nu import
+  cutover web`) was run against a Kubo-generated fixture with the expected reports.
+- **Live Amino (opt-in).** `NU_AMINO=1 go test ./node/swarm -run TestAminoBitswapImport -v`
+  runs the product path (Amino DNS bootstrap, provider lookup, Bitswap 1.2 over QUIC-v1) from
+  this machine (IPv4 only). With the IPFS gateway checker's file
+  `bafybeifx7yeb55armcsxwwitkymga5xf53dxiarykms3ygqic223w5sk3m` the dry run took 13.6 s and the
+  import 15.6 s (1 file, 32 bytes, verified; Nu root
+  `bafyreice5hhh2kje4jocowg2v5mugucxgl6aaxykvvp2vnaol7zfjuftom`). Before provider fan-out
+  (sequential dials sharing one 20 s deadline) the same import failed after 20 s with every
+  provider unreachable or timed out; it now dials up to 8 providers concurrently with 10 s per
+  dial. Two other roots failed honestly, for reasons outside the importer:
+  `QmQPeNsJPyVWPFDVHb9rRFTRb9cBHRZvqPKpeGKYYx3vU7` (the old go-ipfs readme) found no reachable
+  provider, and the empty directory `QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn` failed in
+  provider lookup because every Amino `GET_PROVIDERS` response exceeded `kad`'s 64 KiB message
+  limit (upstream allows 4 MiB; popular CIDs have more than 20 providers). Popular-CID lookups
+  therefore need a `kad` limit change before they work.
+
+Not covered: power-loss (as opposed to process-kill) campaigns, large real installations, and
+IPFS Cluster inventories (report-only, not implemented).

@@ -71,9 +71,8 @@ and status says so, when that set is empty). `--no-announce` roots are recorded 
 (`network.dht`) show mode, routing-table size, last bootstrap and last provide.
 Hint/LAN/private lookup remains independent of all of this.
 
-Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, Helia and
-Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus
-participation. Joining Amino does not imply UnixFS/Bitswap data support.
+Connection-level interop targets are go-, rust- and js-libp2p, including Kubo and Helia,
+over QUIC. Joining Amino does not imply UnixFS/Bitswap data support.
 
 **Preview limitations:** the initial QUIC profile cannot reach UDP-blocked paths or TCP-only
 peers. Standard non-Nu relayed secure connections await Noise/yamux. `nu doctor` explains
@@ -1431,8 +1430,8 @@ No multicast-capable interface is a reported startup error, not silent enablemen
 
 ## D16. Testing and diagnostics
 
-- Fuzz every parser. Use libp2p `unified-testing` for QUIC-v1 and black-box Kubo, Helia and
-  Ethereum clients for the protocols they support.
+- Fuzz every parser. Use libp2p `unified-testing` for QUIC-v1 and black-box Kubo and Helia
+  for the protocols they support.
 - NAT CI uses network namespaces for RFC 4787 mapping × filtering combinations, CGNAT,
   IPv6-only, hairpinning and network changes during transfers. Include Nu↔Nu, Nu↔go-libp2p
   and Nu↔rust-libp2p, with expected failures for unsupported QUIC-preview paths, including UDP blocking, and
@@ -1492,7 +1491,6 @@ security contracts, operating capacity or field traversal rates.
   [AutoNAT v2](https://github.com/libp2p/specs/blob/master/autonat/autonat-v2.md)
 - [dnsaddr](https://github.com/multiformats/multiaddr/blob/master/protocols/DNSADDR.md) and
   [delegated routing](https://specs.ipfs.tech/routing/http-routing-v1/)
-- [Ethereum consensus networking](https://ethereum.github.io/consensus-specs/specs/phase0/p2p-interface/)
 - [quic-go transport](https://quic-go.net/docs/quic/transport/) and
   [multipath issue](https://github.com/quic-go/quic-go/issues/3343)
 - Tailscale: [NAT traversal](https://tailscale.com/blog/how-nat-traversal-works),

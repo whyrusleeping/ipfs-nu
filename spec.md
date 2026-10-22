@@ -83,8 +83,8 @@ workstation/one-node path must be qualified by release evidence.
 compatibility; native UnixFS/Bitswap exchange; incentives, anonymity, encrypted private
 sharing or per-dataset read permissions. Trusted-member clusters with OS/disk protections
 are sufficient initially. Private/isolated members need direct routed/VPN connectivity;
-membership is access control, not content encryption. Nu is not an Ethereum consensus node,
-POSIX filesystem, live database or automatically a complete backup service.
+membership is access control, not content encryption. Nu is not a POSIX filesystem, live
+database or automatically a complete backup service.
 
 Verified one-way IPFS import and installation migration follow the first useful previews;
 they gate recommendations to migrate existing installations. Browser-native transports,
@@ -279,7 +279,7 @@ experiments/            separate Go module for spikes; may use go-libp2p/Kubo, n
 ```
 
 Dependencies: stock `quic-go`, `indigo`, `lukechampine.com/blake3`, `go-cid`/`go-multiaddr`
-leaf modules, `github.com/decred/dcrd/dcrec/secp256k1/v4` (libp2p secp256k1 verification;
+leaf modules, `github.com/decred/dcrd/dcrec/secp256k1/v4` (libp2p and atproto secp256k1;
 stdlib does not implement that curve), `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
 `miekg/dns`, `BurntSushi/toml`, Prometheus client. Adapt Tailscale's
 BSD-3 portmapper/netmon instead of importing `tailscale.com`. WSS/Noise/yamux, when needed

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded Docker runner for unified-testing-compatible QUIC peers and black boxes.
+"""Bounded Docker runner for unified-testing-compatible QUIC peers and the Kubo black box.
 
 No Python packages required. Every run writes results and exits nonzero for any
 non-pass. Public network probes require --public.
@@ -23,9 +23,7 @@ SOURCES = {
     "rust": ("libp2p/rust-libp2p", "70082df7e6181722630eabc5de5373733aac9a21", "images/rust/v0.56/transport-fix.patch", "RustUpstream.Dockerfile"),
 }
 KUBO = "ipfs/kubo:v0.40.0@sha256:e08c602bf97f138a0ec5b42155b4fd4532852919250b11b4aadbea2bf42c0e10"
-LIGHTHOUSE = "sigp/lighthouse:v8.0.1@sha256:774535b450d498de37d1c1a305cd36777bcf85bf0bc06c1ac54ef2552e7d81c2"
 REDIS = "redis:7.4.2-bookworm@sha256:fbdbaea47b9ae4ecc2082ecdb4e1cea81e32176ffb1dcf643d422ad07427e5d9"
-LODESTAR = "chainsafe/lodestar:v1.50.0@sha256:f3d339e962672a8ccc50e0b7c87ba2e215b8894d3d5e4471e5502608bfae0a16"
 
 
 class Runner:
@@ -110,7 +108,7 @@ class Runner:
             "fullDaemon": self.daemon,
             "sources": SOURCES,
             "js": json.loads((HERE / "js" / "package.json").read_text())["dependencies"],
-            "kubo": KUBO, "lighthouse": LIGHTHOUSE, "lodestar": LODESTAR,
+            "kubo": KUBO,
             "results": self.results,
         }, indent=2) + "\n")
 
@@ -184,7 +182,7 @@ class Runner:
                 self.remove(d)
             self.remove(l)
 
-    def probe(self, name, addr, ping, key_type=None, public=False):
+    def probe(self, name, addr, ping, public=False):
         container = self.prefix + "-probe-" + name
         self.containers.append(container)
         try:
@@ -199,8 +197,6 @@ class Runner:
             result = json.loads(p.stdout)
             if not result["connected"] or not result["identified"]:
                 raise RuntimeError("probe did not connect and identify")
-            if key_type is not None and result["keyType"] != key_type:
-                raise RuntimeError("wrong authenticated identity key type")
             if ping != "none" and result["pingRTTMilllis"] <= 0:
                 raise RuntimeError("probe did not ping")
             return result
@@ -209,37 +205,17 @@ class Runner:
 
     def blackbox(self, kind):
         self.init_network()
-        if kind == "kubo":
-            # Isolated network plus empty bootstrap list: never joins public Amino.
-            script = ('ipfs init --profile=test >/dev/null && '
-                      'ipfs config --json Bootstrap "[]" && '
-                      'ipfs config --json Addresses.Swarm \'["/ip4/0.0.0.0/udp/4001/quic-v1"]\' && '
-                      'exec ipfs daemon --routing=none --migrate=true')
-            c = self.start(kind, KUBO, args=("-ec", script), options=("--entrypoint", "/bin/sh"))
-        elif kind == "lodestar":
-            # Minimal disposable dev genesis, no validators or discovery; no public chain sync.
-            c = self.start(kind, LODESTAR, args=("dev", "--network", "dev", "--dataDir", "/tmp/lodestar",
-                "--genesisValidators", "8", "--discv5", "false", "--mdns", "false", "--quic", "true",
-                "--logFile", "none"), env={"RAYON_NUM_THREADS": "2", "TOKIO_WORKER_THREADS": "2"},
-                options=("--cpus", "2"))
-        else:
-            c = self.start(kind, LIGHTHOUSE, args=("lighthouse", "bn", "--network", "mainnet", "--datadir", "/tmp/lh",
-                "--allow-insecure-genesis-sync", "--execution-endpoint", "http://127.0.0.1:8551",
-                "--execution-jwt-secret-key", "00" * 32, "--disable-upnp", "--disable-enr-auto-update",
-                "--listen-address", "0.0.0.0"))
+        # Isolated network plus empty bootstrap list: never joins public Amino.
+        script = ('ipfs init --profile=test >/dev/null && '
+                  'ipfs config --json Bootstrap "[]" && '
+                  'ipfs config --json Addresses.Swarm \'["/ip4/0.0.0.0/udp/4001/quic-v1"]\' && '
+                  'exec ipfs daemon --routing=none --migrate=true')
+        c = self.start(kind, KUBO, args=("-ec", script), options=("--entrypoint", "/bin/sh"))
         try:
             ip = self.docker("inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", c).stdout.strip()
-            if kind == "kubo":
-                self.wait_ready(lambda: "Daemon is ready" in self.logs(c))
-                peer = self.docker("exec", c, "ipfs", "config", "Identity.PeerID").stdout.strip()
-                port, ping, key = 4001, "libp2p", None
-            elif kind == "lodestar":
-                match = self.wait_ready(lambda: re.search(r"PeerId ([A-Za-z0-9]+), Multiaddrs .*quic-v1", self.logs(c)), seconds=120)
-                peer, port, ping, key = match[1], 9001, "eth2", 2
-            else:
-                match = self.wait_ready(lambda: re.search(r"/udp/9001/quic-v1/p2p/([A-Za-z0-9]+)", self.logs(c)))
-                peer, port, ping, key = match[1], 9001, "eth2", 2
-            return self.probe(kind, f"/ip4/{ip}/udp/{port}/quic-v1/p2p/{peer}", ping, key)
+            self.wait_ready(lambda: "Daemon is ready" in self.logs(c))
+            peer = self.docker("exec", c, "ipfs", "config", "Identity.PeerID").stdout.strip()
+            return self.probe(kind, f"/ip4/{ip}/udp/4001/quic-v1/p2p/{peer}", "libp2p")
         finally:
             self.remove(c)
 
@@ -261,8 +237,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suite", choices=("transport", "blackbox", "amino"))
     parser.add_argument("--impl", choices=("go", "rust", "js", "all"), default="all")
-    parser.add_argument("--client", choices=("kubo", "lighthouse", "lodestar", "all"),
-                        help="black-box target; default kubo+lighthouse. Lodestar rejects Nu's Ed25519 identity")
+    parser.add_argument("--client", choices=("kubo",), default="kubo", help="black-box target (Kubo only)")
     parser.add_argument("--public", action="store_true", help="explicitly permit connections to pinned public Amino peers")
     parser.add_argument("--out", type=Path, default=HERE / "results")
     parser.add_argument("--daemon", action="store_true", help="use the full Nu daemon assembly, not the minimal host driver")
@@ -279,11 +254,7 @@ def main():
                 except Exception as e:
                     runner.results.append({"name": "setup-" + impl, "status": "fail", "error": str(e)})
         elif args.suite == "blackbox":
-            clients = ["kubo", "lighthouse"] if args.client is None else [args.client]
-            if args.client == "all":
-                clients = ["kubo", "lighthouse", "lodestar"]
-            for kind in clients:
-                runner.record(kind, lambda k=kind: runner.blackbox(k))
+            runner.record(args.client, lambda: runner.blackbox(args.client))
         else:
             runner.amino()
     except Exception as e:

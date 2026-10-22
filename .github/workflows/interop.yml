@@ -35,7 +35,7 @@ jobs:
           retention-days: 30
 
   blackbox:
-    name: Kubo and Lighthouse
+    name: Kubo
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

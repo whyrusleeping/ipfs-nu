@@ -96,7 +96,7 @@ func TestCLIFollowsOperationAndExitCodes(t *testing.T) {
 		exit int
 	}{
 		{[]string{"--nu-path", r.Root(), "operations", "wait", f.ID()}, apiv0.ExitNotFound},
-		{[]string{"--nu-path", r.Root(), "cat", "alice.example.com/site"}, apiv0.ExitNotSupported},
+		{[]string{"--nu-path", r.Root(), "cat", "did:foo:bar/site"}, apiv0.ExitNotSupported}, // names resolve (0045); an unsupported DID method needs no network
 		{[]string{"--nu-path", r.Root(), "cat", "not a target"}, apiv0.ExitUsage},
 		{[]string{"--nu-path", r.Root(), "cat", "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"}, apiv0.ExitUsage},       // dag-pb: not a DASL CID
 		{[]string{"--nu-path", r.Root(), "get", "nu://bafkreiccldh766hwcnuxnf2wh6jgzepf2nlu2lvcllt63eww5p6chi4ity/"}, apiv0.ExitUsage}, // malformed link

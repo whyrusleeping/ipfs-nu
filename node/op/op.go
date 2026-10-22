@@ -47,6 +47,16 @@ func (m *Manager) Epoch() string { return m.epoch }
 // Start registers a running operation of the given kind on an exact target. The returned
 // operation's Context is cancelled by Cancel; work should watch it.
 func (m *Manager) Start(kind, target string) *Operation {
+	o, _ := m.StartWithID(newID(), kind, target)
+	return o
+}
+
+// StartWithID creates an operation with a caller-persisted ID. It is for operation
+// recovery across daemon restarts; callers must validate IDs before using them in paths.
+func (m *Manager) StartWithID(id, kind, target string) (*Operation, error) {
+	if id == "" {
+		return nil, errors.New("operation: empty ID")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now()
 	o := &Operation{
@@ -55,7 +65,7 @@ func (m *Manager) Start(kind, target string) *Operation {
 		cancel: cancel,
 		done:   make(chan struct{}),
 		snap: apiv0.Operation{
-			ID:      newID(),
+			ID:      id,
 			Kind:    kind,
 			Target:  target,
 			State:   apiv0.StateRunning,
@@ -65,10 +75,15 @@ func (m *Manager) Start(kind, target string) *Operation {
 	}
 	m.mu.Lock()
 	m.prune(now)
+	if _, exists := m.ops[id]; exists {
+		m.mu.Unlock()
+		cancel()
+		return nil, errors.New("operation: duplicate ID")
+	}
 	m.ops[o.snap.ID] = o
 	m.order = append(m.order, o)
 	m.mu.Unlock()
-	return o
+	return o, nil
 }
 
 // prune drops finished operations beyond the retention limits. Caller holds m.mu.

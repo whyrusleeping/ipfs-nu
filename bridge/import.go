@@ -34,12 +34,12 @@ type FileMapping struct {
 	Kind   string   `drisl:"kind"`
 }
 type ImportResult struct {
-	IPFSRoot string        `drisl:"ipfs_root"`
-	Root     cid.CID       `drisl:"nu_root"`
-	Manifest cid.CID       `drisl:"manifest"`
-	Files    uint64        `drisl:"files"`
-	Bytes    uint64        `drisl:"bytes"`
-	Mappings []FileMapping `drisl:"files_map"`
+	IPFSRoot string        `drisl:"ipfs_root" json:"ipfs_root"`
+	Root     cid.CID       `drisl:"nu_root" json:"root"`
+	Manifest cid.CID       `drisl:"manifest" json:"manifest"`
+	Files    uint64        `drisl:"files" json:"files"`
+	Bytes    uint64        `drisl:"bytes" json:"bytes"`
+	Mappings []FileMapping `drisl:"files_map" json:"mappings,omitempty"`
 }
 type importer struct {
 	ctx          context.Context

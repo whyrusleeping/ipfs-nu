@@ -73,7 +73,12 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	dirPB = append(dirPB, encodeLink(sym, "s")...)
 	root := add(codecDagPB, dirPB)
 	st := &sink{MemStore: mst.MemStore{}, blobs: map[cid.CID][]byte{}}
-	result, err := Import(context.Background(), root, blocks, st, st, ImportOptions{})
+	delete(blocks, sym) // simulate interruption after the file block was verified/stored
+	if _, err := Import(context.Background(), root, blocks, st, st, ImportOptions{}); err == nil {
+		t.Fatal("incomplete source unexpectedly completed")
+	}
+	blocks[sym] = symPB
+	result, err := Import(context.Background(), root, blocks, st, st, ImportOptions{}) // retry reuses deterministic stored outputs
 	if err != nil {
 		t.Fatal(err)
 	}

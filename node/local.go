@@ -83,6 +83,10 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 	n := &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
 		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}
 	c.SetDatasets(n.ResolveDataset)
+	if err := n.recoverIPFSImports(); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	return n, nil
 }
 

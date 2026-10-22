@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 
+	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/mst"
@@ -131,7 +132,11 @@ func (s *Server) serveTree(b []byte, w *bufio.Writer) (*failure, error) {
 		} else if err != nil {
 			return fail(StatusInternal, "storage error"), err
 		}
-		if _, err := classifyRoot(data); err != nil {
+		if req.Profile == ProfileAtrepo {
+			if _, err := atrepo.DecodeCommit(data); err != nil {
+				return fail(StatusBadRequest, "root is not an atrepo commit: "+err.Error()), nil
+			}
+		} else if _, err := classifyRoot(data); err != nil {
 			return fail(StatusBadRequest, "root is not a nu-tree node: "+err.Error()), nil
 		}
 	}

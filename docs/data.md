@@ -199,8 +199,8 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
 { nodes: [cid…], scope: node, limit?, inline_max? }
 ```
 
-- `root` is a tree header, a directory MST root or a MASL file node. `profile` selects the
-  walk and defaults to `nu-tree`, the only profile so far; others get status 3. `path`
+- `profile` selects `nu-tree` (default) or `atrepo`; others get status 3. Under `nu-tree`,
+  `root` is a tree header, a directory MST root or a MASL file node. `path`
   names the target below the root directory, `scope` how much of it to send:
   - `node`: the path chain and the target directory's root MST node;
   - `entry`: the chain, then for a directory all of its MST nodes (a listing; entries' meta
@@ -252,11 +252,50 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   to 16 KiB inline). A budget stop answers a prefix; the client asks again for the rest.
   Publishers and seeds retain recent targets' structure so they can answer `have` diffs
   directly ([D19](follow.md#delta-sync)).
-- Walk profiles: `atrepo` (commit → MST → records, `path`/`name_range` as repo-path keys,
-  held commits as `have`) is the next profile; locations of its layered empty intermediate
-  nodes are specified with it. Atproto datasets sync by `/nu/bytes/1` walks until then
-  ([D21](dasl.md#walk-profiles)); cluster state repositories use repo diffs on
-  [`/nu/cluster/1`](cluster.md#nucluster1).
+- **`atrepo` profile:** `root` is a SHA-256 DRISL v3 commit. The walk sends the commit,
+  its `data` MST root, then each node's `l` subtree followed by each entry's record (`v`)
+  and `t` subtree, in key order. Records are structure frames, not inline blobs. Neither
+  `prev` nor links inside records are followed. Hash verification authenticates every
+  block to the requested commit; identity/signature verification belongs to the caller
+  (for cluster datasets, the admin verifies PDS commits before signing the dataset head).
+  - Request `path` is absent/empty for the whole repo, or **one string containing the
+    whole repo-path key**, e.g. `["app.bsky.feed.post/abc"]`. It selects that key's search
+    chain and record, proving presence or absence. `name_range` bounds whole repo-path
+    keys bytewise, half-open as above (including prefix bounds such as
+    `["app.bsky.feed.post/", "app.bsky.feed.post0"]`); when combined, both filters apply.
+    With no path, `node` sends the commit and the data root only; `entry` and `subtree`
+    send all selected MST nodes and records. With a path, all scopes send its search
+    chain and record. `name_range` still requires `entry` or `subtree`.
+  - `have` contains complete held **commit CIDs** (up to 16). A held root equal to the
+    requested root gets a have marker; otherwise held commits of the same DID provide
+    their data trees. Equal record CIDs at the same key and shared MST subtrees get have
+    markers. To locate a shared subtree, use a key from its first nonempty descendant
+    and search the held tree, comparing every CID, including empty intermediate nodes.
+    Unreadable held commits/subtrees count as absent. No PDS request, operation list,
+    inversion proof or CAR wrapper is part of this protocol: the requested commit's
+    authenticated links plus the held blocks suffice. Missing blocks behind markers
+    are repaired by the layer-1 atrepo walk.
+  - MST nodes are checked for ordered keys (1–1024 bytes), SHA-256 DRISL record links,
+    key intervals, at most 256 entries and maximum key layer 32. Every child consumes
+    exactly one layer. An empty intermediate `{e: [], l: cid}` is allowed only below
+    the root at a positive layer; its child inherits the same key interval. Only the
+    root of an empty repository may have no entries and no left link.
+  - **Atrepo cursor locations are profile-specific:** link `0`, no path/key, is the
+    commit; link `1`, no key, is an MST node; link `3` with `key` is a record in that
+    node. Other links are invalid. For links 1/3, cursor `path` is the sequence of
+    encoded MST edges from the data root: `"l"` for a left edge, `"t:" + fullKey` for
+    an entry's right edge. Thus the data root is `{link: 1}`, its left child is
+    `{path: ["l"], link: 1}`, and successive empty intermediates have distinct paths
+    `["l", "l"]`, `["l", "l", "l"]`, etc. At most 32 edges are allowed. This is **not**
+    the request's repo-path selector. Each position is unique without needing a key
+    inside an empty node. `after` has the same subtree-skipping meaning as nu-tree;
+    record data has no descendants, so either value resumes after it. Both peers seek
+    using verified ancestor nodes, including empty intermediates.
+  - `inline_max` has no effect. `atrepo+blobs` is a pin/fetch policy, not another wire
+    profile: fetch structure with `atrepo`, then selected record blob refs over
+    `/nu/bytes/1`, subject to placement and the 8 MiB whole-object limit. Arbitrary
+    record links remain leaves. Cluster state repositories still use repo diffs on
+    [`/nu/cluster/1`](cluster.md#nucluster1).
 - The fetcher asks peers for `scope: subtree` with 16 KiB inlining first, resuming at the
   next peer from the cursor on failure, and finishes with the layer-1 walk, which fetches
   large blobs and anything the tree responses did not deliver. Peers without the protocol
@@ -478,9 +517,9 @@ A1–A8; the transfer rules are in [operations](operations.md#capacity-and-trans
 
 ## Details still to specify
 
-The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes the `atrepo` profile of `/nu/tree/1`. Name kinds now distinguish `tree|file|blob`; canonical
-vectors and wrapper/stream behavior still require implementation validation. Accounting is
+The design above selects the format and protocol families. Name kinds now distinguish
+`tree|file|blob`; canonical vectors and wrapper/stream behavior have implementation tests,
+including the `atrepo` tree profile. Accounting is
 specified (A1–A8, [T1–T4](operations.md#capacity-and-transfer-budgets)); transfer budgets
 are enforced when their first consumer (follow) lands. Crash-consistent pin/held switches remain
 to specify; content export and upgrades are [B1–B8 and U1–U6](operations.md#b-backup-export-and-recovery). Benchmarks must validate

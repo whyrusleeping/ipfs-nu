@@ -26,6 +26,11 @@ type PlacedFetcher interface {
 	FetchPlaced(ctx context.Context, root cid.CID, members []wire.PeerID, want func(cid.CID) bool, rank func(cid.CID) []wire.PeerID, have []cid.CID) error
 }
 
+// ProfilePlacedFetcher carries atrepo blob policy and held commits to the swarm.
+type ProfilePlacedFetcher interface {
+	FetchPlacedProfile(context.Context, cid.CID, []wire.PeerID, func(cid.CID) bool, func(cid.CID) []wire.PeerID, []cid.CID, string) error
+}
+
 // WaitPoll is how often a wait re-evaluates (tests shorten it).
 var WaitPoll = 100 * time.Millisecond
 
@@ -75,6 +80,9 @@ func (n *Local) replicaFor(c *cluster.Cluster) *replica.Manager {
 	}
 	if f := n.Fetcher; f != nil {
 		if pf, ok := f.(PlacedFetcher); ok && c.Mode() != cluster.ModeLocal {
+			if ppf, ok := f.(ProfilePlacedFetcher); ok {
+				cfg.FetchProfile = ppf.FetchPlacedProfile
+			}
 			cfg.Fetch = func(ctx context.Context, root cid.CID, members []wire.PeerID, want func(cid.CID) bool, rank func(cid.CID) []wire.PeerID) error {
 				return pf.FetchPlaced(ctx, root, members, want, rank, nil)
 			}

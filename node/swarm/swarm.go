@@ -581,6 +581,11 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 // among members, each object tried first at the peers rank names (owners by rank, then
 // other members). There is no DHT lookup.
 func (s *Swarm) FetchPlaced(ctx context.Context, root cid.CID, members []wire.PeerID, want func(cid.CID) bool, rank func(cid.CID) []wire.PeerID, have []cid.CID) error {
+	return s.FetchPlacedProfile(ctx, root, members, want, rank, have, "nu-tree")
+}
+
+// FetchPlacedProfile also supports atrepo dataset structure and blob policy.
+func (s *Swarm) FetchPlacedProfile(ctx context.Context, root cid.CID, members []wire.PeerID, want func(cid.CID) bool, rank func(cid.CID) []wire.PeerID, have []cid.CID, profile string) error {
 	if s.fetcher == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "this node has no store to fetch into")
 	}
@@ -596,7 +601,7 @@ func (s *Swarm) FetchPlaced(ctx context.Context, root cid.CID, members []wire.Pe
 	if len(peers) == 0 {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no cluster member is connected to fetch %s from", root)
 	}
-	_, err := s.fetcher.Fetch(ctx, root, fetch.Options{Peers: peers, Want: want, Rank: rank, Have: have})
+	_, err := s.fetcher.Fetch(ctx, root, fetch.Options{Peers: peers, Want: want, Rank: rank, Have: have, Profile: profile})
 	if err == nil || ctx.Err() != nil {
 		return err
 	}

@@ -372,8 +372,13 @@ Decided in 0054 (mechanics in [api.md](api.md#atproto-accounts-as-datasets-0054)
   dataset's retention schedule; `nsids` scope which record changes make a version and
   what `ls`/`diff` show, while the stored commit is always the whole verified repository
   (a partial MST is not verifiable). Blobs (`blobs: true`) are taken from the changed
-  records' refs; oversized and failed ones are counted in status, never fatal, and never
-  make a version incomplete (completeness is structure and records).
+  records' refs; oversized and failed ones are counted in ingest status rather than
+  preventing publication of a verified commit. Placement readiness with `blobs: true`
+  requires the selected in-limit blobs as well as structure and records; a failed blob
+  fetch remains incomplete and is retried from members. Modern blob refs declaring
+  more than 8 MiB are excluded from placement obligations. Legacy refs without sizes
+  are attempted under the whole-object limit; an unavailable legacy blob remains
+  incomplete (members cannot infer an oversized exception from missing bytes).
 - Account status lives on the head (`status`), written by the fetching admin so every
   member applies the same rule: `redistribution` is `unrestricted` for an account the
   operator is logged in to at create time (`own`) or with the recorded
@@ -383,10 +388,12 @@ Decided in 0054 (mechanics in [api.md](api.md#atproto-accounts-as-datasets-0054)
   local or cluster use and stay available. Public serving of an atrepo head needs a
   public `/at/` route, which does not exist yet (P4), so nothing of an atrepo dataset is
   public in this build.
-- Not yet: cluster replication of atrepo datasets over `/nu/tree/1` (members other than
-  the fetching admin hold only what `/nu/bytes/1` brings them block by block; the
-  protocol walks nu-tree only), firehose `#commit` application, per-collection
-  retention.
+- Members replicate atrepo dataset heads over [`/nu/tree/1`](data.md#nutree1), with
+  their last fully held commit as `have`, then finish missing structure and selected
+  blobs via the layer-1 atrepo walk. Both paths honor placement source order and use
+  cluster members, never the PDS. The wire profile remains `atrepo` for `atrepo+blobs`
+  pins; blob acquisition and placement checks share the same record-ref selection.
+- Not yet: firehose `#commit` application, per-collection retention.
 
 ## Details still to specify
 

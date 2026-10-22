@@ -37,6 +37,12 @@ type vectors struct {
 		Preauthorized string `json:"preauthorized"`
 		Secret        string `json:"secret"`
 	} `json:"tokens"`
+	// Policies are dataset records (hex DRISL): replicas k=2, and `replicas: all`,
+	// encoded {replicas: 0, all: true} (docs/cluster.md record table).
+	Policies struct {
+		K2  string `json:"k2"`
+		All string `json:"all"`
+	} `json:"policies"`
 }
 
 func fixedPeer(t *testing.T, i byte) wire.PeerID {
@@ -82,6 +88,16 @@ func buildVectors(t *testing.T) vectors {
 	if v.Tokens.Secret, err = sec.Encode(); err != nil {
 		t.Fatal(err)
 	}
+	for _, p := range []struct {
+		out *string
+		pol Policy
+	}{{&v.Policies.K2, Policy{Replicas: 2, Spread: "zone"}}, {&v.Policies.All, Policy{All: true}}} {
+		b, err := encodeRecord(&Dataset{Source: Source{Local: true}, Policy: p.pol, HLC: v.HLC.TID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		*p.out = hex.EncodeToString(b)
+	}
 	return v
 }
 
@@ -122,6 +138,19 @@ func TestVectors(t *testing.T) {
 		}
 		if again, _ := tok.Encode(); again != s {
 			t.Fatal("token does not re-encode")
+		}
+	}
+	for _, c := range []struct {
+		hex  string
+		want Policy
+	}{{want.Policies.K2, Policy{Replicas: 2, Spread: "zone"}}, {want.Policies.All, Policy{All: true}}} {
+		b, _ := hex.DecodeString(c.hex)
+		r, err := DecodeRecord(NSDataset+"/photos", b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := r.Value.(*Dataset).Policy; p.Replicas != c.want.Replicas || p.All != c.want.All || p.Spread != c.want.Spread {
+			t.Fatalf("policy decoded as %+v, want %+v", p, c.want)
 		}
 	}
 	tok, _ := ParseToken(want.Tokens.Secret)

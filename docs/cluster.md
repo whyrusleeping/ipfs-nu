@@ -410,6 +410,7 @@ over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-
   below 1). The weight is `capacity`, or 1 TiB when the record has none (0). Ties rank by
   PeerId bytes, ascending. *Eligible* means role `storage`, state `active` and every
   `where` tag present with an allowed value; `replicas: all` makes `k` the eligible count.
+  It is encoded `{replicas: 0, all: true}` (vectors: `testdata/vectors/nu-cluster`).
   With `spread`, the first pass takes, in rank order, the best member of each distinct
   non-empty value of the tag (untagged members have none). Readiness counts confirmed
   copies per blob against these owners ([E6](operations.md#e-readiness-evidence)); a

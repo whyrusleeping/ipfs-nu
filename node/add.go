@@ -57,7 +57,8 @@ func (n *Local) Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operation
 		return nil, errTooLargeSHA256(req.Path, fi.Size())
 	}
 	return n.start("add", req.Path, func(o *op.Operation) (any, error) {
-		a := &adder{n: n, o: o, req: req, hash: h}
+		a := &adder{n: n, o: o, req: req, hash: h, batch: n.Store.Batch()}
+		defer a.batch.Abort()
 		if fi.IsDir() {
 			return a.dir()
 		}
@@ -76,6 +77,9 @@ type adder struct {
 	o    *op.Operation
 	req  apiv0.AddRequest
 	hash cid.Hash
+	// batch stages the blobs so their fsyncs run together (0084); it is committed at a
+	// threshold and before the result is pinned.
+	batch *store.Batch
 
 	done, total int64
 	last        time.Time
@@ -105,10 +109,28 @@ func (r reader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Batch thresholds: commit after this many staged blobs or staged bytes. A larger batch
+// shares more flushes; these keep its open files and unpublished bytes bounded.
+const (
+	addBatchBlobs = 256
+	addBatchBytes = 256 << 20
+)
+
 // AddBlob stores a blob the tree builder gives it (symlink targets). Regular files go
 // through addFile.
 func (a *adder) AddBlob(r io.Reader, size int64) (cid.CID, error) {
-	return a.n.Store.AddBlobHash(reader{a, r}, size, a.hash)
+	c, err := a.batch.AddBlobHash(reader{a, r}, size, a.hash)
+	if err != nil {
+		return cid.CID{}, err
+	}
+	return c, a.commitIfFull()
+}
+
+func (a *adder) commitIfFull() error {
+	if a.batch.Len() >= addBatchBlobs || a.batch.Bytes() >= addBatchBytes {
+		return a.batch.Commit()
+	}
+	return nil
 }
 
 // addFile stores one regular file: from the import cache when unchanged, as a --nocopy
@@ -130,10 +152,10 @@ func (a *adder) addFile(path string, f fs.File, fi fs.FileInfo) (cid.CID, error)
 		if err := a.o.Context().Err(); err != nil {
 			return cid.CID{}, err
 		}
-		c, err = a.n.Store.AddNoCopy(path)
+		c, err = a.batch.AddNoCopy(path)
 		a.progress(fi.Size(), false)
 	} else {
-		c, err = a.n.Store.AddBlobHash(reader{a, f}, fi.Size(), a.hash)
+		c, err = a.batch.AddBlobHash(reader{a, f}, fi.Size(), a.hash)
 	}
 	if err != nil {
 		if errors.Is(err, cid.ErrTooLarge) {
@@ -141,13 +163,18 @@ func (a *adder) addFile(path string, f fs.File, fi fs.FileInfo) (cid.CID, error)
 		}
 		return cid.CID{}, err
 	}
+	// A cache entry may precede its blob's commit: ImportCacheGet only trusts held blobs.
 	if err := a.n.Store.ImportCachePut(src, a.hash, c); err != nil {
 		return cid.CID{}, err
 	}
-	return c, nil
+	return c, a.commitIfFull()
 }
 
+// pin commits the staged blobs and then pins c when asked.
 func (a *adder) pin(c cid.CID) error {
+	if err := a.batch.Commit(); err != nil {
+		return err
+	}
 	if !a.req.Pin {
 		return nil
 	}

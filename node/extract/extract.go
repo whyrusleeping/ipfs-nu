@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 )
@@ -116,6 +117,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		return nil
 	}
 	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}}
+	defer x.closeUnsynced()
 	for e, err := range walk {
 		if err != nil {
 			return rep, err
@@ -141,7 +143,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 				if err != nil {
 					return rep, err
 				}
-				err = writeFile(ctx, parent, filepath.Base(dest), e, rep)
+				err = writeFile(ctx, parent, filepath.Base(dest), e, rep, nil)
 				parent.Close()
 				if err != nil {
 					return rep, err
@@ -184,7 +186,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			x.wrote(name)
 			rep.Dirs++
 		case KindFile:
-			if err := writeFile(ctx, root, name, e, rep); err != nil {
+			if err := writeFile(ctx, root, name, e, rep, x); err != nil {
 				return rep, err
 			}
 			x.wrote(name)
@@ -194,7 +196,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "unknown entry kind " + string(e.Kind)})
 		}
 	}
-	return rep, nil
+	return rep, x.syncUnsynced()
 }
 
 // extraction tracks what this run wrote so that filesystem name transformations are
@@ -206,6 +208,44 @@ type extraction struct {
 	written     map[string]bool            // names written by this run
 	listed      map[string]map[string]bool // directory → names present (lazily read)
 	skippedDirs []string                   // tree-relative prefixes ("a/b/") whose contents are skipped
+	unsynced    []*os.File                 // new files renamed into place, still open, not yet synced
+}
+
+// maxUnsynced bounds the new files kept open for one parallel sync (0084).
+const maxUnsynced = 256
+
+// deferSync takes a new file that is already renamed into place; files are synced
+// together, in parallel, because one fsync at a time costs milliseconds per file.
+func (x *extraction) deferSync(f *os.File) error {
+	x.unsynced = append(x.unsynced, f)
+	if len(x.unsynced) < maxUnsynced {
+		return nil
+	}
+	return x.syncUnsynced()
+}
+
+// syncUnsynced fsyncs the pending new files concurrently and closes them.
+func (x *extraction) syncUnsynced() error {
+	errs := make([]error, len(x.unsynced))
+	var wg sync.WaitGroup
+	for i, f := range x.unsynced {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = errors.Join(f.Sync(), f.Close())
+		}()
+	}
+	wg.Wait()
+	x.unsynced = x.unsynced[:0]
+	return errors.Join(errs...)
+}
+
+// closeUnsynced closes pending files after a failed extraction.
+func (x *extraction) closeUnsynced() {
+	for _, f := range x.unsynced {
+		f.Close()
+	}
+	x.unsynced = nil
 }
 
 func (x *extraction) wrote(name string) {
@@ -359,13 +399,18 @@ func ensureDir(root *os.Root, dir string, parentsOK bool) error {
 }
 
 // writeFile writes e's bytes to name under root atomically (temp file + rename, both
-// inside the root).
-func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Report) error {
+// inside the root). A file that replaces an existing one is synced before the rename, so
+// the replacement is atomic across a crash. A new file is renamed at once and handed to x
+// to be synced with others before the extraction succeeds; with a nil x it is synced
+// before the rename too.
+func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Report, x *extraction) error {
 	if e.Open == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path)
 	}
 	show := filepath.Join(root.Name(), name)
+	replacing := false
 	if fi, err := root.Lstat(name); err == nil {
+		replacing = true
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return symlinkErr(show)
 		}
@@ -390,23 +435,32 @@ func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Re
 		return err
 	}
 	defer root.Remove(tmpName)
+	later := x != nil && !replacing
 	n, err := io.Copy(tmp, src)
 	if err == nil {
 		err = tmp.Chmod(mode)
 	}
-	if err == nil {
+	if err == nil && !later {
 		err = tmp.Sync()
 	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
+	if !later {
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err == nil {
+		err = root.Rename(tmpName, name)
 	}
 	if err != nil {
-		return err
-	}
-	if err := root.Rename(tmpName, name); err != nil {
+		if later {
+			tmp.Close()
+		}
 		return err
 	}
 	rep.Files++
 	rep.Bytes += n
+	if later {
+		return x.deferSync(tmp)
+	}
 	return nil
 }

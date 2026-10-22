@@ -225,7 +225,7 @@ func TestSSRF(t *testing.T) {
 	}
 	for _, a := range se.Attempts {
 		if !errors.Is(a.Err, httpsrc.ErrPolicy) {
-			t.Fatalf("%s: %v", a.Hint, a.Err)
+			t.Fatalf("%s: %v", a.URL, a.Err)
 		}
 	}
 	if dials.Load() != 0 {

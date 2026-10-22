@@ -22,7 +22,7 @@ DASL formats are stored and served like any other content.
 | CAR (stable) | Verified import/export; full header metadata kept; atproto streamable order for repos |
 | RASL (stabilising) | Gateway serves `/.well-known/rasl/<cid>`; `rasl://` links fetch from hints |
 | MASL (stabilising) | File nodes are single-mode MASL documents; bundles pin, render and export |
-| FISL (new, unstable) | Optional HTTPS discovery client; serving FISL is later |
+| FISL (new, unstable) | Optional HTTPS discovery client (`fisl.indexers`); serving FISL is later |
 | Web Tiles | MASL bundles/`.tile` CARs stored and exported; tile-isolated rendering is an extension |
 | MUXL, PFP, S2PA | Content-agnostic: stored and served as blobs/DRISL; Nu does not generate or validate them |
 
@@ -167,10 +167,47 @@ the published spec (`rasl://<cid>/?hint=<host>…`).
 ### FISL
 
 Configured FISL indexers are an optional HTTPS discovery source
-([D15](data.md#d15-content-provider-discovery)). Location URLs are claims: Nu uses the
-`https` URLs it supports, skips unknown schemes, honours expiry, applies RASL's fetch and
-SSRF rules and verifies by CID. Answering FISL lookups from `nu relay` and defining a Nu
-endpoint URL scheme are later work, done once the spec stabilises.
+([D15](data.md#d15-content-provider-discovery)), implemented against the spec of
+2026-10-21 (package `fisl`; 0056). Location URLs are claims: Nu uses the `https` URLs it
+supports, skips unknown schemes, honours expiry, applies RASL's fetch and SSRF rules and
+verifies by CID. Answering FISL lookups from `nu relay` and defining a Nu endpoint URL
+scheme are later work, done once the spec stabilises.
+
+- `fisl.indexers` (a list of base URLs, `https://host[:port][/prefix]`; off by default)
+  names the indexers. Invalid entries are ignored. When set, every user fetch (`get`,
+  `cat`, `ls`, pin) asks each indexer for every object of the walk, alongside the Nu peers
+  and any RASL hints (the HTTPS sources are raced; the first verified copy wins); without
+  networking they are the only source. A private or isolated cluster member never queries
+  indexers; an isolated member makes no HTTPS fetches at all. Other fetches (follow
+  updates, cluster repair) do not use FISL.
+- Lookups are `GET <indexer>/routing/locations/<cid>/jsonl` through `httpsrc` (SSRF policy
+  as for imports; `ingest.allow_ips`/`allow_http` apply to indexers and locations alike;
+  no redirects; 15 s per lookup; 1 MiB per response). A 404 for `jsonl` is retried once
+  as `json`. The `Content-Type` must be a JSON media type (`application/jsonl`,
+  `application/x-ndjson`, `application/json`): an indexer that answers HTML (an SPA
+  fallback) is a format error, not an empty answer. `Cache-Control` is not used: Nu does
+  not cache lookups (each object's lookup is distinct and the fetcher asks once per walk).
+- Records are parsed incrementally under fixed bounds: at most 64 records and 16 addrs per
+  record are kept (later ones ignored), a record is at most 64 KiB, a URL 2 KiB. Records
+  parsed before a malformed line or the size limit are used. `addrs` is required and
+  non-empty; an `expires` that is absent means no expiry, one that is past or unparseable
+  (RFC 3339 with a zone, the atproto datetime) drops the record or addr; the record's
+  expiry caps each addr's. `publisher` is kept opaque (any `did:` string; the method is
+  never judged; anything else is treated as absent). `size` is an unverified hint and is
+  not used to allocate: the download caps are the authenticated size from the parent when
+  known and the whole-object / blob limits otherwise. Unknown fields are ignored.
+- Retrieval is RASL's: the candidate URLs (`https`, plus `http` only with
+  `ingest.allow_http`; deduplicated; at most 16 per object) are raced through the same
+  code as RASL hints (`rasl.Retriever`), verified by CID before anything is stored
+  (whole-object for SHA-256 and DRISL, Bao-staged for BLAKE3 blobs). A location that
+  serves wrong bytes demotes its final origin on the `httpsrc` client and its record's
+  `publisher` (5 min each; a record without a publisher relies on the origin demotion);
+  demoted candidates are tried only after every other candidate failed. Every indexer
+  answering with no usable location is `not_found`; no indexer answering is
+  `unavailable` with the per-indexer causes.
+- No public FISL indexer was known when this was written; `fisl.TestLive` is an opt-in
+  check (`NU_LIVE_FISL=<indexer>,<cid>`) for when one appears. A FISL interop run against
+  a reference indexer is therefore still open.
 
 ## atproto repository profile
 

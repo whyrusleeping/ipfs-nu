@@ -387,6 +387,39 @@ nu [cluster] dataset versions|diff|label|rollback|prune <ds> …
 - `prune` releases only on the local cluster; on a networked cluster it is
   `not_supported` unless `dry_run` (0048). Released bytes go at the next store GC.
 
+### atproto accounts as datasets (0054)
+
+```text
+nu [cluster] dataset create <ds> --archive|--mirror --source at://<handle-or-did> [--nsids a,b] [--blobs] [--publish-history]
+nu [cluster] dataset update <ds>            # no target: fetch the account's current commit now
+nu ls|cat <ds>[@<version>][/<nsid>[/<rkey>]] # collections, records, one record as JSON
+GET /c/<ds>[@<version>]/<nsid>/<rkey>       # 302 → /at/<did>@<rev>/<nsid>/<rkey> (the dataset's pins hold it)
+```
+
+- `DatasetCreateRequest.source_at` (with `nsids`, `blobs`, `publish_history`) binds the
+  dataset to the resolved DID (`source.atrepo`); a preset is required. The first version
+  is fetched synchronously (a failure is a warning, the poll loop retries). `Dataset`
+  reports `source: "atrepo"` and `atrepo` (`AtrepoSource`: account, scope, `own`,
+  `publish_history`, `redistribution`, `status`, held `rev` vs `pds_rev`, last update
+  `mode`/`error`, blob counts); heads and versions carry `rev`/`commit` (`observed`).
+- Updates run in the follow loop (startup, `follow.poll`, `dataset update` without a
+  target; polling only, never Jetstream/firehose): `getRepoStatus`, then
+  `getRepo?since=<held rev>` applied with `atrepo.ApplySince` (`mode: since`), or a
+  full export after a chain break, migration or unknown rev (`mode: full`). Heads are
+  `{target: <commit>, kind: atrepo, observed: {rev, commit}, status?}`; an update on an
+  atrepo dataset with a target is `invalid_argument`. `nsids` scopes versions (a diff
+  touching no selected collection writes none), `ls`, `diff` and blobs; the stored commit
+  is always the whole verified repository.
+- Account status: when the PDS reports the account deactivated, taken down, suspended
+  or deleted (`RepoNotFound`), `head.status` records it, updates stop, history stays;
+  reactivation clears it and resumes with a since-diff. `redistribution` is
+  `unrestricted` (own account: a login session for the DID at create time, recorded as
+  `source.own`; or `publish_history`), `current-only` (third party, active) or `private`
+  (inactive). `share` and `public add` of a retained version or of an inactive
+  account's head are `forbidden` naming the rule; `public add` of a commit is otherwise
+  `not_supported` (no public `/at/` route). `diff` between atrepo versions lists record
+  paths created/deleted/updated.
+
 ## Collections (0057)
 
 `node.CollectionNode` (`node.Local`, `client.Client`) carries the collection queries of

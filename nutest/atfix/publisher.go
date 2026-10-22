@@ -45,6 +45,14 @@ type Publisher struct {
 	ExpireAccess bool
 	// Nonce is the current DPoP nonce; it rotates when Rotate is called.
 	Nonce string
+	// Status is the account's status on the PDS (0054): "" active, else deactivated,
+	// takendown, suspended or deleted (the PDS then answers RepoNotFound).
+	Status string
+	// BreakSince makes getRepo?since= answers lack one MST node (a broken chain), so a
+	// client must fall back to a full export.
+	BreakSince bool
+	// revs maps every committed rev to its commit (since-diffs).
+	revs map[string]cid.CID
 
 	pending  map[string]*authRequest // request_uri → request
 	codes    map[string]*authRequest // code → request
@@ -70,11 +78,12 @@ func newPublisher() *Publisher {
 	}
 	st := mst.MemStore{}
 	p := &Publisher{Key: key, Store: st, Repo: atrepo.New(st, PubDID), Nonce: "nonce-1",
-		pending: map[string]*authRequest{}, codes: map[string]*authRequest{}, access: map[string]*token{}, refresh: map[string]*token{}}
+		pending: map[string]*authRequest{}, codes: map[string]*authRequest{}, access: map[string]*token{}, refresh: map[string]*token{}, revs: map[string]cid.CID{}}
 	p.Head, err = p.Repo.Commit(key, time.Now())
 	if err != nil {
 		panic(err)
 	}
+	p.revs[p.Rev()] = p.Head
 	return p
 }
 
@@ -130,6 +139,7 @@ func (p *Publisher) commit() {
 	}
 	p.Head = c
 	p.Writes++
+	p.revs[p.Rev()] = c
 }
 
 // Rev is the current commit rev.
@@ -363,9 +373,46 @@ func (f *Fixture) servePub(w http.ResponseWriter, r *http.Request, method string
 		_ = atrepo.WriteCAR(&buf, p.Head, blocks)
 		w.Header().Set("Content-Type", "application/vnd.ipld.car")
 		_, _ = w.Write(buf.Bytes())
+	case "com.atproto.sync.getRepoStatus":
+		if p.Status == "deleted" {
+			http.Error(w, `{"error":"RepoNotFound"}`, 400)
+			return
+		}
+		st := map[string]any{"did": PubDID, "active": p.Status == "", "rev": p.Rev()}
+		if p.Status != "" {
+			st["status"] = p.Status
+		}
+		writeJSON(w, 200, st)
 	case "com.atproto.sync.getRepo":
+		switch p.Status {
+		case "":
+		case "deleted":
+			http.Error(w, `{"error":"RepoNotFound"}`, 400)
+			return
+		default:
+			http.Error(w, `{"error":"RepoDeactivated"}`, 400)
+			return
+		}
 		var buf bytes.Buffer
-		_ = atrepo.Export(&buf, p.Store, p.Head)
+		if since := q.Get("since"); since != "" {
+			prev, ok := p.revs[since]
+			if !ok {
+				http.Error(w, `{"error":"InvalidRequest","message":"unknown since rev"}`, 400)
+				return
+			}
+			pr, _ := atrepo.Open(p.Store, prev)
+			blocks, _, err := atrepo.Slice(p.Store, pr.Head.Data, p.Head)
+			if err != nil {
+				http.Error(w, `{"error":"InternalError"}`, 500)
+				return
+			}
+			if p.BreakSince && len(blocks) > 1 {
+				blocks = append(blocks[:1], blocks[2:]...) // drop the first MST node
+			}
+			_ = atrepo.WriteCAR(&buf, p.Head, blocks)
+		} else {
+			_ = atrepo.Export(&buf, p.Store, p.Head)
+		}
 		w.Header().Set("Content-Type", "application/vnd.ipld.car")
 		_, _ = w.Write(buf.Bytes())
 	default:

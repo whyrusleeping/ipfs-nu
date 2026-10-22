@@ -145,7 +145,14 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 		fmt.Fprintln(w)
 	}
 	if d.Head != nil {
-		fmt.Fprintf(w, "  head %s (%s) by %s\n", d.Head.Target, d.Head.Kind, d.Head.Signer)
+		fmt.Fprintf(w, "  head %s (%s) by %s", d.Head.Target, d.Head.Kind, d.Head.Signer)
+		if d.Head.Rev != "" {
+			fmt.Fprintf(w, ", rev %s", d.Head.Rev)
+		}
+		if d.Head.Status != "" {
+			fmt.Fprintf(w, ", account %s", d.Head.Status)
+		}
+		fmt.Fprintln(w)
 	}
 	if len(d.Heads) > 1 {
 		for _, h := range d.Heads {
@@ -157,6 +164,26 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 	}
 	if d.SourcePath != "" {
 		fmt.Fprintf(w, "  source: %s\n", d.SourcePath)
+	}
+	if a := d.Atrepo; a != nil {
+		fmt.Fprintf(w, "  source: at://%s (%s), account %s, redistribution %s", a.DID, a.Handle, a.Status, a.Redistribution)
+		if len(a.NSIDs) > 0 {
+			fmt.Fprintf(w, ", nsids %s", strings.Join(a.NSIDs, ","))
+		}
+		if a.Blobs {
+			fmt.Fprintf(w, ", blobs (%d fetched, %d oversized skipped, %d failed)", a.BlobsFetched, a.BlobsOversized, a.BlobsFailed)
+		}
+		fmt.Fprintln(w)
+		if a.PDSRev != "" && a.PDSRev != a.Rev {
+			fmt.Fprintf(w, "    lag: held rev %s, PDS rev %s\n", a.Rev, a.PDSRev)
+		}
+		if !a.Refreshed.IsZero() {
+			fmt.Fprintf(w, "    last update %s (%s)", a.Refreshed.Local().Format(time.RFC3339), a.Mode)
+			if a.Error != "" {
+				fmt.Fprintf(w, ": %s", a.Error)
+			}
+			fmt.Fprintln(w)
+		}
 	}
 	if d.Version != nil {
 		printVersion(w, *d.Version)
@@ -281,7 +308,10 @@ func datasetCommands(scope string) []*command {
 				archive := fs.Bool("archive", false, "archive preset: keep versions under the default retention schedule (see --history)")
 				mirror := fs.Bool("mirror", false, "mirror preset: follow current state with the protected-version safeguard")
 				hist := fs.String("history", "", "retention schedule, e.g. keep_last=10,daily=30,monthly=12,yearly=all[,max_bytes=1T] (implies --archive)")
-				source := fs.String("source", "", "directory `"+nu.Name+" dataset update <name>` re-adds; imported now as the first version")
+				source := fs.String("source", "", "directory `"+nu.Name+" dataset update <name>` re-adds (imported now as the first version), or at://<handle-or-did>: an atproto account archived from its PDS (0054)")
+				nsids := fs.String("nsids", "", "atproto source: comma list of record collections that count as the dataset (default all)")
+				blobs := fs.Bool("blobs", false, "atproto source: also fetch the records' blobs (over 8 MiB are skipped)")
+				publishHistory := fs.Bool("publish-history", false, "atproto source: let retained history of a third-party account leave the cluster (recorded on the dataset; private by default)")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
@@ -328,7 +358,14 @@ func datasetCommands(scope string) []*command {
 						return usagef("--history: %v", err)
 					}
 				}
-				if *source != "" {
+				if strings.HasPrefix(*source, "at://") {
+					req.SourceAt, req.Blobs, req.PublishHistory = *source, *blobs, *publishHistory
+					for _, id := range strings.Split(*nsids, ",") {
+						if id = strings.TrimSpace(id); id != "" {
+							req.NSIDs = append(req.NSIDs, id)
+						}
+					}
+				} else if *source != "" {
 					if req.SourcePath, err = filepath.Abs(*source); err != nil {
 						return err
 					}
@@ -398,6 +435,13 @@ func datasetCommands(scope string) []*command {
 					cur, err := c.Dataset(ctx, scope, fs.Arg(0))
 					if err != nil {
 						return err
+					}
+					if cur.Atrepo != nil { // fetch the account's current commit now
+						d, err := c.DatasetUpdate(ctx, scope, fs.Arg(0), apiv0.DatasetUpdateRequest{Note: *note})
+						if err != nil {
+							return err
+						}
+						return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 					}
 					if cur.SourcePath == "" {
 						return usagef("dataset %s has no --source directory; give a CID or a directory", fs.Arg(0))

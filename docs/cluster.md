@@ -382,6 +382,14 @@ are missing. It archives observed public snapshots, not a complete publication h
 Preserve verification provenance and specify historical signing-key/identity evidence before
 claiming proofs remain verifiable after key/account changes.
 
+**atproto sources (0054).** For `{atrepo: did}` the admin daemon writes every verified
+commit as `head: {target: <commit>, kind: atrepo, observed: {rev, commit}, status?}` and,
+with history, a version with the same `observed`; `status` is the account's verified
+status (deactivated, takendown, suspended, deleted) while it is not active. Members pin
+heads and versions under the `atrepo` (`atrepo+blobs`) profile and judge completeness
+over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-as-archive-datasets),
+[api.md](api.md#atproto-accounts-as-datasets-0054).
+
 ### Placement
 
 - **Structure** (directory and MST nodes, entry metadata, file nodes, tree header) of every

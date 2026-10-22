@@ -68,6 +68,8 @@ type namesState struct {
 	sessions *atproto.Sessions
 	// follows is per-dataset follow bookkeeping (refresh times, errors, endings).
 	follows map[string]*followState
+	// atrepos is per-dataset bookkeeping of atproto-account sources (0054).
+	atrepos map[string]*atrepoState
 	// jetstream is the optional hint source; polled is the last full refresh.
 	jetstream *follow.Jetstream
 	polled    time.Time

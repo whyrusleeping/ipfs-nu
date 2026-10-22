@@ -290,6 +290,13 @@ type DatasetCreateRequest struct {
 	SourcePath string         `json:"source_path,omitempty"`
 	// SourceName is the followed name of a name-sourced dataset (0045).
 	SourceName string `json:"source_name,omitempty"`
+	// SourceAt archives an atproto account (0054): at://<handle-or-did>; NSIDs scopes
+	// the collections (all when empty), Blobs selects its blobs, PublishHistory is the
+	// explicit override that lets retained third-party history leave the cluster.
+	SourceAt       string   `json:"source_at,omitempty"`
+	NSIDs          []string `json:"nsids,omitempty"`
+	Blobs          bool     `json:"blobs,omitempty"`
+	PublishHistory bool     `json:"publish_history,omitempty"`
 }
 
 // DatasetIngest is a collection's push policy: Hosts are the exact host names receiving
@@ -340,6 +347,8 @@ type Dataset struct {
 	SourceName string        `json:"source_name,omitempty"`
 	Archive    *ContentState `json:"archive,omitempty"`
 	Version    *VersionInfo  `json:"version,omitempty"`
+	// Atrepo is an atproto-account source's state (0054).
+	Atrepo *AtrepoSource `json:"atrepo,omitempty"`
 }
 
 // DatasetHead is a head record by one signer.
@@ -348,6 +357,10 @@ type DatasetHead struct {
 	Kind   string `json:"kind"`
 	Signer string `json:"signer"`
 	HLC    string `json:"hlc"`
+	// Rev is an observed head's source commit rev (names, atrepo); Status an atrepo
+	// head's account status ("" active).
+	Rev    string `json:"rev,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // DatasetCollection is a dataset's collection policy.

@@ -159,6 +159,11 @@ func (n *Local) Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.Share
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "share needs a CID, not %s", pt.Kind).
 			WithAction("give the CID printed by `" + nu.Name + " add`")
 	}
+	if c, err := cid.Parse(pt.CID); err == nil {
+		if err := n.redistributable(c); err != nil {
+			return nil, err // before resolution: the rule, not the shape, is the answer
+		}
+	}
 	nd, root, p, err := n.resolve(pt.Raw)
 	if err != nil {
 		return nil, err
@@ -178,7 +183,7 @@ func (n *Local) Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.Share
 
 // requireComplete fails with not_found when anything reachable from c is missing.
 func (n *Local) requireComplete(ctx context.Context, c cid.CID) error {
-	st, err := n.Store.Walk(ctx, pinFor(c, ""), nil)
+	st, err := n.Store.Walk(ctx, n.pinOf(c), nil)
 	if err != nil {
 		return err
 	}

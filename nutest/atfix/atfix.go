@@ -143,6 +143,10 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 			body = f.Proof
 		case "com.atproto.sync.getRepo":
 			body = f.Repo
+		case "com.atproto.sync.getRepoStatus":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"did":%q,"active":true}`, DID)
+			return
 		case "com.atproto.sync.getBlob":
 			http.Error(w, `{"error":"BlobNotFound"}`, 404)
 			return

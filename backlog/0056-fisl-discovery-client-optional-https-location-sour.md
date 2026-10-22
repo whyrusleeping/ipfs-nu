@@ -1,10 +1,10 @@
 ---
 id: "0056"
 title: FISL discovery client (optional HTTPS location source)
-status: todo
+status: in_progress
 priority: 3
 created: "2026-09-30"
-updated: "2026-09-30"
+updated: "2026-10-22"
 depends_on:
     - "0052"
     - "0027"

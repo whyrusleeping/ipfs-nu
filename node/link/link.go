@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -173,7 +174,7 @@ func (l *Link) parseQuery(q string) error {
 			if len(cur.Addrs) == MaxAddrs {
 				return bad("more than %d addresses for peer %s", MaxAddrs, cur.Peer.Base36())
 			}
-			a, err := parseAddr(val)
+			a, err := parseAddr(val, cur.Peer)
 			if err != nil {
 				return err
 			}
@@ -193,9 +194,10 @@ func (l *Link) parseQuery(q string) error {
 	return nil
 }
 
-// parseAddr parses one transport multiaddr hint. It must be textual (no unregistered
-// protocols) and must not carry a /p2p/ component: the peer comes from peer=.
-func parseAddr(s string) (wire.Multiaddr, error) {
+// parseAddr parses one transport hint. Direct hints omit /p2p (peer= binds
+// them). A single literal circuit hop must carry its relay identity and its
+// terminal destination must match peer=. Parsing grants no dial authorization.
+func parseAddr(s string, peer wire.PeerID) (wire.Multiaddr, error) {
 	if len(s) > MaxAddrLen {
 		return wire.Multiaddr{}, bad("address is longer than %d bytes", MaxAddrLen)
 	}
@@ -208,6 +210,13 @@ func parseAddr(s string) (wire.Multiaddr, error) {
 	}
 	if a.Opaque() {
 		return wire.Multiaddr{}, bad("address %q uses an unknown protocol", s)
+	}
+	if strings.Contains(a.String(), "/p2p-circuit") {
+		_, _, destination, err := circuit.ParseAddress(a)
+		if err != nil || destination != peer {
+			return wire.Multiaddr{}, bad("circuit address must have one supported relay hop and match peer=")
+		}
+		return a, nil
 	}
 	if strings.Contains(a.String(), "/p2p/") {
 		return wire.Multiaddr{}, bad("address %q names a peer; give the peer with peer= and the transport address with addr=", s)

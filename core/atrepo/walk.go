@@ -39,6 +39,18 @@ func links(c cid.CID, data []byte, blobs bool) ([]cid.CID, error) {
 	return out, nil
 }
 
+// RecordBlobs returns the blob refs of a record block (nil when it is not a valid
+// record): the atrepo+blobs profile's links of a record.
+func RecordBlobs(data []byte) []cid.CID {
+	v, err := drisl.AtprotoRecord.Decode(data)
+	if err != nil {
+		return nil
+	}
+	var out []cid.CID
+	blobRefs(v, &out, 0)
+	return out
+}
+
 func blobRefs(v any, out *[]cid.CID, depth int) {
 	if depth > drisl.DefaultMaxDepth {
 		return

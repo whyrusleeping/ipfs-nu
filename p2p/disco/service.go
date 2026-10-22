@@ -149,7 +149,8 @@ func (d *Service) Close() error {
 
 // Open binds selection to this exact authenticated inner connection, not the
 // Host's possibly different preferred connection to the same peer. The circuit
-// initiator alone calls Open; the other endpoint's registered handler accepts.
+// owner designates one initiator to call Open (Swarm uses the lower inner TLS
+// PeerID); the other endpoint's registered handler accepts.
 func (d *Service) Open(ctx context.Context, c *host.Conn) error {
 	s, err := c.OpenStream(ctx)
 	if err != nil {

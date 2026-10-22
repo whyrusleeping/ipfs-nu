@@ -178,6 +178,13 @@ func (n *Local) PublicAdd(ctx context.Context, req apiv0.PublicRequest) (*apiv0.
 	if err != nil {
 		return nil, err
 	}
+	if err := n.redistributable(c); err != nil {
+		return nil, err
+	}
+	if _, ok := n.atrepoRoot(c); ok {
+		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "%s is an atproto repository commit; the public listener has no /at/ route (P4)", c).
+			WithAction("atproto archives are served to members and on the loopback gateway; public current-state serving of accounts is a later task")
+	}
 	if nd, err := n.content.Resolve(c, ""); err != nil {
 		return nil, err
 	} else if nd.Kind != gateway.KindDir && nd.Kind != gateway.KindFile && nd.Kind != gateway.KindBlob {

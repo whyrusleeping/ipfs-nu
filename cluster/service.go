@@ -41,6 +41,9 @@ type ServiceConfig struct {
 	// Reports returns this node's current completion reports (seq unset; the service
 	// numbers changes) for heartbeats; nil sends none.
 	Reports func() []Report
+	// Repair, when set and returning non-nil, makes this node a repair authority while it
+	// holds an admin key (repair.go).
+	Repair func() *RepairConfig
 }
 
 // PeerStatus is what this node knows about another member.
@@ -84,8 +87,10 @@ type Service struct {
 	ownSeq   int64             // report sequence: the greatest seq assigned
 	sentSeq  int64             // ownSeq at the previous heartbeat (the next delta's base)
 	sentOnce bool
-	evidence chan struct{}            // closed and replaced when received reports change
-	learned  map[wire.PeerID][]string // member addresses relayed by other members' heartbeats
+	evidence chan struct{}             // closed and replaced when received reports change
+	learned  map[wire.PeerID][]string  // member addresses relayed by other members' heartbeats
+	started  time.Time                 // this node's clock at service start (repair)
+	upSince  map[wire.PeerID]time.Time // start of each member's current run of heartbeats
 }
 
 // Gate is the connection policy of c for this node (self): in private and isolated mode
@@ -139,7 +144,8 @@ func StartService(cfg ServiceConfig) (*Service, error) {
 	}
 	s := &Service{cfg: cfg, c: cfg.Cluster, h: cfg.Host, self: cfg.Host.ID(), log: cfg.Logger.With("cluster", cfg.Cluster.ID.String()),
 		kick: make(chan struct{}, 1), peers: map[wire.PeerID]*PeerStatus{}, pulling: map[string]bool{}, changed: make(chan struct{}),
-		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{}), learned: map[wire.PeerID][]string{}}
+		hbKick: make(chan struct{}, 1), own: map[string]Report{}, evidence: make(chan struct{}), learned: map[wire.PeerID][]string{},
+		started: cfg.Cluster.Now(), upSince: map[wire.PeerID]time.Time{}}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	private := s.c.Mode() == ModePrivate || s.c.Mode() == ModeIsolated
 	if private {
@@ -226,6 +232,7 @@ func (s *Service) run() {
 				s.exchange(id)
 			}
 			s.heartbeat()
+			s.repairPass()
 		}
 	}
 }
@@ -400,6 +407,7 @@ func (s *Service) heartbeat() {
 		hb.Reports = s.reportDelta(s.cfg.Reports())
 	}
 	hb.Peers = s.relayAddrs()
+	hb.Repair = s.repairConfig() != nil
 	if s.cfg.HoldingsMarks != nil {
 		hb.Holdings = s.cfg.HoldingsMarks()
 	}
@@ -657,6 +665,11 @@ func (s *Service) serve(st *host.Stream) {
 		pull := false
 		if p.Heartbeat == nil || req.HB.Seq > p.Heartbeat.Seq || req.HB.Seq == 1 {
 			now := s.c.Now()
+			prev := time.Time{}
+			if p.Heartbeat != nil {
+				prev = p.Received
+			}
+			s.noteHeartbeatLocked(peer, prev, now)
 			p.Heartbeat, p.Received = req.HB, now
 			p.Skew = time.UnixMilli(req.HB.Time).Sub(now)
 			if d := req.HB.Reports; d != nil {

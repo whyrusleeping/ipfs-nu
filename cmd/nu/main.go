@@ -341,6 +341,7 @@ func (e *env) local(r *repo.Repo, network bool) (*node.Local, func(), error) {
 	}
 	cfg.AllowPeer = n.GateSwarm(cfg.AllowPeer)
 	if n.PrivateNetwork() {
+		cfg.Isolated = true // cluster gate owns membership; disable all public mechanisms
 		cfg.MDNS = false
 	}
 	sw, err := swarm.Start(context.Background(), cfg)

@@ -37,17 +37,21 @@ type Config struct {
 	MaxBlobBytes int64
 	// Timeout bounds one hint fetch (24 h); IdleTimeout bounds silence on it (1 min).
 	Timeout, IdleTimeout time.Duration
+	// OnMismatch, if set, is told of every URL that served bytes not matching the CID
+	// (with the final URL after redirects), besides the origin demotion on Client. FISL
+	// uses it to demote the record's publisher.
+	OnMismatch func(url, finalURL string)
 }
 
-// Source fetches objects from a fixed set of hinted hosts. It implements fetch.Source:
-// the fetcher asks it for whole objects alongside Nu peers.
-type Source struct {
-	cfg   Config
-	hints []string
+// Retriever fetches a CID from candidate URLs: the spec's "fetch a RASL URL" steps 2–8
+// applied to each (a stateless GET, redirects as 307, the body as octet-stream, verified
+// by CID before it is stored). RASL hints and FISL locations both resolve to it.
+type Retriever struct {
+	cfg Config
 }
 
-// NewSource returns a Source over hints (already validated by Parse).
-func NewSource(cfg Config, hints []string) *Source {
+// NewRetriever applies the defaults to cfg.
+func NewRetriever(cfg Config) *Retriever {
 	if cfg.Scheme == "" {
 		cfg.Scheme = "https"
 	}
@@ -60,33 +64,54 @@ func NewSource(cfg Config, hints []string) *Source {
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = time.Minute
 	}
-	return &Source{cfg: cfg, hints: append([]string(nil), hints...)}
+	return &Retriever{cfg: cfg}
+}
+
+// Source fetches objects from a fixed set of hinted hosts. It implements fetch.Source:
+// the fetcher asks it for whole objects alongside Nu peers.
+type Source struct {
+	r     *Retriever
+	hints []string
+}
+
+// NewSource returns a Source over hints (already validated by Parse).
+func NewSource(cfg Config, hints []string) *Source {
+	return &Source{r: NewRetriever(cfg), hints: append([]string(nil), hints...)}
 }
 
 // Hints returns the hosts in order.
 func (s *Source) Hints() []string { return append([]string(nil), s.hints...) }
 
+// FetchObject makes c held, verified, in the store, from the hints' RASL URLs (Fetch).
+func (s *Source) FetchObject(ctx context.Context, c cid.CID, size uint64) error {
+	urls := make([]string, len(s.hints))
+	for i, h := range s.hints {
+		urls[i] = HintURL(s.r.cfg.Scheme, h, c)
+	}
+	return s.r.Fetch(ctx, c, size, urls)
+}
+
 // ErrMismatch means a hint served bytes that do not hash to the requested CID; its
 // final origin is demoted on the client.
 var ErrMismatch = errors.New("rasl: served bytes do not match the CID")
 
-// SourceError says why no hint served the object, per hint.
+// SourceError says why no location served the object, per URL.
 type SourceError struct {
 	CID      cid.CID
 	Attempts []Attempt
 }
 
-// Attempt is one hint's failure.
+// Attempt is one URL's failure.
 type Attempt struct {
-	Hint string
-	Err  error
+	URL string
+	Err error
 }
 
 func (e *SourceError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "rasl: no hint served %s", e.CID)
+	fmt.Fprintf(&b, "rasl: no location served %s", e.CID)
 	for _, a := range e.Attempts {
-		fmt.Fprintf(&b, "; %s: %v", a.Hint, a.Err)
+		fmt.Fprintf(&b, "; %s: %v", a.URL, a.Err)
 	}
 	return b.String()
 }
@@ -99,8 +124,8 @@ func (e *SourceError) Unwrap() []error {
 	return errs
 }
 
-// NotFound reports that every hint answered that it has no such object (HTTP 404/410),
-// as opposed to being unreachable, refusing, or serving wrong bytes.
+// NotFound reports that every location answered that it has no such object (HTTP
+// 404/410), as opposed to being unreachable, refusing, or serving wrong bytes.
 func (e *SourceError) NotFound() bool {
 	if len(e.Attempts) == 0 {
 		return false
@@ -118,21 +143,23 @@ func (e *SourceError) NotFound() bool {
 // the race for the body; it is retried alone if the winner fails.
 var errLost = errors.New("rasl: another hint answered first")
 
-// FetchObject makes c held, verified, in the store. size is the authenticated size when
-// known (0 otherwise) and caps the download. All non-demoted hints are requested in
-// parallel; the first usable response wins and the others are aborted (the spec's
-// retrieval). If the winner fails mid-body or on verification, hints that also answered
-// are retried one at a time; demoted origins are tried only after every other hint.
-func (s *Source) FetchObject(ctx context.Context, c cid.CID, size uint64) error {
-	if len(s.hints) == 0 {
+// Fetch makes c held, verified, in the store, from one of urls. size is the
+// authenticated size when known (0 otherwise) and caps the download. All URLs on
+// non-demoted origins are requested in parallel; the first usable response wins and the
+// others are aborted (the spec's retrieval). If the winner fails mid-body or on
+// verification, URLs that also answered are retried one at a time; demoted origins are
+// tried only after every other URL. With no urls the error is a SourceError without
+// attempts (NotFound is false).
+func (s *Retriever) Fetch(ctx context.Context, c cid.CID, size uint64, urls []string) error {
+	if len(urls) == 0 {
 		return &SourceError{CID: c}
 	}
 	var fresh, demoted []string
-	for _, h := range s.hints {
-		if s.cfg.Client.Demoted(HintURL(s.cfg.Scheme, h, c)) {
-			demoted = append(demoted, h)
+	for _, u := range urls {
+		if s.cfg.Client.Demoted(u) {
+			demoted = append(demoted, u)
 		} else {
-			fresh = append(fresh, h)
+			fresh = append(fresh, u)
 		}
 	}
 	se := &SourceError{CID: c}
@@ -147,22 +174,22 @@ func (s *Source) FetchObject(ctx context.Context, c cid.CID, size uint64) error 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		for _, h := range retry {
-			if err := s.attempt(ctx, h, c, size, func() bool { return true }); err == nil {
+		for _, u := range retry {
+			if err := s.attempt(ctx, u, c, size, func() bool { return true }); err == nil {
 				return nil
 			} else if ctx.Err() != nil {
 				return ctx.Err()
 			} else {
-				se.Attempts = append(se.Attempts, Attempt{h, err})
+				se.Attempts = append(se.Attempts, Attempt{u, err})
 			}
 		}
 	}
 	return se
 }
 
-// race runs one attempt per hint; the first to reach the body claims it and cancels the
-// rest. It returns the hints that had a usable response but lost, for a sequential retry.
-func (s *Source) race(ctx context.Context, hints []string, c cid.CID, size uint64, se *SourceError) (retry []string, err error) {
+// race runs one attempt per URL; the first to reach the body claims it and cancels the
+// rest. It returns the URLs that had a usable response but lost, for a sequential retry.
+func (s *Retriever) race(ctx context.Context, hints []string, c cid.CID, size uint64, se *SourceError) (retry []string, err error) {
 	var mu sync.Mutex
 	winner := -1
 	cancels := make([]context.CancelFunc, len(hints))
@@ -213,10 +240,9 @@ func (s *Source) race(ctx context.Context, hints []string, c cid.CID, size uint6
 	return retry, errors.New("rasl: race lost")
 }
 
-// attempt fetches c from one hint. claim is called once the response is usable and must
+// attempt fetches c from one URL. claim is called once the response is usable and must
 // report whether this attempt may consume the body.
-func (s *Source) attempt(ctx context.Context, hint string, c cid.CID, size uint64, claim func() bool) error {
-	u := HintURL(s.cfg.Scheme, hint, c)
+func (s *Retriever) attempt(ctx context.Context, u string, c cid.CID, size uint64, claim func() bool) error {
 	whole := cid.WholeObject(c.Codec(), c.Hash())
 	opts := httpsrc.Options{MaxBytes: s.cfg.MaxBlobBytes, Timeout: s.cfg.Timeout, IdleTimeout: s.cfg.IdleTimeout}
 	if whole {
@@ -262,7 +288,7 @@ func (s *Source) attempt(ctx context.Context, hint string, c cid.CID, size uint6
 	}
 	if whole {
 		if err := c.Verify(buf.Bytes()); err != nil {
-			s.cfg.Client.ReportVerificationFailure(res.FinalURL)
+			s.mismatch(u, res.FinalURL)
 			return fmt.Errorf("%w: %v", ErrMismatch, err)
 		}
 		return s.cfg.Store.Put(c, buf.Bytes())
@@ -272,10 +298,17 @@ func (s *Source) attempt(ctx context.Context, hint string, c cid.CID, size uint6
 	}
 	if _, err := s.cfg.Store.PutBlob(c, f, res.Size); err != nil {
 		if errors.Is(err, cid.ErrMismatch) {
-			s.cfg.Client.ReportVerificationFailure(res.FinalURL)
+			s.mismatch(u, res.FinalURL)
 			return fmt.Errorf("%w: %v", ErrMismatch, err)
 		}
 		return err
 	}
 	return nil
+}
+
+func (s *Retriever) mismatch(u, final string) {
+	s.cfg.Client.ReportVerificationFailure(final)
+	if s.cfg.OnMismatch != nil {
+		s.cfg.OnMismatch(u, final)
+	}
 }

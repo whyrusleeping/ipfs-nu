@@ -32,6 +32,10 @@ func (o Op) Action() string {
 
 var ErrInversion = errors.New("atrepo: operation inversion failed")
 
+// ErrChainBreak reports that a since-diff could not be applied over the held tree (a
+// block it needs is missing): the caller falls back to a full export.
+var ErrChainBreak = errors.New("atrepo: diff chain broken")
+
 // Ops returns the record operations from tree prevData to tree data, in path order.
 // prevData's tree is trusted; data's nodes are validated as they load.
 func Ops(st Store, prevData, data cid.CID) ([]Op, error) {
@@ -138,6 +142,24 @@ func Slice(st Store, prevData, c cid.CID) ([]car.Block, []Op, error) {
 		}
 	}
 	return out, ops, nil
+}
+
+// NewNodes returns the MST nodes of commit c's tree that commit prev's tree lacks (the
+// nodes a diff from prev reads), for O(changes) accounting of a new revision.
+func NewNodes(st Store, prev, c cid.CID) ([]cid.CID, error) {
+	rp, err := Open(st, prev)
+	if err != nil {
+		return nil, err
+	}
+	r, err := Open(st, c)
+	if err != nil {
+		return nil, err
+	}
+	rec := &recorder{Store: st}
+	if _, err := opsBetween(LoadTree(st, rp.Head.Data), LoadTree(rec, r.Head.Data)); err != nil {
+		return nil, err
+	}
+	return rec.got, nil
 }
 
 // sliceNodes returns the MST nodes a slice from prevData to data carries, and the ops.

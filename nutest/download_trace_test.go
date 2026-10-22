@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/metrics"
 	"runtime/pprof"
 	"sync"
 	"sync/atomic"
@@ -100,6 +101,7 @@ func (d *downloadTrace) watch() {
 	dumps, slow := 0, 0
 	var prev int64
 	lastTick := time.Now()
+	heap := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
 	for {
 		select {
 		case <-d.stop:
@@ -120,7 +122,8 @@ func (d *downloadTrace) watch() {
 			} else {
 				slow = 0
 			}
-			d.event(map[string]any{"event": "progress", "bytes": current, "bytes_per_second": rate, "idle_seconds": idle.Seconds(), "active": active})
+			metrics.Read(heap)
+			d.event(map[string]any{"event": "progress", "bytes": current, "bytes_per_second": rate, "idle_seconds": idle.Seconds(), "heap_bytes": heap[0].Value.Uint64(), "active": active})
 			if (idle > time.Second || slow >= 2) && dumps < 12 {
 				if dumps == 0 {
 					if f, err := os.Create(filepath.Join(d.dir, "stall.block")); err == nil {

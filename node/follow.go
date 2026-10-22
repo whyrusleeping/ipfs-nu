@@ -421,12 +421,18 @@ func (n *Local) FollowRefresh(ctx context.Context, req apiv0.FollowRefreshReques
 	return n.followList(ctx), nil
 }
 
-// refreshFollows re-resolves every follow (startup, poll backstop, on demand).
+// refreshFollows re-resolves every follow and updates every atrepo dataset (startup,
+// poll backstop, on demand).
 func (n *Local) refreshFollows(ctx context.Context) {
 	n.names.mu.Lock()
 	n.names.polled = time.Now()
 	n.names.mu.Unlock()
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.refreshAtrepos(ctx)
+	}()
 	for _, scope := range []string{ScopeLocal, ScopeCluster} {
 		if scope == ScopeLocal && !cluster.Exists(n.clusterDir("local")) {
 			continue

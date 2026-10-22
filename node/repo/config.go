@@ -37,6 +37,23 @@ type Config struct {
 	Public *PublicConfig `toml:"public,omitempty"`
 	// Follow configures following (0045); nil when the section is absent.
 	Follow *FollowConfig `toml:"follow,omitempty"`
+	// Cluster holds repair, release and audit settings (0048); nil when absent.
+	Cluster *ClusterConfig `toml:"cluster,omitempty"`
+}
+
+// ClusterConfig is the `[cluster]` section (docs/cluster.md "Sync, handoff and repair"):
+// durations are Go duration strings; empty values keep the defaults. Repair is "auto"
+// (default: a daemon holding an admin key is a repair authority) or "off". ReleaseAuto is
+// release.auto (default false: releases are reported, applied only by an explicit gc).
+type ClusterConfig struct {
+	Repair        string `toml:"repair,omitempty"`
+	DownAfter     string `toml:"down_after,omitempty"`
+	UpAfter       string `toml:"up_after,omitempty"`
+	ReleaseAuto   bool   `toml:"release_auto,omitempty"`
+	ReleaseSettle string `toml:"release_settle,omitempty"`
+	RemoveGrace   string `toml:"remove_grace,omitempty"`
+	AuditInterval string `toml:"audit_interval,omitempty"`
+	AuditSamples  int    `toml:"audit_samples,omitzero"`
 }
 
 // FollowConfig is the `[follow]` section. Jetstream is an optional hint source
@@ -177,6 +194,15 @@ type SwarmConfig struct {
 	Listen []string `toml:"listen"`
 	// MDNS enables LAN peer discovery (default true).
 	MDNS bool `toml:"mdns"`
+	// Public connectivity is opt-in to known relays, never an inferred directory.
+	Relays []string `toml:"relays,omitempty"`
+	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
+	Mode  string   `toml:"mode,omitempty"`
+	Peers []string `toml:"peers,omitempty"`
+	// ProbeAllow entries are peerID@IP:port exact independent destination grants.
+	// A grant also permits private candidate disclosure to that peer.
+	ProbeAllow     []string `toml:"probe_allow,omitempty"`
+	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
 }
 
 // DefaultConfig returns the configuration written at init.

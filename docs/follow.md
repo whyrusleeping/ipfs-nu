@@ -97,9 +97,10 @@ A node that already consumes a signed firehose (relay `subscribeRepos` or a smal
 stream) can build proofs from `#commit` blocks without calling `getRecord`. This mode is for
 infrastructure; ordinary followers do not consume the full firehose.
 
-Archive datasets whose source is a whole atproto account (`atrepo`) use the same hints,
-subscribing to all of the account's collections. They advance by verified
-`getRepo?since=` diffs rather than record proofs ([D21](dasl.md#atproto-accounts-as-archive-datasets)).
+Archive datasets whose source is a whole atproto account (`atrepo`) advance by verified
+`getRepo?since=` diffs rather than record proofs, on the poll backstop and on demand only
+(0054: no Jetstream or firehose for dataset ingest;
+[D21](dasl.md#atproto-accounts-as-archive-datasets)).
 
 ```text
 → /nu/name/1

@@ -33,6 +33,7 @@ func init() { Routes = append(Routes, clusterRoutes...) }
 
 func (s *Server) clusterHandlers() map[Route]handlerFunc {
 	h := s.historyHandlers()
+	maps.Copy(h, s.repairHandlers())
 	maps.Copy(h, map[Route]handlerFunc{
 		{"GET", "/cluster"}:                       s.clusterStatus,
 		{"POST", "/cluster/init"}:                 s.clusterInit,
@@ -130,7 +131,8 @@ func (s *Server) clusterMemberRemove(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
-	md, err := c.ClusterMemberRemove(r.Context(), apiv0.ClusterMemberRemoveRequest{Peer: r.PathValue("peer")})
+	q := r.URL.Query()
+	md, err := c.ClusterMemberRemove(r.Context(), apiv0.ClusterMemberRemoveRequest{Peer: r.PathValue("peer"), DryRun: q.Get("dry_run") == "true", Force: q.Get("force") == "true"})
 	if err != nil {
 		return err
 	}

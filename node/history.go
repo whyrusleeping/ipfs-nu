@@ -139,7 +139,7 @@ func presetPolicy(req apiv0.DatasetCreateRequest, pol *cluster.Policy, src *clus
 // walkBlobs returns the held blobs reachable from root with their sizes.
 func (n *Local) walkBlobs(ctx context.Context, root cid.CID) map[cid.Multihash]int64 {
 	out := map[cid.Multihash]int64{}
-	_, _ = n.Store.Walk(ctx, pinFor(root, ""), func(c cid.CID, held bool) error {
+	_, _ = n.Store.Walk(ctx, n.pinOf(root), func(c cid.CID, held bool) error {
 		if c.Codec() == cid.Raw && held {
 			if info, ok, err := n.Store.Has(c); err == nil && ok {
 				out[c.Multihash()] = int64(info.Size)
@@ -257,6 +257,9 @@ func (n *Local) versionInfos(ctx context.Context, hs *histState) ([]apiv0.Versio
 		vi := apiv0.VersionInfo{TID: e.TID, Time: e.Time.UTC(), Root: e.Root, Kind: e.Kind, Parent: e.Parent, Author: e.Author, Files: e.Files,
 			Bytes: e.Bytes, NewBytes: e.NewBytes, RestoredFrom: e.RestoredFrom, Label: e.Label, Note: e.Note, AnnotatedBy: e.AnnotatedBy,
 			Head: e.TID == hs.headTID, Live: hs.live(e.TID), Reasons: hs.ret.Live[e.TID]}
+		if e.Observed != nil {
+			vi.Rev, vi.Commit = e.Observed.Rev, e.Observed.Commit
+		}
 		for _, x := range e.Conflicts {
 			vi.Conflicts = append(vi.Conflicts, apiv0.VersionConflict{Signer: x.Signer, Root: x.Root, Author: x.Author})
 		}
@@ -482,6 +485,13 @@ func (n *Local) DatasetDiff(ctx context.Context, scope, name, from, to string) (
 	if a.Root == b.Root {
 		return out, nil
 	}
+	if a.Kind == cluster.KindAtrepo || b.Kind == cluster.KindAtrepo {
+		if a.Kind != b.Kind {
+			out.Changed = append(out.Changed, "")
+			return out, nil
+		}
+		return out, n.atrepoDiff(a, b, hs.d, out)
+	}
 	ra, err1 := n.treeRoot(a)
 	rb, err2 := n.treeRoot(b)
 	if err := errors.Join(err1, err2); err != nil {
@@ -560,8 +570,18 @@ func (n *Local) DatasetPrune(ctx context.Context, scope, name string, req apiv0.
 		m.Reconcile()
 	}
 	if !req.DryRun && hs.c.Mode() != cluster.ModeLocal {
-		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "pruning a networked cluster's archive is dry-run only until safe release ships (release.auto, 0048)").
-			WithAction("run with --dry-run to see the impact")
+		// S1–S3: versions outside the live set leave only once owners confirm the live set
+		// k times in the current, settled epoch.
+		rr, ok := m.ReleaseReport(name, true)
+		if !ok || !rr.HeadConfirmed || len(rr.Deferred) > 0 {
+			var why []string
+			why = append(why, rr.Deferred...)
+			for _, s := range rr.HeadShortfall {
+				why = append(why, "owner "+s.Peer+": "+s.Reason)
+			}
+			return nil, apiv0.Errorf(apiv0.CodeFailed, "the live set is not confirmed by its owners in a settled epoch yet: %s", strings.Join(why, "; ")).
+				WithDetail("release", rr).WithAction("wait until `" + nu.Name + " cluster dataset gc " + name + " --dry-run` shows head_confirmed and nothing deferred")
+		}
 	}
 	prot := m.Protected(name)
 	liveRoots := map[string]bool{}
@@ -633,7 +653,7 @@ func (n *Local) pruneImpact(ctx context.Context, name string, cands map[cid.CID]
 	}
 	seen := map[cid.Multihash]bool{}
 	for c := range cands {
-		if _, err := n.Store.Walk(ctx, pinFor(c, ""), func(c cid.CID, held bool) error {
+		if _, err := n.Store.Walk(ctx, n.pinOf(c), func(c cid.CID, held bool) error {
 			mh := c.Multihash()
 			if seen[mh] || !held {
 				return nil

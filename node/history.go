@@ -263,6 +263,9 @@ func (n *Local) versionInfos(ctx context.Context, hs *histState) ([]apiv0.Versio
 		for _, x := range e.Conflicts {
 			vi.Conflicts = append(vi.Conflicts, apiv0.VersionConflict{Signer: x.Signer, Root: x.Root, Author: x.Author})
 		}
+		if im := e.Imported; im != nil {
+			vi.Imported = &apiv0.VersionImported{Source: im.Source, Manifest: im.Manifest}
+		}
 		established := slices.Contains(prot.Complete, e.TID)
 		here := n.fullyHeld(ctx, e.Root, held)
 		switch {

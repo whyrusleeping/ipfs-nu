@@ -39,6 +39,9 @@ type Node interface {
 	Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operation, error)
 	// ImportIPFS starts a verified CAR-to-Nu migration operation.
 	ImportIPFS(ctx context.Context, req apiv0.IPFSImportRequest) (*apiv0.Operation, error)
+	// ImportCutover checks an imported dataset's cutover gates (fresh-client retrieval,
+	// exact-policy readiness) before recommending it replace its IPFS source.
+	ImportCutover(ctx context.Context, req apiv0.ImportCutoverRequest) (*apiv0.ImportCutoverResult, error)
 	// Cat streams the bytes of a CID target (file node, blob, or path inside a tree).
 	Cat(ctx context.Context, target string) (io.ReadCloser, error)
 	// Ls lists a directory target.

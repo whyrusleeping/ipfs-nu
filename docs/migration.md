@@ -115,7 +115,12 @@ Remote blocks use Nu's own QUIC-v1 host and a minimal client-only Bitswap implem
 provider lookup uses the existing Amino DHT (`kad/`). Request only the root and referenced
 blocks, enforce bounded concurrency, response/block byte limits, deadlines and traversal
 budgets, and validate every CID before accepting a block. Bitswap's roughly 2 MiB block-size
-limit is enforced; unsupported/larger individual blocks fail explicitly. No go-libp2p or
+limit is enforced; unsupported/larger individual blocks fail explicitly. Each block is wanted
+(`/ipfs/bitswap/1.2.0`, `wantType: Block`, `sendDontHave`) from up to 8 providers at once,
+10 s per dial and want, 60 s per block; the first block that verifies wins. A provider's
+`DONT_HAVE` presence counts as a refusal, and a block every reachable provider refused or no
+provider could be reached for is *missing* (not corrupt). CIDv0 blocks arrive with the
+prefix `[0, dag-pb, sha2-256, 32]`. No go-libp2p or
 boxo dependency is permitted in the main module. Gateways may be an explicitly selected
 transport later, but never replace original-CID verification.
 
@@ -133,14 +138,33 @@ Write a canonical content-addressed DRISL provenance manifest containing schema/
 original IPFS root (canonical CID), resulting Nu root, importer build/version, verification
 outcome, source kind, completion time, imported file/byte counts, per-file relative path and
 original entry CID(s) → resulting blob CID, transformations/skips, and missing/unsupported
-items. Do not store credentials or local secrets. Validate the manifest's canonical schema
+items. `metadata_transformations` lists `{path, cid?, reason}` items: the standing note that
+only the executable bit is kept, then per node a dropped mtime, a file mode other than
+0644/0755 reduced to the executable bit, a dropped directory/symlink mode, and each symlink
+kept as a D3 symlink entry that extraction skips. Do not store credentials or local secrets. Validate the manifest's canonical schema
 and hash it as Nu DRISL; return its CID. A manifest CID proves integrity only. For signed
 atproto/cluster dataset history, reference it from the version's `imported` field, whose
-signature authenticates that reference. Standalone import makes no authorship claim.
+signature authenticates that reference. Standalone import makes no authorship claim. An import
+with a dataset (`--dataset <ds>`, an archive dataset: the reference lives in its version
+record) writes the Nu root as the dataset's head and, in the same signed commit, a version
+with `imported: {source: "ipfs://<canonical root CID>", manifest: "<manifest CID>"}` (part of
+the version's identity, docs/cluster.md). A replay of the same import finds that head and
+reference and writes nothing. Datasets without history and pinsets are refused with
+`--dataset`: one version names one root.
 
 Dry run reports root/profile, inventory completeness, supported and unsupported items,
 missing blocks, estimated logical/physical bytes and headroom (estimates clearly marked),
-metadata transformations, and proposed policy mapping. Do not infer readiness from import:
+metadata transformations, and proposed policy mapping. A dry run is a **structure-only
+walk**: it retrieves and verifies under the original CIDs the root, every directory and HAMT
+shard, every symlink and the top node of every file, but no file chunk or raw leaf. File
+sizes are therefore declared ones (UnixFS `filesize`, or `Tsize` for a raw-leaf link), and the
+physical estimate adds Bao outboards per file; it excludes database/DRISL overhead and may
+overcount shared blobs. The walk continues past missing blocks (`complete: false`, counts
+cover what was reached) and unsupported items (unsafe or duplicate names, unknown UnixFS
+types, malformed nodes, a standalone symlink root), listing each with its path. A CAR, being
+local, is additionally converted in memory to report the planned Nu root and manifest; a
+network dry run plans no root. Neither writes to the store or checkpoints blocks. Do not infer
+readiness from import:
 validate by reading the new root through a fresh Nu client, then wait for the exact configured
 replication policy and target before recommending cutover. Report a reconciliation between
 source pins/inventory and imported roots, missing/unsupported content and policy differences.
@@ -148,22 +172,51 @@ Operators test scripts against Nu APIs/CLI, validate fresh-client retrieval and 
 then redirect writers/readers deliberately. Back up Kubo and keys separately. Cutover never
 automatically stops Kubo, removes pins, deletes blocks or transfers identity/cluster authority.
 
+**Pinset import.** A Kubo repo is inventoried read-only with `ipfs pin ls --type recursive
+--enc=json [--names] > pins.json` (the `{"Keys": {cid: {Type, Name}}}` object, or the
+`--stream` form of one `{Cid, Type, Name}` object per line; at most 64 MiB). The inventory is
+parsed when the operation starts and kept in its job, sorted by CID. Each recursive pin is one
+root: from `<car-dir>/<cid>.car` (the CID string exactly as listed; export each with `ipfs dag
+export <cid> > <car-dir>/<cid>.car`) or, without a CAR directory, over Bitswap. Roots are
+processed in order and each gets one report entry, persisted before the next starts, so a
+resumed job continues with the next root: `imported` (Nu root, manifest, files, bytes,
+transformations), `planned` (dry run: complete and supported), `missing` (no CAR, or a block
+no source supplied, named), `unsupported` (outside the import profile, or an invalid CID),
+`failed` (a corrupt CAR/block or another source error) and `skipped` (not a recursive pin:
+direct and indirect pins do not name complete DAGs to import). One root's outcome never
+discards another's; the operation succeeds with the reconciliation report, whose counts per
+status and totals (and, for a dry run, the blob estimate against headroom) close it. Nu never
+opens the Kubo repo itself.
+
+**Cutover check.** `nu import cutover <ds> [--cluster] [--timeout 10m]` (`POST
+/import/ipfs/cutover`) evaluates three gates for the dataset's current head and recommends
+cutover only when all pass; otherwise it lists what is missing:
+
+1. the head version carries an `imported` reference whose manifest is held, is an
+   `io.ipfs.nu.import` record, is `verified`, and maps that source to that head;
+2. a **fresh client** — a new node with a new key and an empty temporary store — retrieves
+   the head completely over QUIC from this node and the connected cluster members; it never
+   reads the daemon's store directly. In private and isolated clusters the connection gate
+   refuses non-members, so this gate cannot pass there (validate with `get` from a new member);
+3. the exact dataset policy is `ready` for that head (the W-rule wait, bounded by
+   `--timeout`).
+
+The report repeats the standing rules (Nu changes nothing in Kubo; back up the Kubo repo and
+keys; move readers/writers deliberately) and notes a single-copy policy.
+
 CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino; `nu import ipfs --car file
-<cid>` imports a local CARv1. The local API's `POST /import/ipfs` accepts the same request
-and returns a durable operation ID. `--dry-run` fully verifies and traverses a CAR, reports supported conversions, the planned Nu
-root/manifest, file/logical-byte totals, source-block count, metadata transformations, a
-blob/outboard physical-byte estimate and current store headroom; it is not available for a
-network source. The physical estimate excludes database/DRISL overhead and may overcount
-shared blobs. A Kubo repo is inventoried with `ipfs pin ls --type recursive --enc`; each
-selected root is exported using `ipfs dag export <root> > root.car` and imported as a separate
-operation. Nu does not directly open the Kubo repo or automate pinset enumeration in this
-version. Operation request/stage/result survive daemon restarts. During conversion each original source
-block is verified and atomically checkpointed under the operation directory before it can be
-used; resumed CAR and Bitswap jobs revalidate and reuse these block checkpoints. A CAR archive
-is still parsed into a temporary index on each restart (so the archive file itself is reread),
-but verified source blocks are not requested from the CAR/Bitswap source again. Production
-Linux/macOS builds include the bridge; minimal builds expose an explicit unavailable-feature
-result.
+<cid>` imports a local CARv1; `nu import ipfs --pins pins.json [--car-dir d]` imports a
+pinset. `--dry-run` applies to all three. The local API's `POST /import/ipfs` accepts the same
+request and returns a durable operation ID. Operation request/stage/result survive daemon
+restarts. During conversion each original source block is verified and atomically
+checkpointed under `imports/<operation>/blocks` before it can be used; resumed CAR and Bitswap
+jobs revalidate and reuse these checkpoints, so verified blocks are not requested from the
+source again (a CAR is still re-indexed into a temporary file on restart). A daemon shutdown
+leaves a running job's descriptor running, and the next start resumes it under the same
+operation ID; an explicit cancellation records the cancellation and the job is not resumed.
+When an operation succeeds with every root imported, its checkpoints are deleted; otherwise
+they are kept with the job. Production Linux/macOS builds include the bridge; minimal builds
+expose an explicit unavailable-feature result.
 
 ## Acceptance
 

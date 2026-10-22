@@ -291,6 +291,15 @@ func (c *Client) ImportIPFS(ctx context.Context, req apiv0.IPFSImportRequest) (*
 	return &o, nil
 }
 
+// ImportCutover checks whether an imported dataset may replace its IPFS source.
+func (c *Client) ImportCutover(ctx context.Context, req apiv0.ImportCutoverRequest) (*apiv0.ImportCutoverResult, error) {
+	var out apiv0.ImportCutoverResult
+	if _, err := c.do(ctx, http.MethodPost, "/import/ipfs/cutover", nil, &req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Cat streams a target's bytes.
 func (c *Client) Cat(ctx context.Context, target string) (io.ReadCloser, error) {
 	res, err := c.do(ctx, http.MethodGet, "/cat", url.Values{"target": {target}}, nil, nil)

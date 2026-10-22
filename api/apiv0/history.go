@@ -56,6 +56,15 @@ type VersionInfo struct {
 	Availability string            `json:"availability"`
 	Detail       string            `json:"detail,omitempty"`
 	Conflicts    []VersionConflict `json:"conflicts,omitempty"`
+
+	// Imported is the signed reference to an import's provenance manifest (0042).
+	Imported *VersionImported `json:"imported,omitempty"`
+}
+
+// VersionImported is a version's import provenance: the original root and manifest CID.
+type VersionImported struct {
+	Source   string `json:"source"`
+	Manifest string `json:"manifest"`
 }
 
 // VersionConflict is a record for the same TID whose identity differs.

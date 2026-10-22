@@ -357,11 +357,18 @@ type Paths struct {
 	APIFile string `json:"api_file"`
 }
 
-// IPFSImportRequest starts a verified IPFS CAR import.
+// IPFSImportRequest starts a verified IPFS import (docs/api.md "IPFS migration"): one Root
+// from a CAR or the network, or every recursive pin of a Kubo pin inventory (Pins) from
+// CARDir/<cid>.car or the network. Dataset writes the imported root as the dataset's new
+// head and version with an `imported` reference to the provenance manifest.
 type IPFSImportRequest struct {
-	Root   string `json:"root"`
-	CAR    string `json:"car"`
-	DryRun bool   `json:"dry_run,omitempty"`
+	Root    string `json:"root,omitempty"`
+	CAR     string `json:"car,omitempty"`
+	DryRun  bool   `json:"dry_run,omitempty"`
+	Pins    string `json:"pins,omitempty"`
+	CARDir  string `json:"car_dir,omitempty"`
+	Dataset string `json:"dataset,omitempty"`
+	Scope   string `json:"scope,omitempty"`
 }
 
 // AddRequest starts an add operation. The daemon reads Path itself (API and daemon run as

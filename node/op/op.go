@@ -14,6 +14,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
@@ -29,6 +30,8 @@ type Manager struct {
 	// Retention of finished operations, so `nu status`/`operations` can still show them.
 	keepFinished int
 	keepFor      time.Duration
+
+	shutdown atomic.Bool // set by CancelAll
 }
 
 // NewManager returns an empty manager with a fresh epoch.
@@ -139,6 +142,7 @@ func (m *Manager) Counts() map[apiv0.State]int {
 
 // CancelAll cancels every running operation (daemon shutdown).
 func (m *Manager) CancelAll() {
+	m.shutdown.Store(true)
 	m.mu.Lock()
 	ops := append([]*Operation(nil), m.order...)
 	m.mu.Unlock()
@@ -146,6 +150,10 @@ func (m *Manager) CancelAll() {
 		o.Cancel()
 	}
 }
+
+// ShuttingDown reports whether CancelAll was called: durable work cancelled by it should
+// keep its persisted state for recovery instead of recording a cancellation.
+func (m *Manager) ShuttingDown() bool { return m.shutdown.Load() }
 
 // Operation is one unit of long-running work.
 type Operation struct {

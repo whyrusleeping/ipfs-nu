@@ -403,11 +403,22 @@ type Version struct {
 	Note     string    `drisl:"note,omitempty"`
 	HLC      string    `drisl:"hlc"`
 
+	// Imported references the provenance manifest of a verified one-way import (0042).
+	Imported *Imported `drisl:"imported,omitempty"`
+
 	identity string         // hex SHA-256 of the record without annotations
 	raw      map[string]any // the decoded record (annotation copies keep unknown fields)
 }
 
 func (Version) DRISLType() string { return NSVersion }
+
+// Imported is a version's import provenance (docs/migration.md): Source names the original
+// root (`ipfs://<cid>`) and Manifest is the CID of the DRISL import manifest. Part of the
+// version's identity, so the signed state commit authenticates the reference.
+type Imported struct {
+	Source   string `drisl:"source"`
+	Manifest string `drisl:"manifest"`
+}
 
 // Identity is the hex SHA-256 of the DRISL record without its annotations (set when
 // decoded from a record).
@@ -837,6 +848,11 @@ func decodeValue(r *Record, v any) error {
 		for _, t := range []string{ver.Parent, ver.RestoredFrom} {
 			if _, err := parseTID(t); t != "" && err != nil {
 				return fmt.Errorf("bad version reference %q", t)
+			}
+		}
+		if im := ver.Imported; im != nil {
+			if _, err := cid.Parse(im.Manifest); err != nil || im.Source == "" || len(im.Source) > 256 {
+				return errors.New("imported needs a source and a manifest CID")
 			}
 		}
 		m, _ := v.(map[string]any)

@@ -71,12 +71,30 @@ from the start instead of treating it as an empty delta. A malformed cursor is
 
 ### IPFS migration
 
-`POST /api/v0/import/ipfs` starts an `import-ipfs` operation. Give a local CARv1 source with
-`{"root":"<IPFS CID>","car":"/absolute/path/root.car"}`; the daemon verifies every block
-against its original CID. Omit `car` to retrieve by Bitswap over QUIC-v1 with provider
-lookup through Amino Kademlia. `dry_run` is supported for CAR only; it traverses/verifies the root and returns the planned Nu root, file/byte totals, and a blob/outboard physical estimate (not DB/DRISL overhead) against current headroom. The CLI forms
-are `nu import ipfs --car root.car <cid>` and `nu import ipfs <cid>`; create a CAR read-only
-with `ipfs dag export <cid> > root.car`. Direct Kubo repo-internal access is not supported.
+`POST /api/v0/import/ipfs` starts an `import-ipfs` operation
+([migration.md](migration.md#resumption-provenance-and-cutover)). One root:
+`{"root":"<IPFS CID>","car":"/absolute/path/root.car"}` verifies every block against its
+original CID; omit `car` to retrieve by Bitswap over QUIC-v1 with Amino provider lookup.
+`"dataset":"<ds>"` (an archive dataset; `"scope":"cluster"` for the networked cluster) also
+writes the Nu root as its head and a version whose `imported` field references the manifest;
+the result then carries `dataset`. A pinset: `{"pins":"/abs/pins.json","car_dir":"/abs/dir"}`
+imports every recursive pin of `ipfs pin ls --type recursive --enc=json` output from
+`<car_dir>/<cid>.car`, or over the network without `car_dir`; its result is the
+reconciliation report `{inventory, pins, counts, bytes, roots: [{ipfs_root, name?, status:
+imported|planned|missing|unsupported|failed|skipped, root?, manifest?, files, bytes, missing?,
+unsupported?, transformations?, error?}]}`. `dry_run` works for every source: a structure-only
+inventory (files, directories, symlinks, declared bytes, `complete`, `missing`, `unsupported`,
+`transformations`, blob/outboard estimate against `store_headroom`), plus the planned root
+and manifest for a CAR; it writes nothing. CLI: `nu import ipfs [--car f] [--dry-run]
+[--dataset ds [--cluster]] <cid>` and `nu import ipfs --pins pins.json [--car-dir d]
+[--dry-run]`. Direct Kubo repo-internal access is not supported.
+
+`POST /api/v0/import/ipfs/cutover` `{dataset, scope?, timeout?}` (CLI `nu import cutover <ds>
+[--cluster] [--timeout 10m]`, exit nonzero unless recommended) returns `{dataset, scope,
+version, target, imported?, retrieval: {ok, client, providers, files, bytes, error?},
+readiness: WaitResult, recommend, missing?, notes}`: the head version's signed import
+reference, a fresh client's network retrieval and the exact-policy `ready` wait, with
+`recommend` true only when all three pass.
 
 Long-running work is an operation: `{id, kind, target, state, stage?, progress{done,
 total?, unit?}, created, updated, result?, error?}`. `target` is exact (a CID, path or

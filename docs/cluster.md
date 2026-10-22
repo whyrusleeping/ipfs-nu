@@ -257,6 +257,10 @@ version/<name>.<tid> → { root: "<cid>", kind, parent?: "<tid>", author: "<did>
   only: content is pinned per retained version, never through the tree. `files` and
   `bytes` come from the tree header (blob/file node: 1 and its size); `newBytes` is the
   size of blobs absent from the parent version, computed by the writer from both walks.
+- `imported` (0042) is set by an import with a dataset: `source` is `ipfs://<canonical
+  original root CID>` and `manifest` the CID of the DRISL provenance manifest
+  ([migration.md](migration.md#resumption-provenance-and-cutover)); it is part of the
+  identity, so the state commit's signature authenticates the reference.
 - **Identity, annotations and authority (0047).** A version's identity is its TID plus
   every field except the annotations `label`, `note` and `hlc`, compared as the DRISL
   encoding of the record without those keys (unknown fields included). Keys that may write

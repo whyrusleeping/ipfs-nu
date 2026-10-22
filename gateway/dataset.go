@@ -34,6 +34,12 @@ type NameContent interface {
 // /tree/<cid>/<path> URL of the resolved target (X-Nu-Root, X-Nu-Source: pds|cache|held).
 // ?held=1 serves the local follow's held snapshot, which may be older than the name.
 func (h *Handler) name(w http.ResponseWriter, r *http.Request) {
+	if h.pub != nil {
+		// P2/P4: names resolve live and would redirect to roots nobody published; the
+		// public listener has no /nu/ route (0077).
+		h.notFound(w, r)
+		return
+	}
 	auth, name, p := r.PathValue("authority"), r.PathValue("name"), r.PathValue("path")
 	if p != "" {
 		if err := validatePath(p); err != nil {
@@ -75,6 +81,12 @@ func redirectRoot(w http.ResponseWriter, r *http.Request, root, p string) {
 // version that is not retained-complete is an error naming its availability, never a
 // fallback to another version.
 func (h *Handler) dataset(w http.ResponseWriter, r *http.Request) {
+	if h.pub != nil {
+		// P2: a dataset's roots (X-Nu-Root) are this node's, not published; the public
+		// listener has no /c/ route (0077).
+		h.notFound(w, r)
+		return
+	}
 	seg, p := r.PathValue("ds"), r.PathValue("path")
 	t, err := target.Parse(seg)
 	if err != nil || t.Kind != target.KindDataset || t.Path != "" {

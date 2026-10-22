@@ -621,10 +621,14 @@ destination.**
 - **A2** `Host` must be `localhost`, `127.0.0.1`, `[::1]` or another loopback literal with
   this listener's port, else `403 forbidden`. A public name rebound to 127.0.0.1 still
   carries the public name and is refused.
-- **A3** `GET`/`HEAD` never change state. Every state change is `POST`/`DELETE`.
-- **A4** For any method other than `GET`/`HEAD`: an `Origin` header must equal
+- **A3** `GET`/`HEAD` never change daemon configuration; every state change is
+  `POST`/`DELETE`. Some reads still fetch, resolve and store content (`/cat`, `/ls`,
+  `/resolve`), so A4 applies to them too.
+- **A4** For every method, `GET`/`HEAD` included (0077): an `Origin` header must equal
   `http://<Host>`; a `Sec-Fetch-Site` header must be `same-origin` or `none`; `OPTIONS`
-  is always `403`. The gateway's origins are foreign to the API and are refused too.
+  is always `403`. The gateway's origins are foreign to the API and are refused too. A
+  cross-site `<img>`, navigation or `fetch` of an API URL is therefore `403` before any
+  handler runs; the CLI and other non-browser clients send neither header.
 - **A5** Request bodies are read only with `Content-Type: application/json`
   (`400 invalid_argument` otherwise). HTML forms cannot send that type and a script that
   sets it triggers a preflight, which A4 refuses, so browsers that send neither `Origin`
@@ -649,7 +653,9 @@ destination.**
   created per producer by `nu api token create` rather than at init; `rotate` and `rm`
   apply on the next request. There is no TLS in this build: the daemon refuses to start
   the listener unless `api.producer.trusted_network = true`, and `api.producer.hosts`
-  replaces the loopback check of A2. `api.listen` itself stays loopback-only (A1).
+  replaces the loopback check of A2. `api.listen` itself stays loopback-only (A1). A
+  token push never names the receiving node's local files (`path`/`nocopy` are refused)
+  and names only blobs that token uploaded to that collection (0077).
 
 ### G. Gateway and browsers
 
@@ -687,9 +693,16 @@ destination.**
 - **G8** Gateway-generated pages (root, listings) carry
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`; errors are
   plain text, never HTML. Listings link only safe names; unsafe names are shown unlinked. Paths with
-  `.`, `..`, empty or NUL segments are `400`.
+  `.`, `..`, empty or NUL segments are `400` on every origin and route, checked before
+  routing so nothing cleans and redirects them.
 - **G9** Caching: CID-addressed responses are `public, max-age=31536000, immutable` with
-  `ETag: "<cid>"`; errors are `no-store`; name routes (G5) are `no-cache` and revalidate.
+  `ETag: "<cid>"` (listings: the directory's CID, plus a page tag for `?from=` pages) and
+  answer `If-None-Match` with `304`; errors are `no-store`; name routes (G5) are
+  `no-cache` and revalidate.
+- **G12** Bounds (0077): a `Range` of more than 16 parts is answered whole (`200`);
+  listings show at most 1000 entries per page with a "more" link (`?from=<name>`, the MST
+  walk starts there); on the public listener a response whose client stops reading for
+  30 s is cut off, so slow readers cannot hold the concurrency slots.
 - **G10** **MASL headers** (reflected once 0055 lands) pass an allowlist: `content-type`
   through G7 and G4; `content-language` as a language tag; `content-disposition` as
   `inline`/`attachment` with a sanitized filename only; `content-encoding` only when the
@@ -700,7 +713,10 @@ destination.**
   source-map and manifest fields are never reflected. Bundles render only on site origins.
 - **G11** Cross-origin reads from a site origin to a bare origin, to another site origin or
   to the API are blocked by G2/A6 (no CORS). Navigations and embeds between them are
-  allowed; they transfer nothing.
+  allowed; they transfer nothing. Every loopback gateway response carries
+  `Cross-Origin-Resource-Policy: same-site`, so a page on another site cannot embed
+  loopback URLs to probe what the node holds by load/error events (0077); the public
+  listener does not send it (published content may be embedded anywhere).
 
 ### P. Public and member-only serving
 
@@ -708,7 +724,10 @@ destination.**
   uses its own listener and configuration; `/api/` does not exist there.
 - **P2** Public serving is opt-in per root: only content explicitly published or marked
   public is served; a member's held cluster content is never implicitly public. A share
-  link mentions a public URL only when that URL serves the root now.
+  link mentions a public URL only when that URL serves the root now. The served set is
+  keyed by **full CID**: a published raw file's multihash under the DRISL codec is another
+  object (its bytes read as a node could link to anything held), and the store never
+  reads bytes stored only as a raw blob as a DRISL node (0077).
 - **P3** A members-only gateway is loopback/network-restricted or requires reader
   authentication (A8-style token or TLS client auth). "Not configured" means the daemon
   refuses the listener; libp2p membership gating never counts as HTTP protection.
@@ -727,11 +746,13 @@ mechanics in [api.md](api.md#public-listener-0043)). It is a separate `http.Serv
 its own address with the gateway handler in public mode: no `/api/` (P1); `Host` must be
 `public.domain` or `<cid>.<domain>`; only roots marked with `nu public add` (a pin with
 source `public`) and the objects under them are served, and any other CID, held or not,
-is the same `404` (P2/P4); `/at/` does not exist there; RASL answers carry
+is the same `404` (P2/P4); `/at/`, `/c/` and `/nu/` do not exist there (no dataset
+roots, no live name resolution); RASL answers carry
 `Access-Control-Allow-Origin: *` on this listener only (P5); `nu share` adds the
 `https://` and `rasl://` links only while this process's listener serves the root (P2).
 The daemon refuses the listener on a member of a private or isolated cluster (P3, no
-reader authentication in this build), without TLS (cert/key files, or `behind_proxy` on
+reader authentication in this build; while the listener runs, `cluster init`/`join` of a
+private or isolated cluster is refused with `conflict` naming `public.listen`), without TLS (cert/key files, or `behind_proxy` on
 a loopback address), or with a `localhost`/IP-literal domain (P5). Concurrent requests
 are bounded in total and per client address (`503` + `Retry-After`).
 
@@ -760,13 +781,24 @@ are bounded in total and per client address (`503` + `Retry-After`).
 6. Limits: `public.max_requests` (256) and `public.per_ip` (32) bound concurrency; put
    bandwidth shaping and request logging in the proxy or OS. Behind a proxy the per-IP
    bound sees the proxy's address (no `X-Forwarded-For` trust in this build).
+7. Cookie scope: every published site runs on `<cid>.<domain>`, and browsers let script
+   on one subdomain set cookies for the parent `domain`, which every other published
+   site then sees (and can overwrite). The listener never sets or reads cookies, but a
+   published site that uses cookies is not isolated from the others unless `domain` is
+   on the [Public Suffix List](https://publicsuffix.org/) (private section). Use a domain
+   dedicated to the seed (never one whose parent hosts logins or other services), and
+   submit it to the PSL if published sites may rely on cookies; `localStorage` and other
+   origin-scoped state are isolated either way.
 
 ### X. Extraction (`nu get -o`)
 
 - **X1** Tree paths must be relative, with no empty, `.`, `..`, NUL or backslash segment
-  and names ≤ 255 bytes; a violation is `invalid_argument` and nothing is written.
+  and names ≤ 255 bytes; a violation is `invalid_argument` and nothing is written: the
+  whole walk is validated before the first write (0077).
 - **X2** Every existing component under the destination is `Lstat`ed; a symlink on the
-  way, or in place of a file being written, aborts the extraction.
+  way, or in place of a file being written, aborts the extraction. All writes go through
+  an `os.Root` opened at the destination, so a symlink swapped in after the checks still
+  cannot redirect a write outside it.
 - **X3** Symlink entries are never created; they are reported as skipped with their target.
 - **X4** A name the filesystem maps onto an existing entry this run did not write (case
   folding, Unicode normalization) is reported as skipped naming the entry it collides
@@ -793,14 +825,14 @@ required by the named task before it ships.
 | N5 | A4 | `OPTIONS` preflight | 403, no CORS headers | `api.TestLoopbackProtections` |
 | N6 | A5 | POST `/pins`, `/dag` as `text/plain`, form or multipart, or no type | 400 | `api.TestLoopbackProtections` |
 | N7 | A6 | any response | no `Access-Control-*`, `nosniff`, `no-store`, no `Set-Cookie` | `api.TestLoopbackProtections` |
-| N8 | A3 | GET with foreign `Origin` | 200, unreadable by the page (no CORS) | `api.TestLoopbackProtections` |
+| N8 | A3/A4 | GET/HEAD with foreign `Origin` (incl. the gateway's, `null`) or `Sec-Fetch-Site: cross-site`/`same-site` | 403 before the handler (no fetch, no resolve); same-origin, `none` and header-less GETs are served | `api.TestLoopbackProtections` |
 | N9 | A1 | daemon with `api.listen = 0.0.0.0:…` or `gateway.listen = [::]:…` | refuses to start, action names loopback | `daemon.TestDaemon` |
 | N10 | G1 | gateway `Host` not loopback/`<cid>.localhost`, or `evil.localhost`, or wrong port | 403 | `gateway.TestGatewayOrigins` |
 | N11 | G3/G4 | `/tree/<cid>/index.html` on bare origin | octet-stream attachment + `Link` alternate | `gateway.TestGatewayOrigins` |
 | N12 | G4 | SVG/XML/JS/PDF types on bare origin | attachment | `gateway.TestMimeRules` |
 | N13 | G7 | hostile `mime` (`text/html; charset=x-evil`, `foo`, `a/b/c`, CRLF) | sanitized or octet-stream | `gateway.TestMimeRules` |
 | N14 | G3 | `<cid>.localhost/` serves `index.html` as HTML with no listing CSP | 200 `text/html` | `gateway.TestGatewayOrigins` |
-| N15 | G8 | `/sub/../index.html`, NUL, empty segments | 400 | `gateway.TestGatewayOrigins` |
+| N15 | G8 | `/sub/../index.html`, `./`, `%2e%2e`, NUL, empty segments, on site and bare origins | 400, never a cleaning redirect | `gateway.TestGatewayOrigins` |
 | N16 | G6 | `//evil.example` on a site whose tree has `evil.example/` | 400, no `Location` | `gateway.TestGatewayOrigins` |
 | N17 | G6 | directory without slash | 301 to same-origin path | `gateway.TestGatewayOrigins` |
 | N18 | G7 | symlink entry | 422, listed | `gateway.TestGatewayOrigins` |
@@ -827,6 +859,13 @@ required by the named task before it ships.
 | N39 | A8 | `api.producer.listen` without `trusted_network` or `hosts` | refuses to start, action names the key | gate: producer TLS (not part of 0043's content listener) |
 | N40 | P5/P1 | public `Host` is an IP literal, `localhost`, another domain, `<cid>.<other>`, `x.<cid>.<domain>`, or the domain with a foreign port; non-GET methods | 403; 400, no CORS | `gateway.TestPublicListener` |
 | N41 | P1 | public listener without cert/key and without `behind_proxy`; `behind_proxy` off loopback; `public.domain = localhost` | refuses to start, action names the key | `daemon.TestPublicListener` |
+| N42 | P2 | published small file whose bytes are a MASL file node naming an unpublished blob, requested as `<DRISL codec + file multihash>` on `/tree`, `/blob`, RASL and its site origin | 404; the store refuses the DRISL read of raw-stored bytes | `node.TestPublicCodecSwap`, `store.TestSmallBlobsAndBlocks` |
+| N43 | A8 | producer token push naming `files.<n>.path` (an existing secret such as `node.key`, with `nocopy`, or a missing path); naming another token's upload or any other held CID | 403, same answer for existing and missing paths; 404, nothing queued | `main.TestProducerPushCLI` |
+| N44 | P2/P4 | `/c/<dataset>…` and `/nu/<handle>/<name>…` on the public listener | 404 like any route that does not exist there, no `X-Nu-Root`, no lookup | `gateway.TestPublicListener` |
+| N45 | P3 | `cluster init`/`join` of a private or isolated cluster while the public listener runs | conflict, action names `public.listen`; no membership | `node.TestPublicListenerRefusesPrivateCluster` |
+| N46 | G12/G9 | `Range` with 17 parts; a directory larger than one page; listing `If-None-Match`; a public client that stops reading | 200 whole body; paged with `?from=`, per-page ETag; 304; write cut off after the stall timeout | `gateway.TestPublicBounds`, `node.TestPublicCodecSwap` (MST paging) |
+| N47 | X1/X2 | unsafe path (`z\..\evil`) after good entries; a directory swapped for a symlink while a file in it is being written | invalid_argument and the destination not even created; the write fails, nothing outside | `extract.TestExtractSafety` |
+| N48 | G11 | another site embeds a loopback gateway URL (`<img>`/`<script>`) to probe held content | `Cross-Origin-Resource-Policy: same-site` on every loopback response (content and errors), none on the public listener | `gateway.TestGatewayOrigins`, `gateway.TestPublicListener` |
 
 ### Feature-entry gates
 
@@ -837,7 +876,8 @@ required by the named task before it ships.
 - **0043 (public HTTPS)**: A8 (if any non-loopback API ships), P1–P6, N28; browser rows
   rerun against the public origin scheme in all three browsers; cert/deployment runbook.
   Implemented: P1–P6 as the public listener (state note under P6; N28, N29 public half,
-  N40, N41 automated), no non-loopback API shipped (A8 unchanged), runbook above. Not
+  N40, N41 automated), no non-loopback API shipped (A8 unchanged), runbook above. The
+  2026-10-22 internal review's findings are fixed with rows N42–N48 (0077). Not
   met until the browser rows B1–B7 and B9 are recorded against a real public domain
   (validation.md) and the independent review signs off.
 - **0052 (RASL)**: N29; RASL on loopback has no CORS; the SSRF rows of 0061 for `rasl://`.

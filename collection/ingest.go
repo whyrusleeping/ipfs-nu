@@ -263,9 +263,16 @@ func invalid(format string, args ...any) *apiv0.Error {
 	return apiv0.Errorf(apiv0.CodeInvalidArgument, format, args...)
 }
 
+// UploadTTL is how long a remote producer's upload may be named by its pushes (the store
+// keeps an unpinned upload for the GC grace, an hour by default).
+const UploadTTL = 24 * time.Hour
+
 // validatePush checks a request and stores its metadata record, returning the stored
-// request form.
-func (m *Manager) validatePush(d *cluster.Dataset, req apiv0.CollectionPushRequest) (string, pushReq, error) {
+// request form. producer is "" for the local API (trusted as the node's user) and names
+// the push token otherwise: a remote producer cannot name local paths (it would read the
+// receiving node's files into a replicated collection) and may only name blobs it
+// uploaded to this collection itself (0077).
+func (m *Manager) validatePush(name string, d *cluster.Dataset, req apiv0.CollectionPushRequest, producer string) (string, pushReq, error) {
 	segs, err := splitPath(req.Path)
 	if err != nil {
 		return "", pushReq{}, invalid("item path %q: %v", req.Path, err)
@@ -307,11 +314,19 @@ func (m *Manager) validatePush(d *cluster.Dataset, req apiv0.CollectionPushReque
 		if f.Size < 0 || (f.Checksum != "" && f.URL == "") || (f.NoCopy && f.Path == "") {
 			return "", pushReq{}, invalid("file %q: checksum applies to url files, nocopy to path files, and size must not be negative", key)
 		}
+		if producer != "" && f.Path != "" {
+			return "", pushReq{}, apiv0.Errorf(apiv0.CodeForbidden, "file %q: a push token cannot name a path on the receiving node", key).
+				WithAction("upload the file (POST …/uploads) and push its CID, or give a URL")
+		}
 		switch {
 		case f.Upload != "":
 			c, err := cid.Parse(f.Upload)
 			if err != nil || c.Codec() != cid.Raw {
 				return "", pushReq{}, invalid("file %q: upload %q is not a blob CID", key, f.Upload)
+			}
+			if producer != "" && !m.uploadedBy(name, producer, c) {
+				return "", pushReq{}, apiv0.Errorf(apiv0.CodeNotFound, "file %q: upload %s is not one of this token's uploads to %q", key, c, name).
+					WithAction("upload the file first (POST …/uploads) with this token, then push within a day")
 			}
 			if _, ok, err := m.cfg.Store.Has(c); err != nil || !ok {
 				return "", pushReq{}, apiv0.Errorf(apiv0.CodeNotFound, "file %q: upload %s is not held", key, c).
@@ -473,11 +488,17 @@ func (m *Manager) unpinPush(r *pushRow) {
 // answered with the existing push (a failed one is retried); a different push while one
 // is in progress at the path is a conflict unless req.Replace.
 func (m *Manager) Push(name string, req apiv0.CollectionPushRequest) (*apiv0.CollectionPush, error) {
+	return m.PushAs(name, req, "")
+}
+
+// PushAs is Push for a remote producer identified by producer (its push token; "" is the
+// local API): see validatePush for what such a push may name.
+func (m *Manager) PushAs(name string, req apiv0.CollectionPushRequest, producer string) (*apiv0.CollectionPush, error) {
 	d, err := m.receiving(name)
 	if err != nil {
 		return nil, err
 	}
-	path, pr, err := m.validatePush(d, req)
+	path, pr, err := m.validatePush(name, d, req, producer)
 	if err != nil {
 		return nil, err
 	}
@@ -653,6 +674,12 @@ func (m *Manager) Pushes(name, since string, limit int) (*apiv0.Page[apiv0.Colle
 
 // Upload stores a blob for a later push (BLAKE3; size -1 when unknown).
 func (m *Manager) Upload(name string, r io.Reader, size int64) (*apiv0.CollectionUpload, error) {
+	return m.UploadAs(name, r, size, "")
+}
+
+// UploadAs is Upload for a remote producer ("" is the local API); the upload is recorded
+// so that producer's pushes to name may name it (validatePush).
+func (m *Manager) UploadAs(name string, r io.Reader, size int64, producer string) (*apiv0.CollectionUpload, error) {
 	if _, err := m.receiving(name); err != nil {
 		return nil, err
 	}
@@ -660,11 +687,28 @@ func (m *Manager) Upload(name string, r io.Reader, size int64) (*apiv0.Collectio
 	if err != nil {
 		return nil, err
 	}
+	if producer != "" {
+		now := m.now().UnixMilli()
+		if _, err := m.db.Exec(`INSERT INTO uploads (ds, producer, cid, ms) VALUES (?, ?, ?, ?)
+			ON CONFLICT (ds, producer, cid) DO UPDATE SET ms = excluded.ms`, name, producer, c.Bytes(), now); err != nil {
+			return nil, err
+		}
+		if _, err := m.db.Exec(`DELETE FROM uploads WHERE ds = ? AND ms < ?`, name, now-UploadTTL.Milliseconds()); err != nil {
+			return nil, err
+		}
+	}
 	info, _, err := m.cfg.Store.Has(c)
 	if err != nil {
 		return nil, err
 	}
 	return &apiv0.CollectionUpload{CID: c.String(), Size: int64(info.Size)}, nil
+}
+
+// uploadedBy reports whether producer uploaded c to collection ds within UploadTTL.
+func (m *Manager) uploadedBy(ds, producer string, c cid.CID) bool {
+	var ms int64
+	err := m.db.QueryRow(`SELECT ms FROM uploads WHERE ds = ? AND producer = ? AND cid = ?`, ds, producer, c.Bytes()).Scan(&ms)
+	return err == nil && ms >= m.now().UnixMilli()-UploadTTL.Milliseconds()
 }
 
 // ingestLoop stores the files of accepted pushes, a few pushes at a time.

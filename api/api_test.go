@@ -93,12 +93,22 @@ func TestLoopbackProtections(t *testing.T) {
 		}
 	}
 
-	// A GET with a foreign Origin is harmless (no CORS headers, so the page cannot read it)
-	// and must reach the handler.
-	res, env := do(t, srv, http.MethodGet, apiv0.Prefix+"/status", map[string]string{"Origin": "http://evil.example"})
-	if res.StatusCode != http.StatusOK || env.Error != nil {
-		t.Errorf("GET with foreign origin: status %d env %+v", res.StatusCode, env.Error)
+	// N8 (0077): GET/HEAD are refused cross-site too (/cat, /ls and /resolve fetch and
+	// store); a same-origin or user-initiated (none) GET and a CLI GET reach the handler.
+	for _, hdr := range []map[string]string{{"Origin": "http://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
+		{"Sec-Fetch-Site": "same-site"}, {"Origin": "http://127.0.0.1:8171"}, {"Origin": "null"}} {
+		for _, m := range []string{http.MethodGet, http.MethodHead} {
+			if res, _ := do(t, srv, m, apiv0.Prefix+"/status", hdr); res.StatusCode != http.StatusForbidden {
+				t.Errorf("%s with %v: status %d, want 403", m, hdr, res.StatusCode)
+			}
+		}
 	}
+	for _, hdr := range []map[string]string{nil, {"Sec-Fetch-Site": "none"}, {"Sec-Fetch-Site": "same-origin", "Origin": "http://127.0.0.1:" + port}} {
+		if res, env := do(t, srv, http.MethodGet, apiv0.Prefix+"/status", hdr); res.StatusCode != http.StatusOK || env.Error != nil {
+			t.Errorf("GET with %v: status %d env %+v", hdr, res.StatusCode, env.Error)
+		}
+	}
+	res, _ := do(t, srv, http.MethodGet, apiv0.Prefix+"/status", nil)
 	if h := res.Header; h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Cache-Control") != "no-store" || h.Get("Set-Cookie") != "" {
 		t.Errorf("response headers: %s", h)
 	}

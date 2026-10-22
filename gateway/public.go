@@ -122,7 +122,8 @@ content identifier (CID); there is no index.</p>
 // Limit bounds concurrent requests on the public listener: total in flight and per
 // client address (from RemoteAddr; behind a reverse proxy that is the proxy's address,
 // so the per-address bound then acts as a second global one). Excess requests are
-// answered 503 with Retry-After before any content work. Zero values use the defaults.
+// answered 503 with Retry-After before any content work. A response whose client stops
+// reading is cut off after StallTimeout. Zero values use the defaults.
 func Limit(h http.Handler, total, perIP int) http.Handler {
 	if total <= 0 {
 		total = DefaultMaxRequests
@@ -178,8 +179,27 @@ func (l *limiter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		l.mu.Unlock()
 	}()
-	l.h.ServeHTTP(w, r)
+	l.h.ServeHTTP(&stallWriter{ResponseWriter: w, rc: http.NewResponseController(w)}, r)
 }
+
+// StallTimeout is how long a public response may wait for the client to take the next
+// write before the connection is closed (a minimum read rate of one ~32 KiB write per
+// StallTimeout), so slow readers cannot hold the limiter's slots indefinitely (0077).
+var StallTimeout = 30 * time.Second
+
+// stallWriter extends the write deadline before each write.
+type stallWriter struct {
+	http.ResponseWriter
+	rc *http.ResponseController
+}
+
+func (s *stallWriter) Write(b []byte) (int, error) {
+	_ = s.rc.SetWriteDeadline(time.Now().Add(StallTimeout))
+	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the connection's writer.
+func (s *stallWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func busy(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "2")

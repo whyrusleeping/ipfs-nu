@@ -58,12 +58,27 @@ func (n *Local) httpClient() *httpsrc.Client {
 	return httpsrc.New(cfg)
 }
 
+type producerKey struct{}
+
+// WithProducer marks ctx as carrying a remote producer's push (the producer listener):
+// id names its push token. Such pushes cannot name local paths and may only name the
+// producer's own uploads to the collection (collection.Manager.PushAs).
+func WithProducer(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, producerKey{}, id)
+}
+
+// producerOf is the WithProducer id, "" for the local API.
+func producerOf(ctx context.Context) string {
+	id, _ := ctx.Value(producerKey{}).(string)
+	return id
+}
+
 func (n *Local) CollectionPush(ctx context.Context, name string, req apiv0.CollectionPushRequest, wait time.Duration) (*apiv0.CollectionPush, error) {
 	m, err := n.collections()
 	if err != nil {
 		return nil, err
 	}
-	p, err := m.Push(name, req)
+	p, err := m.PushAs(name, req, producerOf(ctx))
 	if err != nil || wait <= 0 {
 		return p, err
 	}
@@ -82,7 +97,7 @@ func (n *Local) CollectionPushBatch(ctx context.Context, name string, reqs []api
 	out := make([]apiv0.CollectionPushBatchLine, 0, len(reqs))
 	for i, req := range reqs {
 		l := apiv0.CollectionPushBatchLine{Line: i + 1, Path: req.Path}
-		if l.Push, err = m.Push(name, req); err != nil {
+		if l.Push, err = m.PushAs(name, req, producerOf(ctx)); err != nil {
 			l.Error = asError(err)
 		}
 		out = append(out, l)
@@ -124,6 +139,6 @@ func (n *Local) CollectionUpload(ctx context.Context, name string, r io.Reader, 
 	if err != nil {
 		return nil, err
 	}
-	u, err := m.Upload(name, r, size)
+	u, err := m.UploadAs(name, r, size, producerOf(ctx))
 	return u, apiErr(err)
 }

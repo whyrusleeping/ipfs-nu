@@ -53,8 +53,10 @@ func TestInterruptedUpgrade(t *testing.T) {
 	}
 	dir := t.TempDir()
 	db := rawDB(t, dir)
+	// Start before migration 3 (partials.held) so the resumed upgrade has data to fill;
+	// the child completes 3 and dies inside the last one.
 	prev := len(migrations) - 1
-	if err := migrateTo(db, prev); err != nil {
+	if err := migrateTo(db, 2); err != nil {
 		t.Fatal(err)
 	}
 	groups := []byte{0b101}

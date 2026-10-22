@@ -161,6 +161,20 @@ func (n *Local) PrivateNetwork() bool {
 	return c != nil && (c.Mode() == cluster.ModePrivate || c.Mode() == cluster.ModeIsolated)
 }
 
+// publicListenerConflict refuses to make this node a member of a private or isolated
+// cluster while its public listener runs (P3 at runtime, 0077): the daemon refuses the
+// listener on such a member at start, and joining must not get around that.
+func (n *Local) publicListenerConflict(mode string) error {
+	if mode != cluster.ModePrivate && mode != cluster.ModeIsolated {
+		return nil
+	}
+	if o := n.PublicOrigin(); o != "" {
+		return apiv0.Errorf(apiv0.CodeConflict, "this node runs the public listener (%s); a %s cluster's content is members-only", o, mode).
+			WithAction("clear public.listen (`" + nu.Name + " config set public.listen '\"\"'`) and restart the daemon first; public serving needs reader authentication, which this build does not have (P3)")
+	}
+	return nil
+}
+
 // AttachNetwork plugs a running swarm in: it becomes the Fetcher/Net users of the node
 // see, and the networked cluster's service (if any) starts on it.
 func (n *Local) AttachNetwork(sw ClusterNet) error {
@@ -293,6 +307,9 @@ func (n *Local) ClusterInit(ctx context.Context, req apiv0.ClusterInitRequest) (
 	}
 	if req.Name == "" || len(req.Name) > 64 {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "a cluster name of 1 to 64 bytes is required")
+	}
+	if err := n.publicListenerConflict(req.Mode); err != nil {
+		return nil, err
 	}
 	cs := &n.clusters
 	cs.mu.Lock()
@@ -446,6 +463,9 @@ func (n *Local) ClusterJoin(ctx context.Context, req apiv0.ClusterJoinRequest) (
 	if tok.Peer != "" && tok.Peer != n.PeerID() {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "the invite is for peer %s, not this node (%s)", tok.Peer.Base36(), n.PeerID().Base36()).
 			WithAction("ask for an invite with `--peer " + n.PeerID().Base36() + "`, or a secret invite")
+	}
+	if err := n.publicListenerConflict(tok.Genesis.Mode); err != nil {
+		return nil, err
 	}
 	cs := &n.clusters
 	cs.mu.Lock()

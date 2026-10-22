@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,24 +81,28 @@ func (f *fakeContent) Open(ctx context.Context, info *Info) (File, error) {
 	return nil, apiv0.Errorf(apiv0.CodeNotFound, "no bytes for %s", info.CID)
 }
 
+// List yields in name order, as Content requires.
 func (f *fakeContent) List(ctx context.Context, info *Info) iter.Seq2[Entry, error] {
 	return func(yield func(Entry, error) bool) {
 		prefix := ""
 		if info.Name != "" {
 			prefix = info.Name + "/"
 		}
+		var out []Entry
 		for p, ff := range f.files {
 			if rest, ok := strings.CutPrefix(p, prefix); ok && !strings.Contains(rest, "/") {
-				if !yield(Entry{Name: rest, Kind: ff.kind, CID: ff.cid, Size: int64(len(ff.data))}, nil) {
-					return
-				}
+				out = append(out, Entry{Name: rest, Kind: ff.kind, CID: ff.cid, Size: int64(len(ff.data))})
 			}
 		}
 		for d := range f.dirs {
 			if rest, ok := strings.CutPrefix(d, prefix); ok && d != "" && !strings.Contains(rest, "/") {
-				if !yield(Entry{Name: rest, Kind: KindDir, CID: fakeCID(9)}, nil) {
-					return
-				}
+				out = append(out, Entry{Name: rest, Kind: KindDir, CID: fakeCID(9)})
+			}
+		}
+		slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
+		for _, e := range out {
+			if !yield(e, nil) {
+				return
 			}
 		}
 	}
@@ -138,6 +143,12 @@ func TestGatewayOrigins(t *testing.T) {
 		!strings.Contains(body, "42 bytes") || !strings.Contains(body, "symlink") || res.Header.Get("Content-Security-Policy") == "" {
 		t.Fatalf("listing: %d %s\n%s", res.StatusCode, res.Header, body)
 	}
+	// N48: loopback responses (content and errors) cannot be embedded cross-site.
+	for _, p := range []string{"/tree/" + f.root + "/", "/tree/" + f.root + "/notes.txt", "/tree/" + fakeCID(7) + "/"} {
+		if res, _ := get(t, srv, "", p, nil); res.Header.Get("Cross-Origin-Resource-Policy") != "same-site" {
+			t.Fatalf("%s: no CORP: %s", p, res.Header)
+		}
+	}
 	// Missing trailing slash on a directory redirects.
 	if res, _ := get(t, srv, "", "/tree/"+f.root, nil); res.StatusCode != 301 {
 		t.Fatalf("dir without slash: %d", res.StatusCode)
@@ -174,6 +185,13 @@ func TestGatewayOrigins(t *testing.T) {
 	}
 	if res, _ := get(t, srv, site, "/sub/../index.html", nil); res.StatusCode != 400 {
 		t.Fatalf("traversal: %d", res.StatusCode)
+	}
+	// N15 on the bare origin too (0077): 400, never a cleaning redirect.
+	for _, p := range []string{"/tree/" + f.root + "/sub/../index.html", "/tree/" + f.root + "/./notes.txt", "/tree/" + f.root + "/..",
+		"/blob/../tree/" + f.root + "/", "/tree/" + f.root + "/%2e%2e/x"} {
+		if res, _ := get(t, srv, "", p, nil); res.StatusCode != 400 || res.Header.Get("Location") != "" {
+			t.Fatalf("bare-origin %s: %d %q", p, res.StatusCode, res.Header.Get("Location"))
+		}
 	}
 	// A directory named like a host must not turn "//evil.example" into a redirect off
 	// this origin; empty segments are refused outright.

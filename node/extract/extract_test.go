@@ -136,6 +136,36 @@ func TestExtractSafety(t *testing.T) {
 	if entries, _ := os.ReadDir(victimDir); len(entries) != 0 {
 		t.Fatalf("wrote through a symlink: %v", entries)
 	}
+
+	// X1 is all-or-nothing (0077): an unsafe path late in the walk means nothing at all
+	// is written, not the entries before it.
+	fresh := filepath.Join(t.TempDir(), "fresh")
+	if _, err := Extract(ctx, fresh, walkOf(Entry{Path: "", Kind: KindDir}, file("good.txt", "x", 0), file("z\\..\\evil", "x", 0))); !isUnsafe(err) {
+		t.Fatalf("late unsafe path: %v", err)
+	}
+	if _, err := os.Lstat(fresh); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("something was written before the unsafe path was refused: %v", err)
+	}
+
+	// TOCTOU: a directory swapped for a symlink after the checks (here, while the file's
+	// bytes are opened) still cannot redirect the write: it goes through an os.Root.
+	race := filepath.Join(t.TempDir(), "race")
+	victim2 := t.TempDir()
+	swap := file("d/x", "x", 0)
+	open := swap.Open
+	swap.Open = func(ctx context.Context) (io.ReadCloser, error) {
+		os.Remove(filepath.Join(race, "d"))
+		if err := os.Symlink(victim2, filepath.Join(race, "d")); err != nil {
+			t.Fatal(err)
+		}
+		return open(ctx)
+	}
+	if _, err := Extract(ctx, race, walkOf(Entry{Path: "", Kind: KindDir}, Entry{Path: "d", Kind: KindDir}, swap)); err == nil {
+		t.Fatal("write through a swapped-in symlink succeeded")
+	}
+	if entries, _ := os.ReadDir(victim2); len(entries) != 0 {
+		t.Fatalf("wrote through a swapped-in symlink: %v", entries)
+	}
 }
 
 func isUnsafe(err error) bool {

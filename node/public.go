@@ -40,8 +40,10 @@ type publicState struct {
 	mu sync.RWMutex
 	// domain is the public listener's domain ("" when none runs in this process).
 	domain string
-	// objects is every object under a public root; nil until EnablePublic.
-	objects map[cid.Multihash]struct{}
+	// objects is every object under a public root, keyed by full CID (codec included:
+	// a raw file's multihash under the DRISL codec is a different object, 0077 N42); nil
+	// until EnablePublic.
+	objects map[cid.CID]struct{}
 }
 
 func publicPin(c cid.CID) store.Pin {
@@ -66,19 +68,19 @@ func (n *Local) EnablePublic(ctx context.Context, domain string) (gateway.Public
 }
 
 // walkPublic collects every object under the public pins.
-func (n *Local) walkPublic(ctx context.Context) (map[cid.Multihash]struct{}, error) {
+func (n *Local) walkPublic(ctx context.Context) (map[cid.CID]struct{}, error) {
 	pins, err := n.Store.Pins()
 	if err != nil {
 		return nil, err
 	}
-	objects := map[cid.Multihash]struct{}{}
+	objects := map[cid.CID]struct{}{}
 	for _, p := range pins {
 		if p.Source != store.SourcePublic {
 			continue
 		}
 		if _, err := n.Store.Walk(ctx, p, func(c cid.CID, held bool) error {
 			if held {
-				objects[c.Multihash()] = struct{}{}
+				objects[c] = struct{}{}
 			}
 			return nil
 		}); err != nil {
@@ -89,7 +91,7 @@ func (n *Local) walkPublic(ctx context.Context) (map[cid.Multihash]struct{}, err
 }
 
 // PublicServes reports whether the public listener may serve c: it is under a public
-// root and the listener is enabled. It is gateway.PublicOptions.Serves.
+// root (as this exact CID, codec included) and the listener is enabled. It is gateway.PublicOptions.Serves.
 func (n *Local) PublicServes(s string) bool {
 	c, err := cid.Parse(s)
 	if err != nil {
@@ -101,7 +103,7 @@ func (n *Local) PublicServes(s string) bool {
 	if ps.objects == nil {
 		return false
 	}
-	_, ok := ps.objects[c.Multihash()]
+	_, ok := ps.objects[c]
 	return ok
 }
 
@@ -194,10 +196,10 @@ func (n *Local) PublicAdd(ctx context.Context, req apiv0.PublicRequest) (*apiv0.
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is not a tree, file or blob", c)
 	}
 	p := publicPin(c)
-	var objects []cid.Multihash
+	var objects []cid.CID
 	st, err := n.Store.Walk(ctx, p, func(c cid.CID, held bool) error {
 		if held {
-			objects = append(objects, c.Multihash())
+			objects = append(objects, c)
 		}
 		return nil
 	})
@@ -213,8 +215,8 @@ func (n *Local) PublicAdd(ctx context.Context, req apiv0.PublicRequest) (*apiv0.
 	ps := &n.public
 	ps.mu.Lock()
 	if ps.objects != nil {
-		for _, m := range objects {
-			ps.objects[m] = struct{}{}
+		for _, o := range objects {
+			ps.objects[o] = struct{}{}
 		}
 	}
 	ps.mu.Unlock()

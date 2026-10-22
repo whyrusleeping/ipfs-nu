@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The public listener (0043; operations.md P1–P6, N28/N29): Host must be the domain or
@@ -15,7 +19,8 @@ func TestPublicListener(t *testing.T) {
 	f := newFake()
 	notes, index := f.files["notes.txt"].cid, f.files["index.html"].cid
 	public := map[string]bool{f.root: true, notes: true, index: true}
-	h := NewPublic(objectContent{f}, PublicOptions{Domain: "seed.example", Serves: func(c string) bool { return public[c] }})
+	lookups := 0
+	h := NewPublic(namedContent{objectContent{f}, f.root, &lookups}, PublicOptions{Domain: "seed.example", Serves: func(c string) bool { return public[c] }})
 	srv := httptest.NewTLSServer(h)
 	defer srv.Close()
 	srv.Client().CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -53,7 +58,8 @@ func TestPublicListener(t *testing.T) {
 		!strings.Contains(res.Header.Get("Link"), "<https://"+site+"/index.html>") || res.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("active on public bare origin: %d %s", res.StatusCode, res.Header)
 	}
-	if res, body := get(t, srv, "seed.example", "/tree/"+f.root+"/notes.txt", map[string]string{"Range": "bytes=2-4"}); res.StatusCode != 206 || body != "234" {
+	if res, body := get(t, srv, "seed.example", "/tree/"+f.root+"/notes.txt", map[string]string{"Range": "bytes=2-4"}); res.StatusCode != 206 || body != "234" ||
+		res.Header.Get("Cross-Origin-Resource-Policy") != "" { // public content may be embedded anywhere
 		t.Fatalf("range: %d %q", res.StatusCode, body)
 	}
 	// Site origin renders index.html; no CORS, no cookies; directory redirect stays on the origin.
@@ -73,11 +79,15 @@ func TestPublicListener(t *testing.T) {
 	if res, _ := get(t, srv, "seed.example", "/.well-known/rasl/"+photo, nil); res.StatusCode != 404 || res.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("rasl private: %d %s", res.StatusCode, res.Header)
 	}
-	// P1/N28: no API; P4: no /at/; only GET/HEAD.
-	for _, p := range []string{"/api/v0/status", "/api/", "/at/did:plc:abc/", "/at/did:plc:abc"} {
-		if res, _ := get(t, srv, "seed.example", p, nil); res.StatusCode != 404 {
-			t.Fatalf("%s on public listener: %d", p, res.StatusCode)
+	// P1/N28: no API; P4: no /at/, and (N44) no /c/ or /nu/: they would reveal dataset
+	// roots (X-Nu-Root) and resolve names live for anonymous clients.
+	for _, p := range []string{"/api/v0/status", "/api/", "/at/did:plc:abc/", "/at/did:plc:abc", "/c/lab", "/c/lab/x", "/nu/alice.example/site", "/nu/alice.example/site/x"} {
+		if res, _ := get(t, srv, "seed.example", p, nil); res.StatusCode != 404 || res.Header.Get("X-Nu-Root") != "" {
+			t.Fatalf("%s on public listener: %d %s", p, res.StatusCode, res.Header)
 		}
+	}
+	if lookups != 0 {
+		t.Fatalf("public listener resolved %d datasets/names", lookups)
 	}
 	for _, m := range []string{http.MethodPost, http.MethodOptions, http.MethodDelete} {
 		req, _ := http.NewRequest(m, srv.URL+"/tree/"+f.root+"/", nil)
@@ -154,5 +164,85 @@ func TestParseDomain(t *testing.T) {
 		if got, err := ParseDomain(in); err == nil {
 			t.Fatalf("%q accepted as %q", in, got)
 		}
+	}
+}
+
+// namedContent adds dataset and name lookups (always resolving to root) to the fake.
+type namedContent struct {
+	objectContent
+	root    string
+	lookups *int
+}
+
+func (n namedContent) ResolveDataset(ctx context.Context, name, version string) (string, error) {
+	*n.lookups++
+	return n.root, nil
+}
+
+func (n namedContent) ResolveName(ctx context.Context, authority, name string, held bool) (string, string, error) {
+	*n.lookups++
+	return n.root, "pds", nil
+}
+
+// Public listener bounds (0077 item 6, N46): a Range of more than MaxRangeParts parts is
+// answered whole; listings are paged (MaxListingRows, ?from=) with a per-page ETag that
+// revalidates to 304 (G9); a client that stops reading is cut off after StallTimeout.
+func TestPublicBounds(t *testing.T) {
+	f := newFake()
+	h := NewPublic(objectContent{f}, PublicOptions{Domain: "seed.example", Serves: func(c string) bool { return c == f.root }})
+	srv := httptest.NewServer(Limit(h, 0, 0))
+	defer srv.Close()
+	notes := "/tree/" + f.root + "/notes.txt"
+	if res, _ := get(t, srv, "seed.example", notes, map[string]string{"Range": "bytes=0-0,2-2"}); res.StatusCode != 206 {
+		t.Fatalf("two ranges: %d", res.StatusCode)
+	}
+	many := "bytes=0-0" + strings.Repeat(",1-1", MaxRangeParts)
+	if res, body := get(t, srv, "seed.example", notes, map[string]string{"Range": many}); res.StatusCode != 200 || body != "0123456789" {
+		t.Fatalf("%d ranges: %d %q", MaxRangeParts+1, res.StatusCode, body)
+	}
+
+	old := MaxListingRows
+	MaxListingRows = 2
+	t.Cleanup(func() { MaxListingRows = old })
+	dir := "/tree/" + f.root + "/"
+	res, body := get(t, srv, "seed.example", dir, nil)
+	// Root entries in name order: "bad\x00name", "evil.example", "index.html", "link", ...
+	if res.StatusCode != 200 || !strings.Contains(body, "evil.example") || strings.Contains(body, ">index.html<") ||
+		!strings.Contains(body, `href="?from=index.html"`) || res.Header.Get("ETag") != `"`+fakeCID(9)+`"` {
+		t.Fatalf("first page: %d %s\n%s", res.StatusCode, res.Header, body)
+	}
+	res2, body := get(t, srv, "seed.example", dir+"?from=index.html", nil)
+	if res2.StatusCode != 200 || !strings.Contains(body, ">index.html<") || !strings.Contains(body, ">link<") || strings.Contains(body, "evil.example") ||
+		res2.Header.Get("ETag") == "" || res2.Header.Get("ETag") == res.Header.Get("ETag") {
+		t.Fatalf("second page: %d %s\n%s", res2.StatusCode, res2.Header, body)
+	}
+	if res, _ := get(t, srv, "seed.example", dir, map[string]string{"If-None-Match": res.Header.Get("ETag")}); res.StatusCode != 304 {
+		t.Fatalf("listing If-None-Match: %d", res.StatusCode)
+	}
+
+	oldStall := StallTimeout
+	StallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { StallTimeout = oldStall })
+	werr := make(chan error, 1)
+	big := httptest.NewServer(Limit(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chunk := make([]byte, 32<<10)
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				werr <- err
+				return
+			}
+		}
+	}), 0, 0))
+	defer big.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(big.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: x\r\n\r\n") // and never read
+	select {
+	case <-werr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a stalled reader held the response past StallTimeout")
 	}
 }

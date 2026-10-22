@@ -203,23 +203,23 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// checkOrigin rejects state-changing requests that a browser attributes to another
-// origin or site. Loopback pages (the gateway) are a different origin and are rejected
-// too: a fetched page must not gain daemon privileges.
+// checkOrigin rejects every request that a browser attributes to another origin or
+// site, whatever the method: GET/HEAD routes such as /cat, /ls and /resolve fetch,
+// resolve and store content, so a cross-site <img> or navigation must not reach them
+// either (0077). Loopback pages (the gateway) are a different origin and are rejected
+// too: a fetched page must not gain daemon privileges. Non-browser clients send neither
+// header.
 func checkOrigin(r *http.Request) error {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead:
-		return nil
-	case http.MethodOptions:
+	if r.Method == http.MethodOptions {
 		return forbidden("cross-origin requests are not allowed")
 	}
 	if o := r.Header.Get("Origin"); o != "" {
 		if !strings.EqualFold(o, "http://"+r.Host) {
-			return forbidden("origin %q may not change daemon state", o)
+			return forbidden("origin %q may not use the daemon API", o)
 		}
 	}
 	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" && sfs != "none" {
-		return forbidden("%s requests may not change daemon state", sfs)
+		return forbidden("%s requests may not use the daemon API", sfs)
 	}
 	return nil
 }

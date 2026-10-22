@@ -207,7 +207,12 @@ func (n *Local) walkNode(ctx context.Context, p string, nd *content.Node, prog *
 			if err != nil {
 				return yield(extract.Entry{}, err)
 			}
-			if !n.walkNode(ctx, path.Join(p, child.Name), child, prog, yield) {
+			// Joined unclean, so extract.Extract's X1 check sees the name as stored.
+			cp := child.Name
+			if p != "" {
+				cp = p + "/" + child.Name
+			}
+			if !n.walkNode(ctx, cp, child, prog, yield) {
 				return false
 			}
 		}

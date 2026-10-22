@@ -14,6 +14,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -76,12 +78,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if h.pub == nil {
+		// Only loopback pages (site origins, the bare origin) may embed loopback
+		// responses: another site cannot probe what the node holds with <img>/<script>
+		// load and error events (0077). Navigations are unaffected.
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "method %s is not allowed", r.Method))
 		return
 	}
-	// An empty segment is refused before the mux could clean and redirect it (G6).
-	if strings.Contains(r.URL.Path, "//") {
+	// An empty, ".", ".." or NUL segment is refused before the mux could clean and
+	// redirect it (G6, G8; 0077: the bare origin redirected "/tree/<cid>/a/../b").
+	if strings.Contains(r.URL.Path, "//") || badSegment(r.URL.Path) {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid path %q", r.URL.Path))
 		return
 	}
@@ -91,6 +100,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.mux.ServeHTTP(w, r)
+}
+
+// badSegment reports a ".", ".." or NUL segment in an (unescaped) request path.
+func badSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." || strings.ContainsRune(seg, 0) {
+			return true
+		}
+	}
+	return false
 }
 
 type ctxKey struct{}
@@ -317,6 +336,37 @@ func validatePath(p string) error {
 // immutableCache marks CID-addressed responses as cacheable forever.
 const immutableCache = "public, max-age=31536000, immutable"
 
+// MaxRangeParts bounds a Range header: a request with more parts is answered whole
+// (200), as RFC 9110 allows, so a client cannot make one small file a large multipart
+// response (0077).
+const MaxRangeParts = 16
+
+// MaxListingRows bounds one listing page; `?from=<name>` continues at that name.
+var MaxListingRows = 1000
+
+// boundRange drops a Range header with more than MaxRangeParts parts.
+func boundRange(r *http.Request) {
+	if rg := r.Header.Get("Range"); rg != "" && strings.Count(rg, ",") >= MaxRangeParts {
+		r.Header.Del("Range")
+	}
+}
+
+// notModified answers 304 when If-None-Match names etag (or *).
+func notModified(w http.ResponseWriter, r *http.Request, etag string) bool {
+	inm := r.Header.Get("If-None-Match")
+	if inm == "" {
+		return false
+	}
+	for _, t := range strings.Split(inm, ",") {
+		t = strings.TrimPrefix(strings.TrimSpace(t), "W/")
+		if t == etag || t == "*" {
+			w.WriteHeader(http.StatusNotModified)
+			return true
+		}
+	}
+	return false
+}
+
 // serveFile serves bytes with Range support. On the bare origin only inline-safe types
 // are shown inline; everything else is a download with a link to the site origin.
 func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, site bool) {
@@ -351,6 +401,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, 
 			hdr.Set("Link", "<"+u+">; rel=\"alternate\"")
 		}
 	}
+	boundRange(r)
 	// An empty name keeps ServeContent from guessing a type by extension.
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
@@ -443,6 +494,9 @@ type listingData struct {
 	SiteURL string
 	Parent  bool
 	Rows    []listingRow
+	// Next is the query of the next page ("" on the last), From this page's start.
+	Next string
+	From string
 }
 
 var listingPage = template.Must(template.New("listing").Parse(`<!doctype html>
@@ -455,17 +509,44 @@ var listingPage = template.Must(template.New("listing").Parse(`<!doctype html>
 {{if .Parent}}<tr><td><a href="../">../</a></td><td>dir</td><td></td><td></td></tr>{{end}}
 {{range .Rows}}<tr><td>{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</td><td>{{.Kind}}</td><td class="n">{{.Size}}</td><td><code>{{.CID}}</code></td></tr>
 {{end}}</table>
+{{if .Next}}<p><a href="{{.Next}}">more entries…</a></p>{{end}}
 `))
 
+// serveListing serves one page of a directory listing: at most MaxListingRows entries
+// from the name in ?from= (G8/G9, 0077). The ETag names the directory and the page.
 func (h *Handler) serveListing(w http.ResponseWriter, r *http.Request, root, p string, info *Info, site bool) {
-	data := listingData{Name: nu.Name, Root: root, Path: p, CID: info.CID, Size: info.Size, Site: site, Parent: p != ""}
+	from := r.URL.Query().Get("from")
+	data := listingData{Name: nu.Name, Root: root, Path: p, CID: info.CID, Size: info.Size, Site: site, Parent: p != "", From: from}
 	if !site {
 		data.SiteURL = reqInfo(r).siteURL(r.URL.EscapedPath())
 	}
-	for e, err := range h.content.List(r.Context(), info) {
+	etag := `"` + info.CID + `"`
+	if from != "" {
+		sum := sha256.Sum256([]byte(from))
+		etag = `"` + info.CID + "." + hex.EncodeToString(sum[:8]) + `"`
+	}
+	hdr := w.Header()
+	hdr.Set("ETag", etag)
+	hdr.Set("Cache-Control", immutableCache)
+	if notModified(w, r, etag) {
+		return
+	}
+	entries := h.content.List(r.Context(), info)
+	if pc, ok := h.content.(PagedContent); ok && from != "" {
+		entries = pc.ListFrom(r.Context(), info, from)
+	}
+	for e, err := range entries {
 		if err != nil {
+			hdr.Del("ETag")
 			writeError(w, err)
 			return
+		}
+		if e.Name < from {
+			continue
+		}
+		if len(data.Rows) == MaxListingRows {
+			data.Next = "?" + url.Values{"from": {e.Name}}.Encode()
+			break
 		}
 		row := listingRow{Name: e.Name, Kind: e.Kind, Size: e.Size, CID: e.CID}
 		// Symlinks and unsafe names are shown but not linked.
@@ -477,10 +558,8 @@ func (h *Handler) serveListing(w http.ResponseWriter, r *http.Request, root, p s
 		}
 		data.Rows = append(data.Rows, row)
 	}
-	hdr := w.Header()
 	hdr.Set("Content-Type", "text/html; charset=utf-8")
 	hdr.Set("Content-Security-Policy", listingCSP)
-	hdr.Set("Cache-Control", immutableCache)
 	if r.Method == http.MethodHead {
 		return
 	}

@@ -190,6 +190,11 @@ var migrations = []migration{
 	CREATE TRIGGER usage_partials_u AFTER UPDATE OF held ON partials BEGIN
 		UPDATE usage SET bytes = bytes + new.held - old.held WHERE class = 'partials'; END;`,
 		post: migrateHeld},
+	// 4: the second codec a block was stored under (0 when none). A block row is keyed by
+	// multihash; the same bytes may be a raw blob and a DRISL node, and a DRISL read is
+	// served only from bytes stored as DRISL (0077: a raw file's bytes read as DRISL would
+	// be a node with links nobody published).
+	{sql: `ALTER TABLE blocks ADD COLUMN alt INTEGER NOT NULL DEFAULT 0;`},
 }
 
 // migrateHeld fills partials.held from the group bitmaps (migration 3).
@@ -305,18 +310,29 @@ type Info struct {
 	Physical uint64
 }
 
-// Has reports whether the store holds the object with c's multihash. A --nocopy blob whose
-// source changed is re-verified and, if it no longer matches, reported absent.
+// Has reports whether the store holds the object with c's multihash. A raw CID is held
+// by multihash (any stored bytes read as raw bytes); a DRISL CID is held only when the
+// bytes were stored as DRISL (codecMatch). A --nocopy blob whose source changed is
+// re-verified and, if it no longer matches, reported absent.
 func (s *Store) Has(c cid.CID) (Info, bool, error) {
 	m := c.Multihash()
-	var codec int
+	var codec, alt int
 	var size int64
-	err := s.db.QueryRow(`SELECT codec, length(data) FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&codec, &size)
+	err := s.db.QueryRow(`SELECT codec, alt, length(data) FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&codec, &alt, &size)
 	if err == nil {
-		return Info{Codec: cid.Codec(codec), Size: uint64(size), Complete: true, Physical: uint64(size)}, true, nil
+		if codecMatch(c.Codec(), codec, alt) {
+			if alt == int(c.Codec()) {
+				codec = alt
+			}
+			return Info{Codec: cid.Codec(codec), Size: uint64(size), Complete: true, Physical: uint64(size)}, true, nil
+		}
+		return Info{}, false, nil // raw bytes asked for as DRISL; blobs and partials are raw only
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Info{}, false, err
+	}
+	if c.Codec() != cid.Raw {
+		return Info{}, false, nil // the blob tables hold raw bytes only
 	}
 	row, err := s.blobRow(m)
 	if err == nil {
@@ -349,14 +365,23 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 }
 
 // Get returns a block held in the database: DRISL structure or a small inline blob. It
-// implements mst.Store together with Put.
+// implements mst.Store together with Put. A DRISL CID whose bytes were stored only as a
+// raw blob is ErrNotFound (codecMatch): content-addressed bytes are the same, but their
+// interpretation as a node with links was never vouched for (0077).
 func (s *Store) Get(c cid.CID) ([]byte, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM blocks WHERE mh = ?`, mhKey(c.Multihash())).Scan(&data)
-	if errors.Is(err, sql.ErrNoRows) {
+	var codec, alt int
+	err := s.db.QueryRow(`SELECT data, codec, alt FROM blocks WHERE mh = ?`, mhKey(c.Multihash())).Scan(&data, &codec, &alt)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !codecMatch(c.Codec(), codec, alt) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, c)
 	}
 	return data, err
+}
+
+// codecMatch reports whether a block row stored under codec (and alt, 0 for none) may be
+// read as want: raw reads any bytes; DRISL needs the bytes stored as DRISL.
+func codecMatch(want cid.Codec, codec, alt int) bool {
+	return want == cid.Raw || codec == int(want) || alt == int(want)
 }
 
 // Put verifies and stores a whole object. Large BLAKE3 raw blobs go to the blob store.
@@ -403,7 +428,9 @@ func (s *Store) putBlockAs(codec cid.Codec, m cid.Multihash, data []byte, state 
 	}
 	s.gcMu.RLock()
 	defer s.gcMu.RUnlock()
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, ?)`,
+	// The same bytes stored under the other codec record it as alt (Get, codecMatch).
+	_, err := s.db.Exec(`INSERT INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, ?)
+		ON CONFLICT (mh) DO UPDATE SET alt = excluded.codec WHERE blocks.codec != excluded.codec AND blocks.alt = 0`,
 		mhKey(m), int(codec), data, s.nowUnix())
 	return err
 }

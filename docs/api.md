@@ -600,14 +600,22 @@ every request, so rotation and revocation apply immediately. Producers run
 `NU_API_TOKEN`). The loopback API stays unauthenticated (A1–A7), and `api.listen` is still
 refused off loopback.
 
+A token push is a remote producer's, so it cannot reach the receiving node's own data
+(0077): a `{path}` file (with or without `nocopy`) is `forbidden` before the path is looked
+at (no existence oracle), and an `{upload}` file must name a blob this same token uploaded
+to this collection within the last 24 hours (`not_found` otherwise, also for any other CID
+the node holds). Uploads are scoped by the token's secret, so a rotated token starts with
+none. Only the loopback API may push local paths or reuse arbitrary held blobs.
+
 ## Loopback protections
 
 Mechanics of rules A1–A7 of the [security contract](operations.md#a-local-api). The API
 accepts only requests whose `Host` is a loopback name or address (`localhost`,
-`127.0.0.1`, `[::1]`) with this listener's port (DNS-rebinding defense). Requests other
-than GET/HEAD are rejected with `forbidden` when they carry an `Origin` that is not the
-API's own `http://<host>` or a `Sec-Fetch-Site` other than `same-origin`/`none`; the
-gateway's origin is therefore rejected too. `OPTIONS` is refused and no `Access-Control-*`
+`127.0.0.1`, `[::1]`) with this listener's port (DNS-rebinding defense). Requests of any
+method (GET/HEAD included, since `/cat`, `/ls` and `/resolve` fetch and store) are
+rejected with `forbidden` when they carry an `Origin` that is not the API's own
+`http://<host>` or a `Sec-Fetch-Site` other than `same-origin`/`none`; the gateway's
+origin is therefore rejected too. `OPTIONS` is refused and no `Access-Control-*`
 header is ever sent, so a browser page cannot read responses or change state. Request
 bodies are read only as `Content-Type: application/json` (`invalid_argument` otherwise),
 which HTML forms cannot send and scripts cannot send without the refused preflight.
@@ -645,18 +653,22 @@ These are the mechanics of rules G1–G9 of the
   extension, then `application/octet-stream`. Blobs (`/blob/<cid>` or a blob root) are
   always `application/octet-stream` downloads. Symlink entries are listed but answer
   `422` instead of being followed.
-- **Headers.** Every response has `X-Content-Type-Options: nosniff`; content responses
+- **Headers.** Every response has `X-Content-Type-Options: nosniff` and (loopback
+  only) `Cross-Origin-Resource-Policy: same-site`; content responses
   carry `ETag: "<cid>"` and `Cache-Control: public, max-age=31536000, immutable`;
   gateway-generated pages (root, listings) carry
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. No cookies are
   ever set or read. Only `GET`/`HEAD` are accepted; `Range`, `If-Range` and
-  `If-None-Match` work on files. Errors are plain text (`<code>: <message>`), never HTML.
-- **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (an empty
+  `If-None-Match` work on files (a `Range` of more than 16 parts is answered whole);
+  listings carry `ETag: "<dir cid>"` (with a page tag on `?from=` pages) and answer
+  `If-None-Match` with `304`. Errors are plain text (`<code>: <message>`), never HTML.
+- **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (such a
   segment is refused on every route before the mux could clean or redirect it, so
   `//host` can never become a scheme-relative `Location`); a directory URL without a trailing slash redirects (`301`) to its own
   escaped path plus `/`. Listings show the directory CID and total size below it, and each
   entry's name, kind, size and CID; symlinks and entries with unsafe names are shown but
-  not linked. The MASL header allowlist (D21, G10) is not applied yet.
+  not linked. A page shows at most 1000 entries; a "more entries" link continues with
+  `?from=<next name>`. The MASL header allowlist (D21, G10) is not applied yet.
 - **`/at/` routes** serve held atproto snapshots as inert JSON and listings; see
   [atproto records, snapshots and CARs](#atproto-records-snapshots-and-cars-0053).
 - **Datasets (0047).** `GET /c/<dataset>[@<version>][/<path>]` answers `302` (with
@@ -693,10 +705,12 @@ key = "/etc/nu/privkey.pem"
   held, complete tree, file or blob (the mark is a pin with source `public`, so GC keeps
   it); `nu public rm` unmarks; `nu public ls` lists roots with their URLs while the
   listener runs. The daemon keeps the set of every object reachable from the public roots
-  in memory (built at start, extended on add, rebuilt on remove) and answers `404` for
+  in memory (built at start, extended on add, rebuilt on remove), keyed by full CID
+  (the same multihash under another codec is not served, N42), and answers `404` for
   any other CID exactly as for unheld content, on `/tree/`, `/blob/`, RASL and site
-  origins alike. Nothing is fetched on demand (P4). `/at/` does not exist on this
-  listener; `/api/` never does (P1).
+  origins alike. Nothing is fetched on demand (P4). `/at/`, `/c/` and `/nu/` do not exist
+  on this listener (no dataset roots or live name resolution for anonymous clients,
+  N44); `/api/` never does (P1).
 - **Routes and behavior** are the loopback gateway's (`/`, `/tree/<cid>/<path>`,
   `/blob/<cid>`, `/.well-known/rasl/<cid>`, and `https://<cid>.<domain>/<path>` as the
   site origin): same non-active fallback on the bare origin, same types, caching, `Range`,
@@ -713,9 +727,13 @@ key = "/etc/nu/privkey.pem"
   through. ACME is not built in (wildcards need DNS-01).
 - **Refusals** (`invalid_argument`, action names the key): the node is a member of a
   private or isolated cluster (P3); no `cert`/`key` and no `behind_proxy`;
-  `behind_proxy` off loopback; invalid `domain`.
+  `behind_proxy` off loopback; invalid `domain`. While the listener runs, `cluster
+  init`/`cluster join` of a private or isolated cluster is `conflict` (action names
+  `public.listen`), so P3 cannot be bypassed after start.
 - **Limits.** `max_requests` and `per_ip` bound concurrency (`503`, `Retry-After: 2`);
-  `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers. Behind a proxy `per_ip` sees
+  `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers; a response whose client takes
+  no data for 30 s is cut off; `Range` beyond 16 parts and listings beyond 1000 entries
+  per page are bounded as on loopback ([G12](operations.md#g-gateway-and-browsers)). Behind a proxy `per_ip` sees
   the proxy's address.
 - **Share.** `nu share <cid>[/path]` (and `PublicRoot`) carry `https` (the bare-origin
   URL: `/tree/<cid>/<path>` with a trailing slash for directories, `/blob/<cid>` for raw

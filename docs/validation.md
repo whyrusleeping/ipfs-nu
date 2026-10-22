@@ -1151,3 +1151,27 @@ package passed vet/staticcheck/tests; Rust regeneration matched the golden file;
 Python/YAML parsed; a final one-second-per-target runner smoke and a second 48-kill
 campaign passed. No main-module dependencies or concurrent owners' production files
 were changed. The nightly/native workflows themselves remain unobserved.
+
+## IPFS bridge (0042) — early fixture evidence
+
+The default bridge package tests are offline and fast (`go test ./bridge`): hand-built
+fixtures cover verified raw/dag-pb blocks, CIDv0/v1 parsing, UnixFS file/directory/symlink
+conversion, tampered CAR blocks, decoder fuzz seeds, and a retry after a source block is
+missing. The retry re-runs conversion from the CAR and relies on deterministic content addressing/store
+deduplication. A node test persists a running CAR job, closes/reopens `Local`, and confirms
+the same operation ID recovers to success; this is a restart/recovery test, not a power-loss
+or forced process-kill campaign.
+
+Opt-in Kubo test: `NU_DOCKER=1 go test ./bridge -run TestKuboCARImports -v`, using the
+same digest-pinned `ipfs/kubo:v0.40.0` image recorded in `interop/run.py`. It passed locally
+(16.4 s): Kubo created a directory with 1,201 generated entries, a 3 MiB file, raw UnixFS
+leaves, a symlink, and CARs for CIDv1/raw-leaf and CIDv0 imports; imported file bytes and
+symlink target bytes were compared against `ipfs get` output. The large directory exercised
+Kubo's sharded-directory representation and conversion completed. This is a local opt-in
+fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in live
+Kubo-over-QUIC test currently fails: the protocol is negotiated but Kubo sends no Bitswap
+response before timeout. Thus Kubo Bitswap acceptance and live Amino provider discovery are
+not met. The CAR import is exposed through CLI/API and durable operation recovery is tested,
+but CAR operation persists only request/stage/result and replays from the CAR rather than
+persisting per-block checkpoints. Cutover readiness and representative-installation
+reconciliation remain unverified.

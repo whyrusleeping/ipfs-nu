@@ -703,7 +703,8 @@ Neither mode sends any traffic, even encrypted, through third parties.
   (pnet PSK) are unavailable over QUIC; go-libp2p rejects that combination. Isolation
   therefore comes from mutual authentication and connection gating. Private and isolated
   nodes accept and dial only PeerIds with non-removed member records. Joiners are admitted
-  only for the join exchange on `/nu/cluster/1`. In public mode, gating covers cluster
+  only for the join exchange on `/nu/cluster/1`; while an invite is live a non-member's
+  connection that has not sent `join` within 10 s is closed (refused joins after 2 s). In public mode, gating covers cluster
   protocols, and local datasets are served only to members unless `announce` is set.
 - **Exposure:** a non-member that reaches a listening port can complete the server's half of
   the TLS handshake and learn its PeerId, but cannot open streams. Deployments needing

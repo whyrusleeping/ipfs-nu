@@ -1,10 +1,10 @@
 ---
 id: "0046"
 title: Cluster placement, structure sync, readiness and waits (on 0062 state core)
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0062"
     - "0036"

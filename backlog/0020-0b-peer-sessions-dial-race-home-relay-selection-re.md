@@ -32,3 +32,4 @@ Extend the minimal direct session layer (0040) with public path racing and home 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Foundation merged (dc6267d, ecd3a3b): SessionConfig.Dial transport seam (circuit hints race immediately for cold peers), identify address-provider seam with signed snapshot pushes and virtual-address filtering, p2p/homerelay manager (latency-ranked home/backup reservations, renewal, failover, Disabled mode). Remaining: node/swarm connectivity assembly, qpath admission + single recovery initiator, address provider shared with share links, disco authorization policy, netmon hooks, config/status, natlab two-daemon acceptance.

@@ -693,7 +693,13 @@ destination.**
   plain text, never HTML. Listings link only safe names; unsafe names are shown unlinked. Paths with
   `.`, `..`, empty or NUL segments are `400`.
 - **G9** Caching: CID-addressed responses are `public, max-age=31536000, immutable` with
-  `ETag: "<cid>"`; errors are `no-store`; name routes (G5) are `no-cache` and revalidate.
+  `ETag: "<cid>"` (listings: the directory's CID, plus a page tag for `?from=` pages) and
+  answer `If-None-Match` with `304`; errors are `no-store`; name routes (G5) are
+  `no-cache` and revalidate.
+- **G12** Bounds (0077): a `Range` of more than 16 parts is answered whole (`200`);
+  listings show at most 1000 entries per page with a "more" link (`?from=<name>`, the MST
+  walk starts there); on the public listener a response whose client stops reading for
+  30 s is cut off, so slow readers cannot hold the concurrency slots.
 - **G10** **MASL headers** (reflected once 0055 lands) pass an allowlist: `content-type`
   through G7 and G4; `content-language` as a language tag; `content-disposition` as
   `inline`/`attachment` with a sanitized filename only; `content-encoding` only when the
@@ -840,6 +846,7 @@ required by the named task before it ships.
 | N43 | A8 | producer token push naming `files.<n>.path` (an existing secret such as `node.key`, with `nocopy`, or a missing path); naming another token's upload or any other held CID | 403, same answer for existing and missing paths; 404, nothing queued | `main.TestProducerPushCLI` |
 | N44 | P2/P4 | `/c/<dataset>…` and `/nu/<handle>/<name>…` on the public listener | 404 like any route that does not exist there, no `X-Nu-Root`, no lookup | `gateway.TestPublicListener` |
 | N45 | P3 | `cluster init`/`join` of a private or isolated cluster while the public listener runs | conflict, action names `public.listen`; no membership | `node.TestPublicListenerRefusesPrivateCluster` |
+| N46 | G12/G9 | `Range` with 17 parts; a directory larger than one page; listing `If-None-Match`; a public client that stops reading | 200 whole body; paged with `?from=`, per-page ETag; 304; write cut off after the stall timeout | `gateway.TestPublicBounds`, `node.TestPublicCodecSwap` (MST paging) |
 
 ### Feature-entry gates
 

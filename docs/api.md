@@ -658,13 +658,16 @@ These are the mechanics of rules G1–G9 of the
   gateway-generated pages (root, listings) carry
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. No cookies are
   ever set or read. Only `GET`/`HEAD` are accepted; `Range`, `If-Range` and
-  `If-None-Match` work on files. Errors are plain text (`<code>: <message>`), never HTML.
+  `If-None-Match` work on files (a `Range` of more than 16 parts is answered whole);
+  listings carry `ETag: "<dir cid>"` (with a page tag on `?from=` pages) and answer
+  `If-None-Match` with `304`. Errors are plain text (`<code>: <message>`), never HTML.
 - **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (an empty
   segment is refused on every route before the mux could clean or redirect it, so
   `//host` can never become a scheme-relative `Location`); a directory URL without a trailing slash redirects (`301`) to its own
   escaped path plus `/`. Listings show the directory CID and total size below it, and each
   entry's name, kind, size and CID; symlinks and entries with unsafe names are shown but
-  not linked. The MASL header allowlist (D21, G10) is not applied yet.
+  not linked. A page shows at most 1000 entries; a "more entries" link continues with
+  `?from=<next name>`. The MASL header allowlist (D21, G10) is not applied yet.
 - **`/at/` routes** serve held atproto snapshots as inert JSON and listings; see
   [atproto records, snapshots and CARs](#atproto-records-snapshots-and-cars-0053).
 - **Datasets (0047).** `GET /c/<dataset>[@<version>][/<path>]` answers `302` (with
@@ -727,7 +730,9 @@ key = "/etc/nu/privkey.pem"
   init`/`cluster join` of a private or isolated cluster is `conflict` (action names
   `public.listen`), so P3 cannot be bypassed after start.
 - **Limits.** `max_requests` and `per_ip` bound concurrency (`503`, `Retry-After: 2`);
-  `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers. Behind a proxy `per_ip` sees
+  `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers; a response whose client takes
+  no data for 30 s is cut off; `Range` beyond 16 parts and listings beyond 1000 entries
+  per page are bounded as on loopback ([G12](operations.md#g-gateway-and-browsers)). Behind a proxy `per_ip` sees
   the proxy's address.
 - **Share.** `nu share <cid>[/path]` (and `PublicRoot`) carry `https` (the bare-origin
   URL: `/tree/<cid>/<path>` with a trailing slash for directories, `/blob/<cid>` for raw

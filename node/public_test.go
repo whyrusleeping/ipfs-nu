@@ -44,6 +44,7 @@ func TestPublicCodecSwap(t *testing.T) {
 	site := filepath.Join(dir, "site")
 	os.MkdirAll(site, 0o755)
 	os.WriteFile(filepath.Join(site, "evil.bin"), evil, 0o644)
+	os.WriteFile(filepath.Join(site, "z.txt"), []byte("z"), 0o644)
 	pub, err := add(t, n, apiv0.AddRequest{Path: site, Recursive: true, Pin: true})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +86,16 @@ func TestPublicCodecSwap(t *testing.T) {
 	// Nor is the private blob, and nothing reads the raw bytes as DRISL locally either.
 	if code, _ := get("seed.example", "/blob/"+sn.Blob.String()); code != 404 {
 		t.Fatalf("private blob: %d", code)
+	}
+	// Listing pages start inside the MST (gateway.PagedContent).
+	old := gateway.MaxListingRows
+	gateway.MaxListingRows = 1
+	defer func() { gateway.MaxListingRows = old }()
+	if code, body := get("seed.example", "/tree/"+pub.CID+"/"); code != 200 || !strings.Contains(body, ">evil.bin<") || !strings.Contains(body, "?from=z.txt") {
+		t.Fatalf("first page: %d %s", code, body)
+	}
+	if code, body := get("seed.example", "/tree/"+pub.CID+"/?from=z.txt"); code != 200 || strings.Contains(body, "evil.bin") || !strings.Contains(body, ">z.txt<") {
+		t.Fatalf("second page: %d %s", code, body)
 	}
 	if _, err := n.Store.Get(swapped); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("store Get under the other codec: %v", err)

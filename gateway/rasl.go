@@ -50,5 +50,6 @@ func (h *Handler) rasl(w http.ResponseWriter, r *http.Request) {
 		// them by hash. Only this route, only here.
 		hdr.Set("Access-Control-Allow-Origin", "*")
 	}
+	boundRange(r)
 	http.ServeContent(w, r, "", time.Time{}, f)
 }

@@ -59,6 +59,13 @@ type Content interface {
 	List(ctx context.Context, info *Info) iter.Seq2[Entry, error]
 }
 
+// PagedContent is implemented by content that can start a directory listing at a name
+// (the first entry >= from) without iterating the entries before it; the gateway pages
+// listings with it (MaxListingRows), and skips entries itself otherwise.
+type PagedContent interface {
+	ListFrom(ctx context.Context, info *Info, from string) iter.Seq2[Entry, error]
+}
+
 // ObjectContent is implemented by content that can serve one held object's bytes as
 // stored (a raw blob or a DRISL node) for RASL. It answers apiv0.CodeNotFound for
 // anything not held and complete; it never fetches.

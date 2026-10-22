@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,24 +81,28 @@ func (f *fakeContent) Open(ctx context.Context, info *Info) (File, error) {
 	return nil, apiv0.Errorf(apiv0.CodeNotFound, "no bytes for %s", info.CID)
 }
 
+// List yields in name order, as Content requires.
 func (f *fakeContent) List(ctx context.Context, info *Info) iter.Seq2[Entry, error] {
 	return func(yield func(Entry, error) bool) {
 		prefix := ""
 		if info.Name != "" {
 			prefix = info.Name + "/"
 		}
+		var out []Entry
 		for p, ff := range f.files {
 			if rest, ok := strings.CutPrefix(p, prefix); ok && !strings.Contains(rest, "/") {
-				if !yield(Entry{Name: rest, Kind: ff.kind, CID: ff.cid, Size: int64(len(ff.data))}, nil) {
-					return
-				}
+				out = append(out, Entry{Name: rest, Kind: ff.kind, CID: ff.cid, Size: int64(len(ff.data))})
 			}
 		}
 		for d := range f.dirs {
 			if rest, ok := strings.CutPrefix(d, prefix); ok && d != "" && !strings.Contains(rest, "/") {
-				if !yield(Entry{Name: rest, Kind: KindDir, CID: fakeCID(9)}, nil) {
-					return
-				}
+				out = append(out, Entry{Name: rest, Kind: KindDir, CID: fakeCID(9)})
+			}
+		}
+		slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
+		for _, e := range out {
+			if !yield(e, nil) {
+				return
 			}
 		}
 	}

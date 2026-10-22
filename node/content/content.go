@@ -216,13 +216,16 @@ func (c *Content) Open(n *Node) (*File, error) {
 }
 
 // Entries iterates a directory node in name order.
-func (c *Content) Entries(n *Node) iter.Seq2[*Node, error] {
+func (c *Content) Entries(n *Node) iter.Seq2[*Node, error] { return c.EntriesFrom(n, "") }
+
+// EntriesFrom iterates a directory node in name order from the first name >= from.
+func (c *Content) EntriesFrom(n *Node, from string) iter.Seq2[*Node, error] {
 	return func(yield func(*Node, error) bool) {
 		if n.Kind != gateway.KindDir {
 			yield(nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is not a directory", n.CID))
 			return
 		}
-		err := tree.Dir(c.st, n.Dir).Walk("", func(name string, e tree.Entry) (bool, error) {
+		err := tree.Dir(c.st, n.Dir).Walk(from, func(name string, e tree.Entry) (bool, error) {
 			return yield(entryNode(name, e), nil), nil
 		})
 		if err != nil {
@@ -273,13 +276,20 @@ func (g gw) Open(ctx context.Context, info *gateway.Info) (gateway.File, error) 
 }
 
 func (g gw) List(ctx context.Context, info *gateway.Info) iter.Seq2[gateway.Entry, error] {
+	return g.ListFrom(ctx, info, "")
+}
+
+var _ gateway.PagedContent = gw{}
+
+// ListFrom implements gateway.PagedContent: the MST walk starts at from.
+func (g gw) ListFrom(ctx context.Context, info *gateway.Info, from string) iter.Seq2[gateway.Entry, error] {
 	return func(yield func(gateway.Entry, error) bool) {
 		n, err := g.c.nodeOf(info)
 		if err != nil {
 			yield(gateway.Entry{}, err)
 			return
 		}
-		for e, err := range g.c.Entries(n) {
+		for e, err := range g.c.EntriesFrom(n, from) {
 			if err != nil {
 				yield(gateway.Entry{}, err)
 				return

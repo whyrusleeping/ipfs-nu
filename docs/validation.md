@@ -1827,3 +1827,38 @@ acceptance clause, all measured locally on 2026-10-22:
 
 Not covered: power-loss (as opposed to process-kill) campaigns, large real installations, and
 IPFS Cluster inventories (report-only, not implemented).
+
+## Atrepo member replication (0054) — tree diffs (2026-10-22)
+
+`node.TestAtrepoClusterDataset` runs two real loopback QUIC cluster members. Only
+its admin requests PDS exports (exactly two). The storage member acquires both
+heads through the production placement fetch path, retains the older version,
+fetches the selected small blob, excludes a declared >8 MiB blob, and reports
+complete with two-copy readiness after each head. A test-only stream wrapper
+counts actual `/nu/tree/1` data frames and payload bytes: first revision **168
+frames / 14,909 bytes**, second **7 frames / 834 bytes**, plus 5 have markers.
+The second payload is asserted equal to the exact reachable-block set difference,
+not merely smaller than the full repository. The account takedown still propagates.
+
+`proto.TestAtrepoTreeDiffAndCursors` checks an update diff (159 frames / 14,470
+bytes full, 5 / 1,416 diff), one-frame pages across a layered empty intermediate,
+paged have markers, repo-key lookup/range selection and absence proofs.
+`fetch.TestAtrepoFallbackPolicyAndRank` checks old-peer layer-1 fallback, both blob
+policies, oversized exclusion, unrelated dangling links and ranked tree sources.
+Wire request vectors and request/atrepo-stream fuzz seeds run in ordinary tests.
+Focused `-race` runs passed. They also exposed a stale reconcile/fetch-completion
+window that could retransmit a complete tree; acquisition now rechecks before
+starting a transfer rather than trusting that stale completeness result.
+
+Parallel full-suite attempts hit unrelated timeouts in `cluster.TestDrainRemove`
+(local add at 180,224/204,800 bytes), `cluster.TestPrivateCluster` (join) and
+`nutest.TestPublishSeedWait` (local add). Serial reruns of the complete cluster and
+nutest packages passed without changing their code/timeouts. Final gates passed:
+gofmt, `git diff --check`, `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` (the final full-suite invocation used Go's successful test
+cache). No live network, prolonged fuzzing or benchmark run was needed.
+
+Legacy blob refs without a declared size remain honest incomplete obligations
+when unavailable: members cannot infer a >8 MiB exception from missing bytes.
+This evidence does not cover the separate multi-day live-account acceptance,
+public `/at/` serving or per-account resource budgets.

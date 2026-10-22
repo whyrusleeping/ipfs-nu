@@ -19,7 +19,10 @@ func (r *run) treeSync(ctx context.Context, root cid.CID) {
 	if r.opts.Want != nil {
 		req.InlineMax = 0 // blobs are selected one by one
 	}
-	for _, p := range r.sw.live() {
+	if r.opts.Profile == proto.ProfileAtrepo || r.opts.Profile == "atrepo+blobs" {
+		req.Profile, req.InlineMax = proto.ProfileAtrepo, 0
+	}
+	for _, p := range r.ranked(root, r.sw.live()) {
 		for fails := 0; fails < maxFails && r.sw.usable(p); {
 			rctx, cancel := r.timeout(ctx)
 			res, err := proto.FetchTree(rctx, p.Open, r.st, req)

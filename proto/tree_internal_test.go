@@ -71,6 +71,8 @@ func FuzzTreeRequest(f *testing.F) {
 		{Root: root, Path: []string{"a", "b"}, Scope: ScopeEntry, InlineMax: 4096, NameRange: &NameRange{Start: "m"}, Limit: 9,
 			Have: []cid.CID{root}, Cursor: &Cursor{Path: []string{"a"}, Key: "k", Link: LinkRight, After: true}},
 		{Nodes: []cid.CID{root}, Scope: ScopeNode},
+		{Root: root, Profile: ProfileAtrepo, Path: []string{"app.bsky.feed.post/abc"}, Scope: ScopeEntry, Have: []cid.CID{root}},
+		{Root: root, Profile: ProfileAtrepo, Scope: ScopeSubtree, NameRange: &NameRange{Start: "app.bsky.feed.post/", End: "app.bsky.feed.post0"}, Cursor: &Cursor{Path: []string{"t:app.bsky.feed.post/a", "l", "l"}, Link: LinkDir}},
 	} {
 		b, err := r.Marshal()
 		if err != nil {

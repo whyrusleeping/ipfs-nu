@@ -38,8 +38,8 @@ import (
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/swarm"
+	_ "github.com/whyrusleeping/nu/nutest/testenv" // tmpfs temp dirs, GOMAXPROCS cap
 	"github.com/whyrusleeping/nu/nutest/timeouts"
-	_ "github.com/whyrusleeping/nu/nutest/tmpdir" // stores on tmpfs when available
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"

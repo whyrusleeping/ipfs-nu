@@ -387,6 +387,7 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 	if changed {
 		n.c.s.identify.AddressesChanged()
 	}
+	n.c.s.dhtReachable(reach == "public")
 	n.c.mu.Lock()
 	homes := n.c.homes
 	n.c.mu.Unlock()

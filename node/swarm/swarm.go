@@ -24,6 +24,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/fetch"
+	"github.com/whyrusleeping/nu/kad"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/link"
@@ -79,6 +80,8 @@ type Config struct {
 	ProbeAllowed map[wire.PeerID][]netip.AddrPort
 	// PortMapping opts in to leases at an explicitly selected gateway.
 	PortMapping *portmap.Config
+	// DHT configures Amino participation and the public lookup sources (dht.go).
+	DHT DHTConfig
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -96,6 +99,7 @@ type Swarm struct {
 	once         sync.Once
 	closeErr     error
 	connectivity *connectivity
+	dht          *dht
 }
 
 // Start binds the host and starts the services. The returned Swarm is independent of
@@ -160,7 +164,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if cfg.Private || cfg.Isolated {
 		sources = nil
 	} else {
-		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
+		public, err := s.publicSources(cfg)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(append(sources, lookup.SourceFunc(s.signedAddresses)), public...)
 	}
 	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || (cfg.Private || cfg.Isolated) && cfg.MDNSCluster == "", MDNS: lookup.MDNSConfig{
 		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces, ClusterID: cfg.MDNSCluster}}
@@ -188,8 +196,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 		fc := cfg.Fetch
 		fc.Store = cfg.Store
-		fc.Providers = connected{s}
+		fc.Providers = fetch.Multi{connected{s}, dhtProviders{s}}
 		s.fetcher = fetch.New(fc)
+	}
+	if err := s.startDHT(bg); err != nil {
+		return nil, err
 	}
 	ok = true
 	log.Info("swarm started", "peer", s.host.ID().Base36(), "addrs", s.host.Addrs())
@@ -201,6 +212,9 @@ func (s *Swarm) Close() error {
 	s.once.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
+		}
+		if s.dht != nil {
+			s.dht.close()
 		}
 		if s.sessions != nil {
 			_ = s.sessions.Close()
@@ -336,9 +350,9 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	if hintErr != nil {
 		s.log.Debug("some link hints are unusable", "err", hintErr)
 	}
-	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil {
+	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no one to fetch %s from: the link names no reachable provider and no peer is connected", root).
-			WithAction("use a share link with its provider (`peer=`/`addr=`), or be on the same network as a node that holds the content")
+			WithAction("use a share link with its provider (`peer=`/`addr=`), be on the same network as a node that holds the content, or bind a non-loopback swarm.listen so the DHT can be used")
 	}
 	opts := fetch.Options{Peers: peers}
 	if src != nil {
@@ -403,15 +417,23 @@ func classify(root cid.CID, err error) error {
 	case errors.Is(err, fetch.ErrNoProvider):
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no provider of %s could be reached", root).
 			WithAction("check that the holder is online (its `"+nu.Name+" daemon` or `"+nu.Name+" share` is running) and reachable over UDP").WithDetail("cause", err.Error())
+	case errors.Is(err, kad.ErrNoPeers):
+		return apiv0.Errorf(apiv0.CodeUnavailable, "no provider of %s is known: no link hint, no connected peer, and the DHT has no routing peers", root).
+			WithAction("check internet access (DHT bootstrap needs DNS and UDP), or use a share link with its provider (`peer=`/`addr=`)").WithDetail("cause", err.Error())
 	}
 	return apiv0.Errorf(apiv0.CodeFailed, "fetching %s failed: %v", root, err)
 }
 
-// connected offers the connected peers as session-backed providers.
+// connected offers the connected peers as session-backed providers (D15 step 4), except
+// peers whose identify snapshot shows they serve no Nu data protocol (Amino routing
+// peers, relays): asking them would only burn request timeouts.
 type connected struct{ s *Swarm }
 
 func (c connected) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) error {
 	for _, id := range c.s.Connected() {
+		if !c.s.servesNuData(ctx, id) {
+			continue
+		}
 		sess, err := c.s.sessions.Get(id)
 		if err != nil {
 			continue
@@ -419,6 +441,31 @@ func (c connected) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) 
 		found(fetch.SessionPeer(sess))
 	}
 	return nil
+}
+
+// servesNuData is true for peers whose identify snapshot advertises a /nu data
+// protocol. A peer connected a moment ago (a LAN neighbour) gets a short wait for its
+// identify; peers that never identify, or identify without Nu protocols, are skipped.
+func (s *Swarm) servesNuData(ctx context.Context, id wire.PeerID) bool {
+	if s.identify == nil {
+		return true
+	}
+	ready := func(info p2pproto.PeerInfo) bool { return len(info.Message.Protocols) > 0 }
+	info, ok := s.identify.Info(id)
+	if !ok || !ready(info) {
+		wait, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		var err error
+		if info, err = s.identify.WaitPeer(wait, id, ready); err != nil {
+			return false
+		}
+	}
+	for _, p := range info.Message.Protocols {
+		if p == proto.BytesID || p == proto.HaveID || p == proto.TreeID {
+			return true
+		}
+	}
+	return false
 }
 
 func persistence(file string) lookup.Persistence {
@@ -572,7 +619,8 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}
+	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile),
+		DHT: DHTConfig{Mode: cfg.Swarm.DHT, LookupDomain: cfg.Swarm.LookupDomain, RoutingURL: cfg.Swarm.RoutingURL, NoAnnounce: r.NoAnnounced}}
 	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
 		return Config{}, err
 	}

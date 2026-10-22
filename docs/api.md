@@ -125,6 +125,11 @@ virtual routing keys. `network_change_error` reports failed recovery stages;
 prove an active transfer survived; Nu-path recovery is separately bounded by QUIC's
 idle timeout. Status/doctor render these same diagnostics.
 
+`network.dht` (0072) reports the Amino DHT: `mode` (`off`, `client`, `server`),
+`routing_peers`, `bootstrapped`/`bootstrap_error`, and the last provide cycle
+(`provided` keys, `announcing` addresses, `last_provide`, `provide_error`). `off` covers
+private/isolated clusters, `swarm.dht = off` and loopback-only listeners.
+
 ## Routes (v0)
 
 ```text

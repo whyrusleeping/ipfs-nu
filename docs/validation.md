@@ -656,6 +656,47 @@ pinned-CID enumeration and periodic reprovide is not installed; private mode is 
 by the service but the owner must wire its construction. Provider replica fraction and
 long-term expiry/republish remain unmeasured.
 
+## Daemon Amino wiring: provide and hint-less get (0072, 2026-10-22)
+
+In-process (`go test ./nutest -run 'DHT|PrivateMode'`, ~0.4 s): four nutest nodes form a
+loopback Amino DHT (every node a server bootstrapped from the others, private addresses
+allowed). Node A `add`s two files, one with `--no-announce`; node B's `FindProviders`
+returns A for the announced file node and nothing for the unannounced one (the mark is
+persisted in `no-announce.json`); B then `get`s the announced CID from a link with no
+hints and holds it. A `Private` swarm constructs no DHT and registers no
+`/ipfs/kad/1.0.0` handler.
+
+**Live Amino (opt-in):** `NU_AMINO=1 go test ./node/daemon -run AminoLive -count=1 -v`
+passed on 2026-10-22 from the dev machine (behind NAT, no relay configured, `swarm.dht`
+default `auto`):
+
+| Step | Result |
+|---|---|
+| Fresh daemon A bootstrap (`bootstrap.libp2p.io` dnsaddr → QUIC-v1 literals, self lookup) | 72–98 routing peers after ~25 s |
+| A `add` 300 kB file → provide file node + blob (2 keys, each: K-closest lookup + 20 ADD_PROVIDER) | both provided, ~85 s |
+| Fresh daemon B `get <cid>` with no hints | provider record found through Amino in 4.4 s; file fetched, byte-identical; 9 s total once bootstrapped (40 s including B's bootstrap) |
+
+Same run by hand with two `nu daemon`s (`/tmp/nuA` on 4171, `/tmp/nuB` on 4172): `nu status`
+showed `dht: client, 94 routing peers`, `nu doctor` `ok dht: client mode, 94 routing peers`,
+and `nu get` on B completed in 9 s with the daemon log line `DHT provider lookup …
+providers=1 elapsed=4.387s`.
+
+Honest caveats: the machine has no public IPv4/IPv6, so AutoNAT never confirmed an
+address and both nodes stayed DHT **clients** (server mode was not exercised live; it is
+exercised in-process). The address A announced was its Tailscale interface address
+(`100.126.232.79`, CGNAT `100.64/10`, which Go's `IsPrivate` does not classify as private
+and the publication filter therefore admits); it is reachable from B only because B runs
+on the same machine. Provider records reached independent Amino servers and came back
+through an independent lookup, so the Amino provide/find path is verified; global
+reachability of the provider is not, and would need a public address or a configured
+relay. Two issues were found and fixed during the run: connected Amino routing peers
+were offered to the fetcher as candidates and hung `/nu/tree/1` requests for the 2 min
+request timeout each (now peers whose identify shows no `/nu` protocol are skipped), and
+lookups always ran 16 rounds (now they stop when the K closest known peers were asked,
+and provider lookups as soon as a round yields providers). `peer address cache update
+failed … context deadline exceeded` warnings appear when a kad request's bounded context
+expires while the peers.json cache is written; harmless, not yet silenced.
+
 ## Nu-path throughput profiling (0015, 2026-10-21)
 
 **Optimized, but the original ≤~5% versus uninstrumented raw criterion is still open.**

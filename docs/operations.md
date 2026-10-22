@@ -730,7 +730,8 @@ mechanics in [api.md](api.md#public-listener-0043)). It is a separate `http.Serv
 its own address with the gateway handler in public mode: no `/api/` (P1); `Host` must be
 `public.domain` or `<cid>.<domain>`; only roots marked with `nu public add` (a pin with
 source `public`) and the objects under them are served, and any other CID, held or not,
-is the same `404` (P2/P4); `/at/` does not exist there; RASL answers carry
+is the same `404` (P2/P4); `/at/`, `/c/` and `/nu/` do not exist there (no dataset
+roots, no live name resolution); RASL answers carry
 `Access-Control-Allow-Origin: *` on this listener only (P5); `nu share` adds the
 `https://` and `rasl://` links only while this process's listener serves the root (P2).
 The daemon refuses the listener on a member of a private or isolated cluster (P3, no
@@ -832,6 +833,7 @@ required by the named task before it ships.
 | N41 | P1 | public listener without cert/key and without `behind_proxy`; `behind_proxy` off loopback; `public.domain = localhost` | refuses to start, action names the key | `daemon.TestPublicListener` |
 | N42 | P2 | published small file whose bytes are a MASL file node naming an unpublished blob, requested as `<DRISL codec + file multihash>` on `/tree`, `/blob`, RASL and its site origin | 404; the store refuses the DRISL read of raw-stored bytes | `node.TestPublicCodecSwap`, `store.TestSmallBlobsAndBlocks` |
 | N43 | A8 | producer token push naming `files.<n>.path` (an existing secret such as `node.key`, with `nocopy`, or a missing path); naming another token's upload or any other held CID | 403, same answer for existing and missing paths; 404, nothing queued | `main.TestProducerPushCLI` |
+| N44 | P2/P4 | `/c/<dataset>…` and `/nu/<handle>/<name>…` on the public listener | 404 like any route that does not exist there, no `X-Nu-Root`, no lookup | `gateway.TestPublicListener` |
 
 ### Feature-entry gates
 

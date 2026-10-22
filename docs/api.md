@@ -700,10 +700,12 @@ key = "/etc/nu/privkey.pem"
   held, complete tree, file or blob (the mark is a pin with source `public`, so GC keeps
   it); `nu public rm` unmarks; `nu public ls` lists roots with their URLs while the
   listener runs. The daemon keeps the set of every object reachable from the public roots
-  in memory (built at start, extended on add, rebuilt on remove) and answers `404` for
+  in memory (built at start, extended on add, rebuilt on remove), keyed by full CID
+  (the same multihash under another codec is not served, N42), and answers `404` for
   any other CID exactly as for unheld content, on `/tree/`, `/blob/`, RASL and site
-  origins alike. Nothing is fetched on demand (P4). `/at/` does not exist on this
-  listener; `/api/` never does (P1).
+  origins alike. Nothing is fetched on demand (P4). `/at/`, `/c/` and `/nu/` do not exist
+  on this listener (no dataset roots or live name resolution for anonymous clients,
+  N44); `/api/` never does (P1).
 - **Routes and behavior** are the loopback gateway's (`/`, `/tree/<cid>/<path>`,
   `/blob/<cid>`, `/.well-known/rasl/<cid>`, and `https://<cid>.<domain>/<path>` as the
   site origin): same non-active fallback on the bare origin, same types, caching, `Range`,

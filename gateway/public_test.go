@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +16,8 @@ func TestPublicListener(t *testing.T) {
 	f := newFake()
 	notes, index := f.files["notes.txt"].cid, f.files["index.html"].cid
 	public := map[string]bool{f.root: true, notes: true, index: true}
-	h := NewPublic(objectContent{f}, PublicOptions{Domain: "seed.example", Serves: func(c string) bool { return public[c] }})
+	lookups := 0
+	h := NewPublic(namedContent{objectContent{f}, f.root, &lookups}, PublicOptions{Domain: "seed.example", Serves: func(c string) bool { return public[c] }})
 	srv := httptest.NewTLSServer(h)
 	defer srv.Close()
 	srv.Client().CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -73,11 +75,15 @@ func TestPublicListener(t *testing.T) {
 	if res, _ := get(t, srv, "seed.example", "/.well-known/rasl/"+photo, nil); res.StatusCode != 404 || res.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("rasl private: %d %s", res.StatusCode, res.Header)
 	}
-	// P1/N28: no API; P4: no /at/; only GET/HEAD.
-	for _, p := range []string{"/api/v0/status", "/api/", "/at/did:plc:abc/", "/at/did:plc:abc"} {
-		if res, _ := get(t, srv, "seed.example", p, nil); res.StatusCode != 404 {
-			t.Fatalf("%s on public listener: %d", p, res.StatusCode)
+	// P1/N28: no API; P4: no /at/, and (N44) no /c/ or /nu/: they would reveal dataset
+	// roots (X-Nu-Root) and resolve names live for anonymous clients.
+	for _, p := range []string{"/api/v0/status", "/api/", "/at/did:plc:abc/", "/at/did:plc:abc", "/c/lab", "/c/lab/x", "/nu/alice.example/site", "/nu/alice.example/site/x"} {
+		if res, _ := get(t, srv, "seed.example", p, nil); res.StatusCode != 404 || res.Header.Get("X-Nu-Root") != "" {
+			t.Fatalf("%s on public listener: %d %s", p, res.StatusCode, res.Header)
 		}
+	}
+	if lookups != 0 {
+		t.Fatalf("public listener resolved %d datasets/names", lookups)
 	}
 	for _, m := range []string{http.MethodPost, http.MethodOptions, http.MethodDelete} {
 		req, _ := http.NewRequest(m, srv.URL+"/tree/"+f.root+"/", nil)
@@ -155,4 +161,21 @@ func TestParseDomain(t *testing.T) {
 			t.Fatalf("%q accepted as %q", in, got)
 		}
 	}
+}
+
+// namedContent adds dataset and name lookups (always resolving to root) to the fake.
+type namedContent struct {
+	objectContent
+	root    string
+	lookups *int
+}
+
+func (n namedContent) ResolveDataset(ctx context.Context, name, version string) (string, error) {
+	*n.lookups++
+	return n.root, nil
+}
+
+func (n namedContent) ResolveName(ctx context.Context, authority, name string, held bool) (string, string, error) {
+	*n.lookups++
+	return n.root, "pds", nil
 }

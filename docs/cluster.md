@@ -66,7 +66,9 @@ Each authorized key has its own **state repository**: a byte-exact atproto v3 re
 (SHA-256 MST, signed commits with `rev`; [D21](dasl.md#atproto-repository-profile)) signed
 by that key's `did:key` and served only inside the cluster. It is not hosted on a PDS or
 visible on the firehose, which lets the same design run air-gapped. Its CAR export can be
-inspected and verified with stock atproto tooling.
+inspected and verified with stock atproto tooling (checked against indigo's
+`atproto/repo` in `experiments/clusterstate_indigo_test.go`: load, P-256 signature, MST,
+TID rev, records).
 
 ```text
 io.ipfs.nu.cluster.key/<did>          { role: "admin"|"writer", revoked?: {after: <commit cid>}, hlc }

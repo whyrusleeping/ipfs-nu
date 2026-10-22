@@ -1816,9 +1816,14 @@ acceptance clause, all measured locally on 2026-10-22:
   dial. Two other roots failed honestly, for reasons outside the importer:
   `QmQPeNsJPyVWPFDVHb9rRFTRb9cBHRZvqPKpeGKYYx3vU7` (the old go-ipfs readme) found no reachable
   provider, and the empty directory `QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn` failed in
-  provider lookup because every Amino `GET_PROVIDERS` response exceeded `kad`'s 64 KiB message
-  limit (upstream allows 4 MiB; popular CIDs have more than 20 providers). Popular-CID lookups
-  therefore need a `kad` limit change before they work.
+  provider lookup because every Amino `GET_PROVIDERS` response exceeded `kad`'s then 64 KiB
+  message limit (upstream allows 4 MiB; popular CIDs have more than 20 providers). With
+  responses read up to 1 MiB and truncated to 64 providers / 20 closer peers
+  (`kad.TestOversizedResponseTruncated`, docs/networking.md), the same empty directory as
+  CIDv1, `bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354`, resolves providers
+  and imports (2026-10-22, two runs: dry run 16.0 s / 41.4 s, import 41.2 s / 40.3 s; Nu root
+  `bafyreie4sdwpbrl4mxgkrdjfofxan55zx7qky2mfmvfbpqm2qzw6hcnkhu`). The wide timing spread is
+  provider dial failures, not lookup.
 
 Not covered: power-loss (as opposed to process-kill) campaigns, large real installations, and
 IPFS Cluster inventories (report-only, not implemented).

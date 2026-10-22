@@ -34,8 +34,13 @@ Client mode registers no Kademlia handler and therefore does not advertise
 messages because Amino peers may reuse one stream for multiple RPCs; `ADD_PROVIDER` is
 one-way and the server continues reading until EOF.
 
-Wire/runtime limits: 64 KiB message, 80-byte key (matching upstream's provider-key
-limit), 20 peers/message and 32 addresses/peer (1024 bytes/address); routing k=20,
+Wire/runtime limits: requests (sent and served) are at most 64 KiB with 20 peers/message
+and 32 addresses/peer (1024 bytes/address), violations rejecting the message. Responses read
+are at most 1 MiB (upstream accepts 4 MiB; popular `GET_PROVIDERS` answers exceed 64 KiB) and
+are truncated, not rejected: the first 64 valid provider and 20 valid closer-peer entries
+are kept and later ones skipped, an entry with an invalid peer ID is dropped, and addresses
+over 1024 bytes or beyond 32 per peer are dropped; protobuf framing errors still fail the
+response. Keys are at most 80 bytes (matching upstream's provider-key limit); routing k=20,
 lookup alpha=3 and at most 16 rounds. Server defaults are 32 concurrent requests,
 4 per authenticated peer and 4096 provider records. Provider records expire after
 48 h; `ProvideAndRepublish` refreshes local announcements every 22 h. Client APIs

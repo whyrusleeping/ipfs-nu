@@ -94,6 +94,8 @@ type Config struct {
 	Limits   Limits
 	// Now is the clock (tests); nil uses time.Now.
 	Now func() time.Time
+	// OAuth configures login (0045); zero values take the defaults.
+	OAuth OAuthConfig
 }
 
 // Identity is a resolved account: the DID document's PDS and signing key.

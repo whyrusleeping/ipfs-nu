@@ -37,7 +37,7 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 		return nil, err
 	}
 	opTarget := pt.Raw
-	if pt.Kind == target.KindDataset { // bind the operation to the resolved root (W1, E1)
+	if pt.Kind == target.KindDataset || pt.Kind == target.KindName { // bind the operation to the resolved root (W1, E1)
 		opTarget = root.String()
 		if pt.Path != "" {
 			opTarget += "/" + pt.Path

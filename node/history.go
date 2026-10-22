@@ -417,6 +417,19 @@ func (n *Local) resolveDataset(ctx context.Context, pt target.Target) (cid.CID, 
 		return cid.CID{}, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q on this node", pt.Dataset).
 			WithAction("list datasets with `" + nu.Name + " dataset ls` or `" + nu.Name + " cluster dataset ls`")
 	}
+	if d.Source.Name != "" && (pt.Version == "" || pt.Version == "held") {
+		// A follow serves its held view (docs/follow.md "Lifecycle"): the last fully held
+		// target, which may be older than the head being acquired.
+		if m := n.replicaFor(c); m != nil {
+			if held := m.Protected(pt.Dataset).Held; held != "" {
+				return cid.Parse(held)
+			}
+		}
+		if pt.Version == "held" {
+			return cid.CID{}, apiv0.Errorf(apiv0.CodeUnavailable, "follow %q holds no complete view yet", pt.Dataset).
+				WithAction("see `" + nu.Name + " follow ls`")
+		}
+	}
 	if pt.Version == "" {
 		h, ok := c.View().Head(pt.Dataset)
 		if !ok {
@@ -428,7 +441,6 @@ func (n *Local) resolveDataset(ctx context.Context, pt target.Target) (cid.CID, 
 	if err != nil {
 		return cid.CID{}, err
 	}
-	_ = d
 	e, err := hs.selectVersion(pt.Version)
 	if err != nil {
 		return cid.CID{}, err

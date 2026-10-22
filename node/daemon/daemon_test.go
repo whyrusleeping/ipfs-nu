@@ -145,11 +145,12 @@ func TestDaemonEndToEnd(t *testing.T) {
 		t.Fatalf("expired cursor: %+v %v", page, err)
 	}
 
-	// Error envelope: unknown operation, not-yet-supported target, relative add path.
+	// Error envelope: unknown operation, unsupported DID method (names resolve since
+	// 0045; this form needs no network), relative add path.
 	if _, err := c.Operation(ctx, "nope"); !isCode(err, apiv0.CodeNotFound) {
 		t.Fatalf("unknown op: %v", err)
 	}
-	if _, err := c.Cat(ctx, "alice.example.com/site"); !isCode(err, apiv0.CodeNotSupported) {
+	if _, err := c.Cat(ctx, "did:foo:bar/site"); !isCode(err, apiv0.CodeNotSupported) {
 		t.Fatalf("name target: %v", err)
 	}
 	if _, err := c.Add(ctx, apiv0.AddRequest{Path: "x"}); !isCode(err, apiv0.CodeInvalidArgument) {

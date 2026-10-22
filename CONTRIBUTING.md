@@ -74,7 +74,16 @@ will churn; tests that pin down internals make every change slower.
   Each test should take well under a second.
 - Anything slower (multi-GB files, long property runs, soak, benchmarks) is opt-in: skip
   unless `NU_SLOW=1` (call `slow.Skip(t)` from `nutest/slow`). Keep the default sizes small (MiB, not GiB) and the iterations bounded.
-- No `time.Sleep` waits. Wait on conditions with timeouts.
+- No `time.Sleep` waits. Wait on conditions with timeouts. A timeout is a ceiling that
+  only catches hangs, never a measure of expected speed: use `nutest.Timeout` /
+  `nutest.Eventually`, or `timeouts.Ceiling()` from `nutest/timeouts` in low-level
+  packages; `NU_TEST_TIMEOUT_SCALE=2` stretches every ceiling on a slow machine. Where a
+  protocol window must be tested (evidence freshness, settle, down_after), shorten the
+  setting for the test and size any unavoidable negative-assertion sleep from it.
+- Test packages that create stores import `nutest/testenv` (blank; `nutest` already
+  does), which puts temp dirs on tmpfs and caps `GOMAXPROCS` at 16: on a shared box a
+  busy disk otherwise turns 3 s packages into 70 s ones. `scripts/testtimes.sh` reports
+  per-package and per-test wall time; anything over a second needs a reason.
 - Fuzz targets are written for decoders of network or file input, but only their seed
   corpora run in `go test` (template: `core/varint`). Fuzzing campaigns, benchmarks, cross-implementation checks and
   scale tests deferred from v0 live in backlog task 0068.

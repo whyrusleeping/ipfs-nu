@@ -8,6 +8,76 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Test suite speed and robustness under load (0074, 2026-10-22)
+
+Method: `scripts/testtimes.sh` (`go test -json -count=1 ./...` with per-package and
+per-test wall times) on the shared 192-core dev machine while other agents ran
+multi-hour collection benchmarks and NAT-lab suites; load averages are the 1-minute
+figures before and after each run. The root filesystem (where `/tmp` lives) was 97 %
+full with 8 % IO pressure and a neighbour writing ~300 MB/s.
+
+**Before** (commit fe2a651): three runs, 88 s / 120 s / 37 s wall. The 120 s run (load
+16 → 20) failed `nutest.TestPublishSeedWait`, `cluster.TestPlacementReadiness` and
+`collection.TestCollectionCluster`, with `node` at 51 s, `cmd/nu` at 74 s and a local
+`add` of 320 KiB "still running after 10 s". The per-test profile at load 13:
+
+| test | wall |
+|---|---|
+| nutest.TestImportCutover | 71.4 s |
+| cluster.TestSafeRelease | 12.6 s |
+| cluster.TestRepairAfterLoss | 9.5 s |
+| cluster.TestDrainRemove | 7.0 s |
+| nutest.TestPublishSeedWait | 6.7 s |
+
+Causes found:
+
+- **Disk fsync contention dominates under load.** Every store blob write syncs; with the
+  loaded root disk the heavy packages took 70–120 s. The same five packages with
+  `TMPDIR=/dev/shm`: `node` 71.5 s → 2.8 s, `cmd/nu` 69.7 s → 5.7 s, `nutest`
+  74.0 s → 9.2 s, `collection` 90 s → 5.1 s. `nutest/testenv` now points test temp
+  dirs at tmpfs when it is writable (not under `NU_SLOW`, not over an explicit `TMPDIR`).
+- **The import-cutover fresh client waited for the DHT.** It bound `0.0.0.0`, so DHT
+  auto mode turned on and `fetch` waited for the bootstrap to fail (~25 s, twice) before
+  using the hints it already had. The fresh client now runs with the DHT off:
+  `TestImportCutover` 63 s → 0.8 s in isolation. The same ordering (every provider source
+  is awaited before the walk) delays any hinted `get` on a daemon whose bootstrap is
+  slow; recorded as a follow-up, not changed here.
+- **192 Ps per test binary.** The CPU profile of the suite showed a third of the time in
+  idle-P scheduling (`lfstack`, `stealWork`). Capping `GOMAXPROCS` at 16 per test binary
+  keeps the wall time and cuts the suite's CPU from 82 s to 57 s, so a run inflicts less
+  load on the machine.
+- **Timing floors in the 0048 scenario tests** (fixed 1–2 s freshness/settle/down windows
+  and sleeps past them) were replaced by heartbeat-scaled settings and condition waits:
+  the three cluster tests 28 s → 11.5 s, `TestPublishSeedWait` 6.4 s → 1.8 s.
+- **A dialer-side race in `cluster.TestPrivateCluster`** surfaced once I/O was fast: the
+  non-member's QUIC handshake completes before the private member's post-handshake refusal
+  arrives, so `Connect` can return nil for a few milliseconds before the connection is torn
+  down (3 of 8 runs on tmpfs). The test now asserts what the responder enforces (no
+  registered connection; the dialer is dropped). The transient is reported to p2p/host.
+- Tight 1–5 s whole-test contexts in `p2p/lookup`, `p2p/host`, `p2p/proto/*`, `proto`,
+  `fetch` and `node/daemon` became scaled 30 s hang ceilings (`nutest/timeouts`).
+
+**After** (commit bfbd521), `go test -count=1 ./...`, no test weakened:
+
+| run | load before → after | wall | result |
+|---|---|---|---|
+| 1 | 7.2 → 8.8 | 18.0 s | pass |
+| 2 | 8.8 → 11.8 | 17.4 s | pass |
+| 3 | 11.8 → 14.4 | 17.4 s | pass |
+| 4 | 14.4 → 17.1 | 17.3 s | pass |
+| 5 | 17.1 → 17.7 | 16.9 s | pass |
+| +48 CPU hogs and a dsync writer on the root disk, run 1 | 15.3 → 26.0 | 16.9 s | pass |
+| same, run 2 | 26.0 → 36.3 | 17.1 s | pass |
+| same, run 3 | 36.3 → 41.6 | 16.9 s | pass |
+
+The longest package is `cluster` at ~16 s (`TestRepairAfterLoss` 6.1 s and
+`TestSafeRelease` 4.4 s are protocol-window tests: down_after/up_after, evidence
+freshness and settle at 5–10 heartbeats). Remaining tests over 2 s:
+`cmd/nu.TestAddSiteAndBrowse` 2.9 s (`doctor --peer` against a closed port, bounded by
+its own 6 s limit) and `p2p/disco.TestInnerUpgradeFallbackRecovery` 2.5 s (not touched:
+the package is under active change). Per-test timings were identical at load 7 and at
+load 42, i.e. the suite no longer depends on the machine's disk or CPU headroom.
+
 ## First magic preview: automated NAT-lab exit (0029, 2026-10-22)
 
 **Automated data/interop checks pass, with an important network-change limitation:

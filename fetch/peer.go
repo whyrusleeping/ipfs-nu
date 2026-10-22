@@ -45,7 +45,7 @@ func SessionPeer(s *host.Session) Peer {
 		if err != nil {
 			return nil, err
 		}
-		return stream, nil
+		return sessionStream{stream}, nil
 	}}
 }
 

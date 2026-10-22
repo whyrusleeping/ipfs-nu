@@ -97,7 +97,7 @@ jobs:
           # Real daemons: relay matrix, failover, direct upgrade, metrics, hotspot
           # switch mid-transfer, UDP-blocked doctor explanation.
           sudo env NU_NATLAB_BIN="$RUNNER_TEMP/nu" \
-            "$RUNNER_TEMP/swarm.test" -test.v -test.timeout=600s -test.run '^TestDaemonNAT' \
+            "$RUNNER_TEMP/swarm.test" -test.v -test.timeout=600s -test.run '^TestDaemon(NAT|OneSidedRestart|WSSUDPBlocked)' \
             2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
       - uses: actions/upload-artifact@v4
         if: always()

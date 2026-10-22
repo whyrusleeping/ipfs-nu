@@ -93,14 +93,16 @@ type treeWalk struct {
 	get   func(cid.CID) ([]byte, error)
 	visit func(l *loc, c cid.CID, k itemKind, shared func() bool) ([]byte, error)
 	seek  *Cursor // non-nil until the walk passes the cursor
-	seen  map[cid.Multihash]bool
+	// seen skips a repeated CID (full CID, as both sides of the walk agree: the same
+	// bytes linked as a raw blob and as a node are two items, 0079).
+	seen map[cid.CID]bool
 	// server only: have-tree access
 	hst   mst.Store
 	cache map[cid.CID]*mst.Node[tree.Entry]
 }
 
 func newTreeWalk(req *TreeRequest, get func(cid.CID) ([]byte, error)) *treeWalk {
-	return &treeWalk{req: req, get: get, seek: req.Cursor, seen: map[cid.Multihash]bool{}}
+	return &treeWalk{req: req, get: get, seek: req.Cursor, seen: map[cid.CID]bool{}}
 }
 
 func (w *treeWalk) run() error {
@@ -158,10 +160,10 @@ func (w *treeWalk) item(l *loc, c cid.CID, k itemKind, shared func() bool, conta
 		}
 		return nil
 	}
-	if w.seen[c.Multihash()] {
+	if w.seen[c] {
 		return nil
 	}
-	w.seen[c.Multihash()] = true
+	w.seen[c] = true
 	data, err := w.visit(l, c, k, shared)
 	if err != nil || data == nil || k == kindBlob {
 		return err

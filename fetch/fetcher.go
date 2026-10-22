@@ -555,7 +555,9 @@ type blobRef struct {
 
 // walk fetches the structure level by level, then the blobs.
 func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
-	seen := map[cid.Multihash]bool{root.Multihash(): true}
+	// Keyed by full CID: the same bytes linked as a raw blob and as a DRISL node are two
+	// objects to fetch (0079; the store holds a DRISL read only for bytes stored as DRISL).
+	seen := map[cid.CID]bool{root: true}
 	var blobs []blobRef
 	var frontier []cid.CID
 	if root.Codec() == cid.Raw {
@@ -592,10 +594,10 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 				return fmt.Errorf("fetch: walking %s: %w", c, err)
 			}
 			for _, k := range kids {
-				if seen[k.c.Multihash()] || (r.opts.Skip != nil && r.opts.Skip(k.c)) {
+				if seen[k.c] || (r.opts.Skip != nil && r.opts.Skip(k.c)) {
 					continue
 				}
-				seen[k.c.Multihash()] = true
+				seen[k.c] = true
 				r.update(func(p *Progress) { p.ObjectsTotal++; p.BytesTotal += int64(k.size) })
 				if k.c.Codec() == cid.Raw {
 					if r.wanted(k.c) {

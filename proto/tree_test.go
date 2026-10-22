@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
+	"io/fs"
 	"testing"
 	"testing/fstest"
 
@@ -289,5 +289,41 @@ func TestTreeRangeAndNodes(t *testing.T) {
 	}
 	if _, err := proto.FetchTree(ctxT(t), open, b.st, proto.TreeRequest{Root: missing, Scope: proto.ScopeNode}); !errors.Is(err, proto.ErrNotFound) {
 		t.Fatalf("missing root: %v", err)
+	}
+}
+
+// The same bytes linked as a raw blob and as a DRISL node are two items of the walk on
+// both sides (0079): a directory whose file "a" holds the bytes of its subdirectory's MST
+// node (SHA-256 blobs, so the two share a multihash) arrives whole in one subtree sync.
+func TestTreeSameBytesRawAndDRISL(t *testing.T) {
+	a, b := newNode(t), newNode(t)
+	sha := tree.BuildOptions{Blobs: a.st, Nodes: a.st, AddFile: func(_ string, f fs.File, fi fs.FileInfo) (cid.CID, error) {
+		return a.st.AddBlobHash(f, fi.Size(), cid.SHA256)
+	}}
+	sub, err := tree.BuildFS(fstest.MapFS{"sub/f.txt": {Data: []byte("in sub")}}, "sub", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := a.st.Get(sub.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := tree.BuildFS(fstest.MapFS{"d/sub/f.txt": {Data: []byte("in sub")}, "d/a": {Data: node}}, "d", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := cid.New(cid.Raw, sub.Root.Multihash())
+	all := reach(t, a.st, res.Header)
+	if !all[raw] || !all[sub.Root] {
+		t.Fatal("fixture: the tree must link the bytes both as raw and as DRISL")
+	}
+	got, _ := syncTree(t, connect(t, b.h, a.h), b.st, proto.TreeRequest{Root: res.Header, Scope: proto.ScopeSubtree, InlineMax: proto.MaxInline})
+	if got.Nodes+got.Blobs != len(all) || len(got.Missing) != 0 {
+		t.Fatalf("%d nodes + %d blobs, %d missing; the tree has %d objects", got.Nodes, got.Blobs, len(got.Missing), len(all))
+	}
+	for c := range all {
+		if info, ok, _ := b.st.Has(c); !ok || !info.Complete {
+			t.Fatalf("%s not held after the sync", c)
+		}
 	}
 }

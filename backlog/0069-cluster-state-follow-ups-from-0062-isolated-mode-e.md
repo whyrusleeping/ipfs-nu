@@ -27,3 +27,4 @@ Acceptance: one fast test per item at the public boundary (nutest or natlab wher
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Partly done in 0048: member ls|set|drain|rm, key new|grant|revoke, invite --revoke CLI/API. Still open: isolated-mode endpoint refusal, cluster mDNS, join idle timeout, public-mode content gating, replicas: all encoding, goat/indigo state-repo CAR check.

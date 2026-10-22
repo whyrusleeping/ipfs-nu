@@ -1,10 +1,10 @@
 ---
 id: "0054"
 title: 'atproto accounts as archive datasets: atrepo source, since-diffs, versions and redistribution limits'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-30"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0053"
     - "0047"

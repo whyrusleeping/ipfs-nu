@@ -36,3 +36,4 @@ Acceptance: all operations.md scenarios have repeatable evidence; exact version 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Also requires 0073 (human/CI macOS validation, signing/notarization, root server install carried from 0044) before v1 acceptance.

@@ -1,7 +1,7 @@
 ---
 id: "0045"
 title: Public names and seed/mirror following with exact-target readiness
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-22"

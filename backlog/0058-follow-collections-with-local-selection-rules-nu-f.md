@@ -19,3 +19,4 @@ Extend public follows with `nu follow <name> --select rules` for collections (do
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (6dccb6c, d39ffa6, 35e954b; merged). nu follow <name> --select rules: a select follow is a collection dataset whose single writer is the followed name; facets from the publisher header; local rules, max_size budget, rescue refused; catalog held complete under nu-catalog, items under nu-tree. Evidence: collection.TestFollowSelection, node.TestFollowSelect, nutest.TestFollowSelectNetwork (only selected items fetched; partition, restart, missed publication converge). Note: ls now lists a held directory without fetching below it (global change). Product questions raised: ls semantics, rules CLI verb, --replicas with select follows.

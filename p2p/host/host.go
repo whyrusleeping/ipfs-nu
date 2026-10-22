@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -175,10 +174,7 @@ func New(cfg Config) (h *Host, err error) {
 			return h, errors.New("host: only one socket per address family")
 		}
 		seen[e.family] = true
-		var reset quic.StatelessResetKey
-		if _, err = rand.Read(reset[:]); err != nil {
-			return h, err
-		}
+		reset := resetKey(cfg.Key, e.family)
 		e.transport = &quic.Transport{Conn: e.socket, StatelessResetKey: &reset, ConnContext: func(ctx context.Context, _ *quic.ClientInfo) (context.Context, error) {
 			if err := h.reserveConnection(); err != nil {
 				return nil, err
@@ -353,6 +349,10 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 // registerConnection applies the same peer gates and resource accounting to
 // authenticated QUIC and WSS connections.
 func (h *Host) registerConnection(c *Conn) (*Conn, error) {
+	if err := h.checkPeer(c.peer); err != nil {
+		return nil, err
+	}
+	h.retireStaleDuplicate(c)
 	outbound := c.outbound
 	for {
 		version, err := h.checkPeerVersion(c.peer)

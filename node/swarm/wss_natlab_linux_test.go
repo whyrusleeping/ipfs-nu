@@ -92,11 +92,7 @@ func TestDaemonWSSUDPBlocked(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Second)
 	defer cancel()
-	bin := filepath.Join(t.TempDir(), "nu")
-	out, err := exec.CommandContext(ctx, "go", "build", "-p", "1", "-o", bin, "../../cmd/nu").CombinedOutput()
-	if err != nil {
-		t.Fatalf("build: %v %s", err, out)
-	}
+	bin := labBinary(t, ctx)
 	for _, proxy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("CONNECT=%t", proxy), func(t *testing.T) { daemonWSSCase(t, ctx, bin, proxy) })
 	}
@@ -233,10 +229,7 @@ func daemonWSSCase(t *testing.T, parent context.Context, bin string, proxy bool)
 	t.Logf("interrupted receiver daemon; %d verified bytes persisted", heldBytes)
 	_, err = clients[0].Run("tc", "qdisc", "del", "dev", "eth0", "root")
 	labCheck(t, err)
-	// Restart both endpoints: this exercises persisted resumability independently
-	// of the qpath one-sided-reboot stale-inner-session recovery limitation.
-	daemons[0].stop()
-	daemons[0] = labStart(t, clients[0], bin, dirs[0], "daemon")
+	// Only the recipient restarts; the provider must retire its stale inner session.
 	daemons[1] = labStart(t, clients[1], bin, dirs[1], "daemon")
 	labWait(t, ctx, "restarted WSS reservations", func() bool { return ready(0) && ready(1) })
 	result, getErr := labCommand(clients[1], bin, dirs[1], "get", "-o", output, shared.Link)

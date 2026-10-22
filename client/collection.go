@@ -41,7 +41,7 @@ func (c *Client) CollectionItems(ctx context.Context, name string, q apiv0.Colle
 	if q.Limit > 0 {
 		v.Set("limit", strconv.Itoa(q.Limit))
 	}
-	for k, b := range map[string]bool{"rarest": q.Rarest, "unheld": q.Unheld, "held": q.Held} {
+	for k, b := range map[string]bool{"rarest": q.Rarest, "unheld": q.Unheld, "held": q.Held, "holders": q.Holders} {
 		if b {
 			v.Set(k, "true")
 		}

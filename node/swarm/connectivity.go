@@ -333,12 +333,20 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 				p.relay = rid
 				c.watch(id, p, p.leg)
 				leg := p.leg
-				c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
+				if c.s.cfg.RelayDatagram {
+					c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
+				} else {
+					c.setDatagram(p, "stream")
+				}
 			}
 		}
 		var conn *host.Conn
 		if err == nil && p.leg != nil {
-			conn, err = c.inner(attempt, id)
+			if preparing {
+				conn, err = c.reconnectInner(attempt, id)
+			} else {
+				conn, err = c.inner(attempt, id)
+			}
 		}
 		stop()
 		if err != nil {
@@ -475,7 +483,7 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	p.relay = circ.Relay
 	c.setDatagram(p, "stream") // the dialer upgrades; relay offers arrive via acceptDatagrams
 	c.watch(circ.Peer, p, leg)
-	if _, err = c.inner(ctx, circ.Peer); err != nil {
+	if _, err = c.reconnectInner(ctx, circ.Peer); err != nil {
 		p.lastError = err.Error()
 		c.note(circ.Peer, "accepted relay circuit via %s but the inner handshake failed: %v", circ.Relay.Base36(), err)
 		leg.Close()
@@ -501,12 +509,18 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 			return
 		}
 		p.leg = nil
-		c.note(id, "relay leg via %s closed; the lower peer re-dials known routes", p.relay.Base36())
+		c.note(id, "relay leg via %s closed; re-dial known routes (lower peer first)", p.relay.Base36())
 		p.unlock()
-		// Exactly one authenticated inner endpoint repairs packet paths. The other
-		// only accepts replacement circuits after the old leg has failed/joined.
+		// Prefer the lower peer, but the higher peer must also repair a failed
+		// leg: a rebooted lower peer has forgotten the old session and routes.
 		if c.s.ID() > id {
-			return
+			timer := time.NewTimer(300 * time.Millisecond)
+			select {
+			case <-c.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 		for c.ctx.Err() == nil {
 			conn, ok := c.s.host.Connection(id)

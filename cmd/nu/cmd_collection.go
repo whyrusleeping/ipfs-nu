@@ -305,7 +305,7 @@ var cmdCollection = &command{
 		},
 		{
 			name:    "items",
-			args:    "<collection> [--since <cursor>|0] [--rarest] [--holder <peer>] [--unheld] [--held] [--prefix p] [--facet name.op=value]...",
+			args:    "<collection> [--since <cursor>|0] [--rarest] [--holder <peer>] [--unheld] [--held] [--holders] [--prefix p] [--facet name.op=value]...",
 			summary: "list items, rarest first or filtered, or follow the item change stream with --since",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
@@ -317,6 +317,7 @@ var cmdCollection = &command{
 				fs.StringVar(&q.Holder, "holder", "", "items the index reports held by this peer")
 				fs.BoolVar(&q.Unheld, "unheld", false, "items without a fresh complete holder")
 				fs.BoolVar(&q.Held, "held", false, "items this node holds")
+				fs.BoolVar(&q.Holders, "holders", false, "list each item's holders (needs the holdings index)")
 				fs.StringVar(&q.Prefix, "prefix", "", "items at or below this path")
 				var facets []string
 				fs.Func("facet", "facet predicate name.op=value (eq, in, min, max, within, intersects)", func(s string) error { facets = append(facets, s); return nil })
@@ -351,7 +352,15 @@ var cmdCollection = &command{
 						} else if local == "" {
 							local = "-"
 						}
-						fmt.Fprintf(w, "%s\tcopies %s\tlocal %s\t%d B\n", it.Path, copies, local, it.Size)
+						var holders []string
+						for _, h := range it.Holders {
+							holders = append(holders, h.Peer+":"+h.State)
+						}
+						if q.Holders {
+							fmt.Fprintf(w, "%s\tcopies %s\tlocal %s\t%d B\t%s\n", it.Path, copies, local, it.Size, strings.Join(holders, ","))
+						} else {
+							fmt.Fprintf(w, "%s\tcopies %s\tlocal %s\t%d B\n", it.Path, copies, local, it.Size)
+						}
 					}
 					if p.Resync {
 						fmt.Fprintln(e.stderr, "the cursor expired: list again from --since 0")

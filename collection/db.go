@@ -55,6 +55,9 @@ var schema = []string{
 	// 0046: floor placement (the placement epoch and policy last evaluated).
 	`ALTER TABLE coll ADD COLUMN floor TEXT NOT NULL DEFAULT '';
 	CREATE INDEX holdings_src ON holdings (ds, src, state);`,
+	// 0063: the ingest loop's work queue (pushes whose files are not stored yet), so that
+	// pushes waiting for a head write are not rescanned on every wake.
+	`CREATE INDEX pushes_todo ON pushes (next_ms, seq) WHERE state IN ('accepted', 'fetching') AND entry IS NULL;`,
 }
 
 func openDB(path string) (*sql.DB, string, error) {

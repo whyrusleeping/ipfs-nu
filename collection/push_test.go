@@ -209,6 +209,11 @@ func TestItemPush(t *testing.T) {
 		}
 		return root != ""
 	})
+	// Both receiving members hold every item as its writer (and report it so), whichever
+	// writer the merged view credits with the identical entries.
+	nutest.Eventually(t, "both receiving members hold every item", func() bool {
+		return status(a).Local[collection.StateComplete] == items && status(b).Local[collection.StateComplete] == items
+	})
 	page, err := c.Local.CollectionItems(ctx(t), "s2", apiv0.CollectionItemsQuery{Since: "0", Limit: 1000})
 	if err != nil || len(page.Items) != items {
 		t.Fatalf("item stream on c: %d items, %v", len(page.Items), err)

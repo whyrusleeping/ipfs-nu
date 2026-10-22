@@ -94,7 +94,7 @@ func (s *Server) collectionItems(w http.ResponseWriter, r *http.Request) error {
 			return apiv0.Errorf(apiv0.CodeInvalidArgument, "limit must be a non-negative integer")
 		}
 	}
-	for k, p := range map[string]*bool{"rarest": &iq.Rarest, "unheld": &iq.Unheld, "held": &iq.Held} {
+	for k, p := range map[string]*bool{"rarest": &iq.Rarest, "unheld": &iq.Unheld, "held": &iq.Held, "holders": &iq.Holders} {
 		if *p, err = boolParam(q, k); err != nil {
 			return err
 		}

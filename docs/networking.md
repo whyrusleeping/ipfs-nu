@@ -345,6 +345,29 @@ Stream creation contexts do not replace request I/O deadlines; always Close/Rese
 A canceled connect waiter does not cancel the shared attempt for other waiters;
 the attempt is bounded by ConnectTimeout, and manager Close/Forget cancels it.
 
+**One-sided process restart (0075):** the host derives its QUIC stateless-reset
+secret from the private node identity using HMAC-SHA-256 with the domain
+`nu/libp2p/quic-v1/stateless-reset/v1` followed by the address-family byte (4/6).
+It stays stable across restarts of that identity; IPv4 and IPv6 transports use
+separate secrets so one cannot serve as a reset-token oracle for the other.
+Reset packets and token verification are standard quic-go/libp2p QUIC, not a new
+Nu wire message. Never run two hosts concurrently with the same node key.
+
+A newly authenticated connection from the **same** PeerID may encounter an old
+same-direction connection occupying the single-peer slot. Before rejecting that
+duplicate, the host gives the exact old connection a one-second standard ping
+probe. A failed probe retires only that connection; a live response, protocol-NA,
+or local stream-limit failure does not evict it. The replacement still passes
+ordinary identity/membership gates and the simultaneous-dial tie-break. This is
+not permission for unauthenticated packets, relay STOP assertions, or new peer-record
+sequence numbers to replace an authenticated session.
+
+Existing application streams are not replayed after a reset. Fetch resumes only
+missing verified ranges on fresh session streams. Concurrent range workers attach
+the failed connection's generation to terminal errors, so one lost connection
+consumes one failure allowance rather than four; three distinct failed connections
+(or ordinary repeated request failures) still exhaust the bounded peer budget.
+
 Candidates come from explicit/member/link addresses, the local cache, and streaming
 lookup results, starting dials as soon as addresses arrive. Sort available candidates
 LAN/loopback first, then global IPv6, then public IPv4, using confidence within each
@@ -469,7 +492,9 @@ remain relayed: safe relay sharing does not depend on hole punching. No ranges,
 prediction, DNS target resolution or blanket-true authorization are installed.
 
 `peer_relay_allow = ["<peerID>", ...]` (public mode only) makes this node a bounded
-circuit relay for exactly those peers; see [D11c §5](#5-relay-optimization).
+circuit relay for exactly those peers, and `relay_datagram = "off" | "on"` (default
+`off`) opts relayed legs into the Nu datagram relay extension on both the dialing and
+the accepting side; see [D11c §5](#5-relay-optimization).
 
 `dht = "auto" | "client" | "off"` (default `auto`) selects Amino participation, and
 `lookup_domain = "<peer domain>"` / `routing_url = "https://…"` add a dnsaddr and a
@@ -597,8 +622,8 @@ non-QUIC demux. There must not be a competing raw UDP reader.
 
 `/nu/path/1` is one long-lived bidirectional application stream on an already
 TLS-authenticated **inner virtual-address** connection. The owner designates one
-initiator; `node/swarm` uses the lower inner TLS PeerID (also its inner-QUIC/recovery
-initiator), irrespective of which endpoint proposed the raw circuit. Reject duplicate
+initiator; `node/swarm` uses the lower inner TLS PeerID (also its inner-QUIC
+initiator), irrespective of which endpoint proposed or repaired the raw circuit. Reject duplicate
 streams for a peer, ordinary physical connections and non-admitted virtual peers. Losing this stream revokes its probe keys, pending challenges and direct
 paths; fall back to the relay. It is not a public UDP discovery service.
 
@@ -1049,14 +1074,21 @@ its own. Measured consequences (see [validation](validation.md#datagram-relay-ex
 under a congested bottleneck, datagram legs cut loaded tail latency by about a third at
 equal throughput; under **random** loss with the relay mid-path, hop-by-hop outer
 retransmission recovers in one leg RTT while end-to-end inner recovery needs the full
-path RTT, so datagram legs are slower there. The extension is enabled by default; a
-loss-aware policy is a follow-up, not a claim.
+path RTT, so datagram legs are slower there. The extension is therefore **off by
+default**: `[swarm] relay_datagram = "off" | "on"` (default `off`). `on` makes this
+node upgrade the relayed legs it dials and accept upgrades offered for it; `off` never
+requests and always refuses offers, so a pair uses datagrams only when **both** peers
+are `on` (an `on` dialer against an `off` target sees `PermissionDenied` and stays on
+the stream). Private/isolated modes have no relays, so the key is irrelevant there. A
+loss-aware automatic policy is the follow-up that would change the default.
 
 **Ownership.** `host.Conn` owns negotiation, channels, probes and echoes;
 `circuit.Server` owns relay admission/allocation/forwarding; `circuit.Client` owns the
 upgrade request and target offers; `magicsock.Relay.AttachPacketLeg` owns per-packet
-fallback; `node/swarm` owns the dialer's retry policy, the target's offer policy and
-status (`relay_mode`: `stream`, `datagram`, or `stream: <last upgrade error>`).
+fallback; `node/swarm` owns the opt-in (`relay_datagram`), the dialer's retry policy, the
+target's offer policy and status (`relay_mode`: `stream`, `datagram`, or
+`stream: <last upgrade error>`). Relayed byte counters (`/metrics` direct-vs-relayed)
+include datagram-leg bytes in both directions.
 
 #### Pair-aware relay choice (`/nu/relays/1`)
 
@@ -1125,6 +1157,20 @@ physical sockets and relay circuits. Preserve the inner QUIC connection only whe
 beats its idle timeout and meets D11's packet budget; standard sessions, and expired inner
 connections, resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
 than importing the full module.
+
+A daemon restart is different from a path change: it destroys that endpoint's
+inner QUIC state. After a raw relay leg fails and is joined, the lower PeerID
+starts repair first, but the higher peer also tries after a 300 ms stagger: a
+rebooted lower peer may have forgotten every old session/route. Crossed attempts
+still pass the existing per-peer gate and bounded retry. The lower identity remains
+the deterministic **inner QUIC** initiator. On a replacement leg, an old inner
+connection is pinged once (one-second budget); this sends traffic with the old CID
+so the rebooted endpoint can return a verifiable stateless reset, instead of waiting
+for the 20-second keepalive or minute idle timeout. Failed liveness retires only the
+old connection and requires a fresh authenticated handshake. An unchanged live
+inner session survives ordinary relay failover. Peer-record sequence changes and
+STOP metadata alone are not authenticated reboot signals. Recovery is bounded by
+normal setup/request budgets and is not a guarantee that an offline peer returns.
 
 Transient kernel send failures that accompany a link/route/address change
 (`ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EADDRNOTAVAIL`, …) are dropped and counted

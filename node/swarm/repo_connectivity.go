@@ -79,6 +79,13 @@ func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
 		}
 		out.ProbeAllowed[id] = append(out.ProbeAllowed[id], addr)
 	}
+	switch in.RelayDatagram {
+	case "", "off":
+	case "on":
+		out.RelayDatagram = true
+	default:
+		return fmt.Errorf("swarm.relay_datagram: expected off or on, got %q", in.RelayDatagram)
+	}
 	if len(in.PeerRelayAllow) > 64 {
 		return fmt.Errorf("swarm.peer_relay_allow: at most 64 peers")
 	}

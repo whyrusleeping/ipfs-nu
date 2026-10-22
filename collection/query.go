@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -178,11 +179,11 @@ func (m *Manager) manual(name, path string, on bool) error {
 		rules = nil
 	}
 	d, _ := m.cfg.Cluster.View().Dataset(name)
-	keys := m.heldKeys()
-	if IsFollow(d) {
-		keys = nil
+	own, err := m.ownHeads(name, d)
+	if err != nil {
+		return err
 	}
-	released, err := m.evalItem(name, path, rules, m.now(), keys, m.floor(d), followLimit(d))
+	released, err := m.evalItem(name, path, rules, m.now(), own, m.floor(d), followLimit(d))
 	if released {
 		m.scheduleGC()
 	}
@@ -234,7 +235,13 @@ func (m *Manager) Items(name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[
 		}
 		match = &r
 	}
-	sqlq := `SELECT ` + itemCols + ` FROM items WHERE ds = ? AND deleted = 0`
+	// The filters and ordering need only paths (and facets for a match); full rows are
+	// read for the page alone.
+	cols := `path, NULL`
+	if match != nil {
+		cols = `path, facets`
+	}
+	sqlq := `SELECT ` + cols + ` FROM items WHERE ds = ? AND deleted = 0`
 	args := []any{name}
 	if q.Prefix != "" {
 		p := strings.Trim(q.Prefix, "/")
@@ -257,17 +264,25 @@ func (m *Manager) Items(name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[
 	if err != nil {
 		return nil, err
 	}
-	var items []*itemRow
+	var paths []string
 	now := m.now()
 	for rows.Next() {
-		it, err := scanItem(rows)
-		if err != nil {
+		var p string
+		var fj sql.NullString
+		if err := rows.Scan(&p, &fj); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if match == nil || match.Match(it.path, it.facets, now) {
-			items = append(items, it)
+		if match != nil {
+			var f map[string]Value
+			if fj.Valid {
+				_ = json.Unmarshal([]byte(fj.String), &f)
+			}
+			if !match.Match(p, f, now) {
+				continue
+			}
 		}
+		paths = append(paths, p)
 	}
 	rows.Close()
 	index := m.indexOn(name)
@@ -282,26 +297,112 @@ func (m *Manager) Items(name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[
 		}
 	}
 	if q.Unheld {
-		items = slices.DeleteFunc(items, func(it *itemRow) bool { return counts[it.path] > 0 })
+		paths = slices.DeleteFunc(paths, func(p string) bool { return counts[p] > 0 })
 	}
 	if q.Rarest {
-		slices.SortStableFunc(items, func(a, b *itemRow) int { return counts[a.path] - counts[b.path] })
+		slices.SortStableFunc(paths, func(a, b string) int { return counts[a] - counts[b] })
 	}
-	local, err := m.localStates(name)
+	page, err := apiv0.PageSlice(paths, q.Cursor, limit, m.epoch)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]apiv0.CollectionItem, 0, len(items))
-	for _, it := range items {
+	out := &apiv0.Page[apiv0.CollectionItem]{Items: make([]apiv0.CollectionItem, 0, len(page.Items)), NextCursor: page.NextCursor, Resync: page.Resync}
+	items, local, err := m.pageRows(name, page.Items)
+	if err != nil {
+		return nil, err
+	}
+	var holders map[string][]apiv0.CollectionHolder
+	if q.Holders && index {
+		if holders, err = m.pageHolders(name, page.Items); err != nil {
+			return nil, err
+		}
+	}
+	for _, p := range page.Items {
+		it := items[p]
+		if it == nil {
+			continue
+		}
 		ci := m.itemInfo(it)
-		ci.Local = local[it.path]
+		ci.Local = local[p]
+		ci.Holders = holders[p]
 		if index {
-			c, u := counts[it.path], unknown[it.path]
+			c, u := counts[p], unknown[p]
 			ci.Copies, ci.Unknown = &c, &u
 		}
-		out = append(out, ci)
+		out.Items = append(out.Items, ci)
 	}
-	return apiv0.PageSlice(out, q.Cursor, limit, m.epoch)
+	return out, nil
+}
+
+// pageRows reads the items and local holding states of a page of paths, a few hundred
+// paths per query.
+func (m *Manager) pageRows(name string, paths []string) (map[string]*itemRow, map[string]string, error) {
+	items, local := map[string]*itemRow{}, map[string]string{}
+	for lo := 0; lo < len(paths); lo += 500 {
+		chunk := paths[lo:min(lo+500, len(paths))]
+		in := strings.Repeat(",?", len(chunk))[1:]
+		args := []any{name}
+		for _, p := range chunk {
+			args = append(args, p)
+		}
+		rows, err := m.db.Query(`SELECT `+itemCols+` FROM items WHERE ds = ? AND path IN (`+in+`)`, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			it, err := scanItem(rows)
+			if err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			items[it.path] = it
+		}
+		rows.Close()
+		rows, err = m.db.Query(`SELECT path, state FROM holdings WHERE ds = ? AND path IN (`+in+`)`, args...)
+		if err != nil {
+			return nil, nil, err
+		}
+		for rows.Next() {
+			var p, st string
+			if err := rows.Scan(&p, &st); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			local[p] = st
+		}
+		rows.Close()
+	}
+	return items, local, nil
+}
+
+// pageHolders reads the holders the index reports for a page of paths.
+func (m *Manager) pageHolders(name string, paths []string) (map[string][]apiv0.CollectionHolder, error) {
+	fresh := m.freshness()
+	self := m.cfg.Self.String()
+	out := map[string][]apiv0.CollectionHolder{}
+	for lo := 0; lo < len(paths); lo += 500 {
+		chunk := paths[lo:min(lo+500, len(paths))]
+		args := []any{name}
+		for _, p := range chunk {
+			args = append(args, p)
+		}
+		rows, err := m.db.Query(`SELECT path, peer, state, src FROM idx WHERE ds = ? AND path IN (`+strings.Repeat(",?", len(chunk))[1:]+`) ORDER BY path, peer`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var p, peer string
+			var h apiv0.CollectionHolder
+			if err := rows.Scan(&p, &peer, &h.State, &h.Src); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			h.Peer, h.Fresh, h.Self = base36(peer), fresh[peer], peer == self
+			out[p] = append(out[p], h)
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 func parsePeer(s string) (string, error) {
@@ -496,31 +597,29 @@ func (m *Manager) Status(name string) (*apiv0.CollectionStatus, error) {
 		h := v.Heads[name][did].Value.Target
 		st.Writers = append(st.Writers, apiv0.CollectionWriter{DID: did, Head: h, Synced: merged[did].String() == h})
 	}
-	absent := map[string]int{}
-	rows, err := m.db.Query(`SELECT facets FROM items WHERE ds = ? AND deleted = 0`, name)
-	if err != nil {
+	// Facet names are plain (no characters JSON escapes) and a quote inside a JSON string
+	// is always escaped, so `"name":` occurs in an item's facets JSON exactly when the
+	// facet is present: the count needs no JSON decoding.
+	names := slices.Sorted(maps.Keys(specs))
+	q := `SELECT COUNT(*)`
+	args := []any{}
+	for _, k := range names {
+		q += `, COALESCE(SUM(COALESCE(instr(facets, ?), 0) = 0), 0)`
+		args = append(args, `"`+k+`":`)
+	}
+	absent := make([]int, len(names))
+	dest := []any{&st.Items}
+	for i := range absent {
+		dest = append(dest, &absent[i])
+	}
+	if err := m.db.QueryRow(q+` FROM items WHERE ds = ? AND deleted = 0`, append(args, name)...).Scan(dest...); err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var fj sql.NullString
-		if err := rows.Scan(&fj); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		st.Items++
-		var f map[string]json.RawMessage
-		if fj.Valid {
-			_ = json.Unmarshal([]byte(fj.String), &f)
-		}
-		for k := range specs {
-			if _, ok := f[k]; !ok {
-				absent[k]++
-			}
-		}
-	}
-	rows.Close()
 	if len(specs) > 0 {
-		st.FacetAbsent = absent
+		st.FacetAbsent = map[string]int{}
+		for i, k := range names {
+			st.FacetAbsent[k] = absent[i]
+		}
 	}
 	_ = m.db.QueryRow(`SELECT COUNT(*) FROM conflicts WHERE ds = ?`, name).Scan(&st.Conflicts)
 	if rules, err := m.Rules(name); err == nil {

@@ -136,6 +136,7 @@ func (r *Relay) AttachPacketLeg(leg PacketLeg) error {
 				continue
 			}
 			r.c.datagramReceived.Add(1)
+			r.c.receivedBytes.relay.Add(uint64(len(b))) // relayed bytes regardless of leg kind
 			r.c.deliver(datagram{b: b, addr: net.UDPAddrFromAddrPort(r.peer.addr)})
 		}
 	}()

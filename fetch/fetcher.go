@@ -14,6 +14,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
+	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
 	"github.com/whyrusleeping/nu/store"
@@ -119,6 +120,9 @@ type Options struct {
 	// Rank, if set, orders the sources of an object: the peers it returns are tried
 	// first, in that order, then the other candidates (D15 placement order).
 	Rank func(c cid.CID) []wire.PeerID
+	// Skip, if set, names objects below the root the walk leaves out: neither fetched
+	// nor descended into (the caller holds them complete, or fetches them itself).
+	Skip func(c cid.CID) bool
 }
 
 // Source is a non-peer source of whole objects (package rasl implements it over
@@ -331,8 +335,9 @@ type swarm struct {
 
 type peer struct {
 	Peer
-	bad   bool // dropped (corrupt) or failing; guarded by swarm.mu
-	fails int
+	bad                bool // dropped (corrupt) or failing; guarded by swarm.mu
+	fails              int
+	connectionFailures map[*host.Conn]bool // bounded by maxFails; guarded by swarm.mu
 }
 
 // maxFails is how many transport failures make a peer unusable for the rest of a fetch.
@@ -405,6 +410,18 @@ func (s *swarm) report(ctx context.Context, p *peer, err error) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if p.bad {
+		return true
+	}
+	if failure := connectionFailure(err); failure != nil {
+		if p.connectionFailures[failure] {
+			return false
+		}
+		if p.connectionFailures == nil {
+			p.connectionFailures = make(map[*host.Conn]bool)
+		}
+		p.connectionFailures[failure] = true
+	}
 	p.fails++
 	if p.fails >= maxFails {
 		p.bad = true
@@ -575,7 +592,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 				return fmt.Errorf("fetch: walking %s: %w", c, err)
 			}
 			for _, k := range kids {
-				if seen[k.c.Multihash()] {
+				if seen[k.c.Multihash()] || (r.opts.Skip != nil && r.opts.Skip(k.c)) {
 					continue
 				}
 				seen[k.c.Multihash()] = true

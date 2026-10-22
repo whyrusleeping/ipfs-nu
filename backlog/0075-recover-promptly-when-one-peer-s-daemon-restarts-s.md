@@ -1,7 +1,7 @@
 ---
 id: "0075"
 title: Recover promptly when one peer's daemon restarts (stale inner QUIC session on the survivor)
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"
@@ -21,3 +21,4 @@ Acceptance: real-daemon natlab tests (direct, relayed and WSS-relayed): restart 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (951088c; merged 45ac419). Root causes: QUIC stateless-reset key regenerated per start (now derived, domain-separated, from the node identity so restarted peers' resets are accepted); duplicate same-direction reconnects rejected while a stale connection held the slot (now liveness-probed and retired); only the lower PeerID repaired dead relay legs (both now, with stagger); one reset counted as several failures (errors carry connection generation). Evidence (real daemons, rootless natlab, direct / QUIC relay / WSS relay): provider-only SIGKILL mid-get → same get completes (0.40–1.09 s recovery); recipient-only restart → new get resumes from durable partial (0.24–1.16 s); WSS/CONNECT fixture now restarts only the recipient. Independent review requested.

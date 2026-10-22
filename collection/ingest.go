@@ -692,8 +692,10 @@ func (m *Manager) ingestLoop() {
 			running--
 			<-sem
 		}
-		rows, err := m.db.Query(`SELECT ds, path, id FROM pushes WHERE state IN (?, ?) AND entry IS NULL AND next_ms <= ? ORDER BY next_ms, seq LIMIT 64`,
-			apiv0.PushAccepted, apiv0.PushFetching, m.now().UnixMilli())
+		// The literal terms match the pushes_todo partial index (apiv0.PushAccepted and
+		// PushFetching).
+		rows, err := m.db.Query(`SELECT ds, path, id FROM pushes INDEXED BY pushes_todo WHERE state IN ('accepted', 'fetching') AND entry IS NULL AND next_ms <= ? ORDER BY next_ms, seq LIMIT 64`,
+			m.now().UnixMilli())
 		if err != nil {
 			continue
 		}

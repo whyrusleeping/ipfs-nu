@@ -545,12 +545,10 @@ adds the real daemon/CLI and restricted-network assembly. Replacing the CONNECT
 proxy with a refusing proxy produces `CONNECT denied: HTTP 403` in status **and
 `nu doctor`**, not an opaque timeout or insecure retry.
 
-**Explicit limitation discovered during acceptance:** an immediate one-sided daemon
-restart can leave the surviving peer's old inner QUIC session alive. An immediate
-get retry then fails before that session expires. The passing restart fixture
-restarts both endpoints to isolate persisted resumability from this qpath recovery
-issue. Immediate one-sided reboot recovery is **not evidenced** and needs a separate
-socket/path-owner fix; do not represent this test as that guarantee.
+**Historical limitation, superseded by 0075 below:** the original acceptance run
+needed both endpoints restarted because the survivor retained stale inner QUIC
+state. `TestDaemonWSSUDPBlocked` now restarts only the recipient, including the
+CONNECT case; it no longer uses that workaround.
 
 | Endpoint/proxy case | Support and evidence |
 |---|---|
@@ -579,7 +577,71 @@ push timing checks; their focused serial reruns and the subsequent full gate
 passed. The recovery probe retains its short QUIC-only deadline rather than
 spending the larger WSS setup budget on a dead QUIC-only relay.
 
-### Independent security review request / review plan (0017, 0020 and 0041)
+### One-sided daemon restart recovery (0075, 2026-10-22)
+
+Root causes were distinct from address-switch recovery:
+
+1. Host generated a new reset secret on each start. The new daemon's stateless
+   resets did not match survivors' learned tokens. The secret is now derived from
+   the node's private identity with domain/family separation (D9).
+2. Host's same-direction duplicate rule rejected the authenticated new connection
+   while the stale one occupied its slot (also visible on outer relay QUIC).
+   It now probes the exact old connection before rejecting that duplicate.
+3. qpath deliberately preserved inner sessions across relay failures, and only the
+   lower PeerID repaired raw legs. A rebooted lower endpoint had no old session or
+   routes to repair, leaving the higher survivor idle. Both ends can now repair
+   (staggered); the lower still initiates inner QUIC. Replacement legs probe an
+   old inner session, eliciting a reset or proving it is still alive.
+4. Four concurrent range workers could exhaust the fetcher's three-failure budget
+   on one connection reset. Session-backed request errors now carry their exact
+   connection generation; that single outage counts once, while fresh connection
+   failures still exhaust the existing bounded budget.
+
+No magicsock/quic-go reset parsing change was needed: qpath admits standard reset
+packets (fixed bit, short header), and unrecognized random reset CIDs on physical
+receive pass through to quic-go. quic-go matches the reset token at the transport
+level even if the reported source is physical rather than virtual. This does not
+mark a direct path verified, and a replacement still authenticates TLS to PeerID.
+New signed-record sequence numbers and relay-asserted STOP identity are not used
+as authority to evict an existing authenticated connection.
+
+```
+GOMAXPROCS=4 go test -p 1 -tags natlab ./node/swarm \
+  -run '^(TestDaemonOneSidedRestart|TestDaemonWSSUDPBlocked)$' -count=1 -v
+```
+
+`TestDaemonOneSidedRestart` uses actual daemons and CLI add/share/get in rootless
+namespaces, forcing direct UDP, relay-only UDP, or WSS-only TCP/443. Each mode:
+
+- SIGKILLs **only the provider** after partial verified progress. The **same** get
+  process must succeed without caller retry/error, and its output is SHA-256
+  compared with the original (13.2–14.4 MB, BLAKE3 content verification).
+- Interrupts **only the recipient** for a fresh blob, inspects durable partial
+  ranges with its store closed/reopened, restarts it and immediately issues a new
+  get. The provider/relay stay running. Output must again match exactly.
+- Requires completion within 15 seconds of starting the one-sided restart, not
+  the old minute-long idle timeout. A serial passing run completed provider cases
+  in 0.33–2.77 s and recipient cases in 0.28–2.21 s (39.3 s total). A loaded run
+  exceeded the bound while daemon startup/disk work was delayed; the serial rerun
+  passed without weakening the bound. These are fixture observations, not a fleet SLO.
+
+Focused unit tests check stable identity/family-scoped reset secrets, preservation
+of live peers that answer protocol-NA or hit local stream limits, and one-versus-
+three connection-generation failure accounting with four concurrent workers.
+Independent review of secret derivation, duplicate admission and cancellation is
+requested; no security sign-off is implied. Address-switch recovery is separate.
+
+Final verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`: `go vet ./... &&
+staticcheck ./... && go test ./... && ./scripts/depguard.sh`, gofmt and diff checks.
+The final combined restart/WSS natlab run passed in 65.0 s. The direct, QUIC-relay,
+and WSS-relay provider restarts completed in 1.09 s, 0.57 s, and 0.40 s; recipient
+restarts in 0.24 s, 0.54 s, and 1.16 s. QUIC-relay fixes the provider as the lower
+PeerID and WSS-relay as the higher, so both deterministic inner roles are exercised.
+An intermittent concurrent-failure accounting race found during validation was
+fixed: quic-go can return the terminal `net.ErrClosed`-wrapping error to a stream
+before canceling the connection context; error tagging now handles both orders.
+
+### Independent security review request / review plan (0017, 0020, 0041 and 0075)
 
 **Requested; pending independent review.** The implementation author is not the
 independent reviewer. A networking/security reviewer should review the following
@@ -593,7 +655,7 @@ follow-up commits here. Passing the smoke/soak tests is not security approval.
   budgets, exact endpoint authority, parser/stream/handshake resource bounds,
   teardown and qpath inner-session recovery. Reproduce the UDP-blocked direct
   and CONNECT cases and adversarial TLS/Upgrade/CONNECT failures. Specifically
-  examine the one-sided restart limitation above. No independent sign-off has
+  examine the 0075 one-sided restart recovery changes above. No independent sign-off has
   been obtained; the author does not approve their own implementation.
 - **Contract and implementation:** D11's “Path v1 control and probe security
   contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set
@@ -1171,8 +1233,10 @@ and retransmit over the full ~40 ms path and its congestion controller sees ~4 %
 under the outer congestion controller, so nested congestion control is **not** removed.
 The 0019 acceptance text ("throughput and tail latency beat stream relaying at 2 %
 loss") is therefore not met as written and is not claimed; the measured benefit is the
-congested/loaded-latency case. The extension stays on by default; a loss-aware
-stream/datagram policy is open work.
+congested/loaded-latency case. Coordinator decision: the extension is **off by
+default** (`swarm.relay_datagram = "on"` opts in, both peers must be on); a loss-aware
+stream/datagram policy is open work. `TestSwarmDatagramRelayOffByDefault` shows an `on`
+dialer refused by an `off` target and no datagram leg at the relay.
 
 **Daemon NAT lab** (`go test -tags natlab -run TestDaemonPairAwarePeerRelay ./node/swarm`,
 ~8–10 s after a `go build` of `cmd/nu`): two real daemons behind NATs, a `nu relay` with
@@ -1523,6 +1587,135 @@ Pilot success criteria:
   limitation.
 - Measure catalog bytes per item, index memory/disk, and selection re-evaluation cost.
 - Run unchanged on a multi-host private-mode deployment without multicast.
+
+Agent-run evidence so far, and what remains for people: [CollGS pilot preview
+(0063)](#collgs-pilot-preview-0063).
+
+## CollGS pilot preview (0063)
+
+Agent-run evidence for the CollGS preview exit, 2026-10-22, on `track/data` (commits
+`77c4b02`…`fe62f38`). Contract and limits: [collections.md](collections.md#collgs-preview-v1);
+runbook: [collections.md](collections.md#collgs-pilot-runbook).
+
+**Machine:** one shared Linux 5.15 x86_64 host (AMD EPYC 9684X, 192 threads, 755 GB RAM),
+Go 1.26.2, every run with `GOMAXPROCS=8`, state on a 1.8 TB LVM volume on NVMe that was
+97% full. Other agents' builds and tests ran at the same time (load average 12–35), so
+the figures are conservative and vary between runs by up to about 2.5×. Each figure is
+one run (queries: the median of three).
+
+**Workload shape:** `collection.BenchScene` generates the prototype's item shape: one
+file per item and a deterministic metadata record copied from the prototype's torrent
+metadata (Matadisco `uri`, `publishedAt`, `resource`, `preview`; STAC `id`, `collection`,
+`bbox`, a 6-point footprint polygon, `created`, `datetime`, `eo:cloud_cover`,
+`platform`, `instruments`, `proj:epsg`; no `packagedAt`): 830–840 B as DRISL, paths
+`YYYY/MM/DD/<stac id>`, about 13k scenes per sensing day. Facets: `sensed`, `bbox`,
+`cloud`, `platform`. Files are small stand-ins (about 600 B), so these runs measure the
+item, catalog and index path, not byte throughput.
+
+### Ingest: ≥ 20k items/day from two union writers
+
+`NU_BENCH_COLLGS_PUSH=20000 go test ./collection -run TestCollGSPush -v`: three
+in-process daemons (private cluster over loopback QUIC, no multicast), members `a` and `b`
+receiving (writer keys, producer listener with a push token), `c` running the holdings
+index; 1 s heartbeats, the default 10 s head interval. One producer pushes every item
+(upload, then push) to both `a` and `b`, 8 items in flight. After 10k items it
+"restarts" and resends its last 1000 items to both; `b` restarts during the second half.
+
+| Measure | Result |
+|---|---|
+| Accepted | 20,000 items in 2 min 49 s: **119 items/s** (10.3M/day); upload+push latency p50 7.3 ms, p99 565 ms. A run on a busier machine: 47 items/s |
+| Written into both writer heads | after 2 min 55 s (114 items/s) |
+| Merged catalog of all 20,000 items on all three members | 3 s after the last write |
+| Holdings index on `c` counts 2 copies of every item | 39 s after the last write (heartbeat-driven pulls) |
+| Lost / duplicated | none: both push logs end with 20,000 paths `written`; `c`'s item stream lists 20,000 distinct paths, every generated path present, none removed; 0 conflicts; the 2,000 resends answered `duplicate` with the first push's ID |
+| Catalog | 934 B per item (merged catalog walk on `c`: directory MST nodes plus metadata records) |
+| Collections database | 3.2 KiB per item on a receiving member (pushes, items, holdings, holdings log, index), 1.9 KiB per item on the index member |
+| Index queries on `c` at 20k | rarest-first page of 1000: 90 ms; a member's items (1000): 140 ms |
+
+20k items/day is 0.23 items/s, so one producer pushing to two members has about 500×
+headroom in this setup. Before the ingest-queue fix below the same run reached 17–28
+items/s with stalls of several seconds.
+
+### Catalog, index and re-evaluation cost at 20k and 200k items
+
+`NU_BENCH_COLLGS_SCALE=20000,200000 go test ./collection -run TestCollGSScale -v`: one
+member with both writers' heads (every item in both, as two receiving members produce),
+eight members' holdings in its index shaped like the prototype's nodes (rolling 7 d and
+6 h, a Europe bbox, cloud ≤ 5, three rescuers at 2% each), freshness forced.
+
+| Measure | 20k before | 20k after | 200k after |
+|---|---|---|---|
+| A head change of 3 items from each writer, as one member applies it | 5.0 s | 39 ms | 127 ms |
+| Full catalog walk (what each head change cost before) | 2.5 s | — | 14.7 s |
+| Bulk sync, 2000-item head changes, total | 3 min 24 s (10 changes) | 50 s | 47 min 48 s (100 changes) |
+| Catalog bytes per item | 935 | 935 | 935 |
+| Collections database (catalog view, no pushes) | 26.5 MiB | 26.5 MiB | 182 MiB (0.93 KiB/item) |
+| Rarest-first overview page (1000) | 294 ms, 92 MiB allocated | 107 ms, 16 MiB | 294 ms, 68 MiB |
+| A member's items (1000) | 22 ms | 57 ms (17 ms at 5k after batching) | 132 ms |
+| One item with holders | 4.5 ms | 9 ms | 21 ms |
+| Status with copy histogram | 282 ms, 44 MiB | 48 ms at 5k (2 MiB) | 587 ms, 42 MiB |
+| Item stream page (1000) | 29 ms | 30 ms | 11 ms |
+| Facet query (bbox + cloud, 1000) | 487 ms | 450 ms | 4.1 s, 473 MiB |
+| Rules dry run | 450 ms | 462 ms | 4.5 s, 593 MiB |
+| Rule change: full re-evaluation pass | 3.7 s | 2.1 s | 11.2 s |
+| Rolling-window edge pass (10 min later) | 40 ms | 59 ms | 270 ms |
+| Process max RSS | 175 MiB | 102 MiB | 575 MiB |
+
+The 200k "before" run was not made (its bulk sync alone would take hours); its per-head
+cost would be at least one 14.7 s catalog walk per changed writer head.
+
+**Hot spots fixed (0057 notes):**
+
+- *Whole-catalog walk per writer head change:* a changed head is now checked level by
+  level against catalogs held complete, fetching only missing objects (`fetch.Options.Skip`,
+  `collection/catalog.go`); 5.0 s → 39 ms per head change at 20k. The union merge keeps
+  the writer directories it opened (one decode per node).
+- *Full items-table scans:* listings read only paths (facets only for a match) and full
+  rows for the page; status counts absent facets in SQL without JSON decoding.
+- *Ingest queue scan:* the ingest loop rescanned every push waiting for a head write on
+  each wake, holding the database's only connection (46% of CPU at 5k items, multi-second
+  push stalls); a partial index fixed it (5k-item run: 109 → 260 items/s accepted).
+- *Bug found by the run:* a receiving member held only the items the merged view credited
+  to its key, so items pushed to two members showed one copy (and the other member's
+  holdings depended on head-arrival order). Members now hold every item in their own head.
+
+**Remaining costs:** facet queries and dry runs decode every item's facets (4 s at
+200k); copy counts read the whole index (rarest-first 0.3 s at 200k); status counts the
+items table (0.6 s at 200k); full re-evaluation after a rule change is about 55 µs per
+item. Nothing here limits 20k items/day; 10M items needs incremental counts and indexed
+facet predicates. The release sweep is still a full store GC.
+
+### Multi-host private mode without multicast
+
+`scripts/pilot/collgs-cluster.sh up|smoke|status|down HOST[=ADDR]…` sets up the cluster
+over SSH with `swarm.mdns = false` (members meet through invite boot addresses, member
+records and heartbeats). It has **not** been run on remote hosts; that needs the
+hardware owner's go-ahead. Validated locally with `--local DIR` (three NU_PATHs on
+loopback, distinct ports): `up` founds a private cluster, joins two members, creates the
+collection with two writer keys and push tokens, starts producer listeners; `smoke` pushed
+20 items to both receiving members over their loopback APIs plus one through a producer
+listener with a push token, and the index counted 41 complete holdings (two per item, one
+for the producer item) 47 s later (heartbeat-driven). `collgs-dash` against the index
+member answered `/api/overview`, `/api/nodes`, `/api/node/<addr>` and
+`/api/dataset/<info_hash>` (with the metadata record) with the prototype's field names.
+
+### Remaining for the 0063 exit
+
+Agent work: none blocking; optional are indexed facet predicates and incremental copy
+counts (above), and a remote-host run of the script once hardware is approved.
+
+Human (needs the deployment owner):
+
+- Run `collgs-cluster.sh` (or the runbook) on multiple real hosts of vmx's deployment
+  (private mode, no multicast) and record hosts, network path and RTT.
+- vmx's producer pushing through the item API (Matadisco/STAC/GDAL kept, torrent building,
+  publisher and web seed replaced), including restarts, and his dashboard frontend against
+  `collgs-dash` (or a port of it).
+- Reproduce the regional, cloud-cover, rolling and rescue policies as rules on his nodes
+  and compare the collector's answers with the holdings index.
+- Full multi-file scenes on declared hardware: push ingest and fan-out Gbit/s,
+  multi-source fetch of new items (partial-item holdings are not implemented).
+- The install/init/invite/join runbook tested by someone other than the implementer.
 
 ## Reporting method
 

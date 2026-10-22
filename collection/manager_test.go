@@ -205,7 +205,8 @@ func TestSelection(t *testing.T) {
 	r.rules(fmt.Sprintf(`[{"cloud": {"max": 100}, "max_bytes": %d}]`, clear.Size))
 	r.reconcile()
 	st, err := r.m.Status("s2")
-	if err != nil || st.Local[StateComplete] != 1 || st.Local[StatePaused] != 4 || st.Shortfall == 0 || st.Items != 5 || st.Conflicts != 1 {
+	if err != nil || st.Local[StateComplete] != 1 || st.Local[StatePaused] != 4 || st.Shortfall == 0 || st.Items != 5 || st.Conflicts != 1 ||
+		st.FacetAbsent["cloud"] != 0 || st.FacetAbsent["platform"] != 5 {
 		t.Fatalf("budget status %+v %v", st, err)
 	}
 
@@ -237,6 +238,19 @@ func TestSelection(t *testing.T) {
 	if len(counts) != 4 { // clear, x, sea, old (cloud <= 50)
 		t.Fatalf("index counts %v, local %v", counts, r.local())
 	}
+	// A listing with holders carries each item's holders from the index.
+	r.m.cfg.Index = true
+	p, err := r.m.Items("s2", apiv0.CollectionItemsQuery{Holders: true})
+	withHolder := 0
+	for _, it := range p.Items {
+		if len(it.Holders) == 1 && it.Holders[0].Peer == "peer-a" && it.Holders[0].State == StateComplete && !it.Holders[0].Fresh {
+			withHolder++
+		}
+	}
+	if err != nil || len(p.Items) != 5 || withHolder != 4 {
+		t.Fatalf("items with holders: %+v %v", p, err)
+	}
+	r.m.cfg.Index = false
 	r.rules(`[]`)
 	r.reconcile()
 	if err := r.m.follow("s2", "peer-a", cursor{r.m.epoch, hi}, fetch); err != nil {

@@ -1,7 +1,7 @@
 ---
 id: "0076"
 title: Fetch starts on first provider (don't wait for slow sources); replica retry backoff; private-gating dial transient
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

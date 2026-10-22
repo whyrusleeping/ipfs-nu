@@ -61,7 +61,7 @@ func unpinExplicit(t *testing.T, nd *nutest.Node, root cid.CID) {
 	}
 }
 
-func memberState(nd *nutest.Node, id nutest.Node) string {
+func memberState(nd *nutest.Node, id *nutest.Node) string {
 	m := nd.Local.NetCluster().View().Members[id.ID]
 	if m.Value == nil {
 		return ""
@@ -139,7 +139,7 @@ func TestRepairAfterLoss(t *testing.T) {
 		t.Fatalf("cluster status without authority: %+v %v", st.Network, err)
 	}
 	time.Sleep(2 * time.Second) // well past down_after: still nobody marks d
-	if s := memberState(b, *d); s != cluster.StateActive {
+	if s := memberState(b, d); s != cluster.StateActive {
 		t.Fatalf("d marked %s without an authority", s)
 	}
 
@@ -161,7 +161,7 @@ func TestRepairAfterLoss(t *testing.T) {
 	a.Start()
 	full(a)
 	restarted := time.Now()
-	eventually(t, "d marked unavailable", func() bool { return memberState(b, *d) == cluster.StateUnavailable })
+	eventually(t, "d marked unavailable", func() bool { return memberState(b, d) == cluster.StateUnavailable })
 	if time.Since(restarted) < time.Second {
 		t.Fatalf("marked %s after the authority started, before down_after", time.Since(restarted))
 	}
@@ -189,7 +189,7 @@ func TestRepairAfterLoss(t *testing.T) {
 
 	// d returns: heartbeats for up_after make it active again.
 	d.Start()
-	eventually(t, "d active again", func() bool { return memberState(b, *d) == cluster.StateActive })
+	eventually(t, "d active again", func() bool { return memberState(b, d) == cluster.StateActive })
 }
 
 // pinned reports whether nd keeps root pinned for dataset ds.
@@ -380,10 +380,10 @@ func TestDrainRemove(t *testing.T) {
 	update(t, a, "logs", root)
 	waitReady(t, b, "logs", root)
 	unpinExplicit(t, a, root)
-	rm := func(id nutest.Node, dry, force bool) (*apiv0.MemberRemoval, error) {
+	rm := func(id *nutest.Node, dry, force bool) (*apiv0.MemberRemoval, error) {
 		return a.Local.ClusterMemberRemove(ctx(t), apiv0.ClusterMemberRemoveRequest{Peer: id.ID.String(), DryRun: dry, Force: force})
 	}
-	if r, err := rm(*b, true, false); err != nil || r.Safe || len(r.Reasons) == 0 {
+	if r, err := rm(b, true, false); err != nil || r.Safe || len(r.Reasons) == 0 {
 		t.Fatalf("rm of an active owner: %+v %v", r, err)
 	}
 
@@ -392,7 +392,7 @@ func TestDrainRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(node.EvidenceFresh + time.Second)
-	r, err := rm(*d, false, false)
+	r, err := rm(d, false, false)
 	if waitCode(err) != apiv0.CodeFailed || r == nil || r.Removed || len(r.Unconfirmed) == 0 ||
 		!slices.ContainsFunc(r.Unconfirmed[0].Missing, func(m apiv0.MissingOwner) bool { return m.Peer == c.ID.Base36() }) {
 		t.Fatalf("R16: rm while an owner is partitioned: %+v %v", r, err)
@@ -403,11 +403,11 @@ func TestDrainRemove(t *testing.T) {
 
 	rejoin(n, c, a, b, d)
 	eventually(t, "drain confirmed", func() bool {
-		r, err := rm(*d, true, false)
+		r, err := rm(d, true, false)
 		return err == nil && r.Safe
 	})
 	eventually(t, "d released its copies", func() bool { return !pinned(t, d, "logs", root) })
-	if r, err := rm(*d, false, false); err != nil || !r.Removed || r.Forced {
+	if r, err := rm(d, false, false); err != nil || !r.Removed || r.Forced {
 		t.Fatalf("rm after drain: %+v %v", r, err)
 	}
 
@@ -418,7 +418,7 @@ func TestDrainRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(node.EvidenceFresh + time.Second)
-	r, err = rm(*c, false, true)
+	r, err = rm(c, false, true)
 	if err != nil || !r.Removed || !r.Forced || len(r.Unconfirmed) == 0 {
 		t.Fatalf("forced rm: %+v %v", r, err)
 	}

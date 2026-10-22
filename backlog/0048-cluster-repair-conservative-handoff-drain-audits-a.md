@@ -1,7 +1,7 @@
 ---
 id: "0048"
 title: Cluster repair, conservative handoff/drain, audits and operator recovery
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-22"

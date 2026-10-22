@@ -23,3 +23,4 @@ FISL is "hot new stuff" upstream. Track spec changes and keep this behind config
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Implemented (d60b24b, 117dd97, 68c9a5a; merged 0034c32). fisl/ package (bounded JSON/JSONL decoders, expiry ceilings, scheme filter, publisher/origin demotion, SSRF via httpsrc) + rasl.Retriever shared URL-level verified retrieval; fisl.indexers config (off by default; never in private/isolated clusters) feeds user fetches. Evidence: fisl.TestDecode, fisl.TestSource (down/HTML/liar indexers, expiry, floods, 1.2 MiB BLAKE3), fisl.TestSSRF, node.TestGetFISL. BLOCKED on external dependency: no public reference FISL indexer exists yet (spec at dasl.ing/fisl.html, 2026-10-21; vmx's CollGS host serves SPA HTML for the path). Opt-in fisl.TestLive (NU_LIVE_FISL=<indexer>,<cid>) is ready for the interop acceptance once one exists.

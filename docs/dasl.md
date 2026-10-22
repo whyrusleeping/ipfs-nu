@@ -120,8 +120,9 @@ the published spec (`rasl://<cid>/?hint=<host>…`).
   already serves publicly under the
   [exposure rules](operations.md#api-gateway-and-public-exposure). It never fetches unheld
   content on demand (an unheld CID is `404`), so it cannot act as an open proxy. The
-  loopback gateway sends no CORS header (P5, N29); the public listener (0043) will add
-  `Access-Control-Allow-Origin: *` there so browsers can verify by hash.
+  loopback gateway sends no CORS header (P5, N29); the [public listener](api.md#public-listener-0043)
+  (0043) adds `Access-Control-Allow-Origin: *` on this route only, for objects under its
+  public roots, so browsers can verify by hash.
 - `nu get|cat|ls rasl://<cid>/?hint=host[&hint=host…]` parses the URL per the spec (the
   CID is the authority; a `hint` is a DNS name or IP literal, optionally `:port`,
   lowercased, deduplicated, at most 16; invalid hints are dropped; the path is ignored).
@@ -140,9 +141,9 @@ the published spec (`rasl://<cid>/?hint=<host>…`).
   are `unavailable` with the per-hint causes. Fetching refuses loopback, private and
   link-local hints (checked again after redirects) unless `ingest.allow_ips` says
   otherwise, and an isolated cluster member refuses RASL fetches (no egress).
-- `nu share` will emit a `rasl://` link with the public seed as hint once an HTTPS seed
-  serves the object (0043); only SHA-256 objects are browser-verifiable without a Nu
-  client. Interop with `@dasl/rasl` is by construction (same path, same headers, same
+- `nu share` emits a `rasl://<cid>/?hint=<domain>` link when the answering daemon's
+  public listener serves the root (0043); only SHA-256 objects are browser-verifiable
+  without a Nu client (browser row B9 of the validation plan checks a DRISL root that way). Interop with `@dasl/rasl` is by construction (same path, same headers, same
   first-success race); an automated cross-implementation run is not part of the tests.
 
 ### MASL

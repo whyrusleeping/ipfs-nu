@@ -61,6 +61,9 @@ type Daemon struct {
 	// The producer listener (api.producer.*, rule A8), when configured.
 	prodLn  net.Listener
 	prodSrv *http.Server
+	// The public content listener ([public], rules P1–P6), when configured.
+	pubLn  net.Listener
+	pubSrv *http.Server
 }
 
 // ShutdownTimeout bounds graceful shutdown of the HTTP servers.
@@ -107,7 +110,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		lock.Release()
 		return nil, err
 	}
-	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 3)}
+	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 4)}
 	if !opts.NoNetwork {
 		scfg, err := swarm.RepoConfig(opts.Repo, n.Key, n.Store)
 		if err != nil {
@@ -180,6 +183,10 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		d.Close()
 		return nil, err
 	}
+	if err := d.startPublic(ctx, cfg); err != nil {
+		d.Close()
+		return nil, err
+	}
 	// Store maintenance (D17 A7): GC at the watermark or below the free-space reserve.
 	d.maintainCtx, d.maintainStop = context.WithCancel(ctx)
 	d.maintainDone = make(chan struct{})
@@ -242,12 +249,12 @@ func (d *Daemon) Close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()
-	for _, srv := range []*http.Server{d.apiSrv, d.gwSrv, d.prodSrv} {
+	for _, srv := range []*http.Server{d.apiSrv, d.gwSrv, d.prodSrv, d.pubSrv} {
 		if srv != nil {
 			keep(srv.Shutdown(ctx))
 		}
 	}
-	for _, ln := range []net.Listener{d.apiLn, d.gwLn, d.prodLn} {
+	for _, ln := range []net.Listener{d.apiLn, d.gwLn, d.prodLn, d.pubLn} {
 		if ln != nil {
 			_ = ln.Close()
 		}

@@ -144,8 +144,10 @@ func TestDockerKuboAminoProviderInterop(t *testing.T) {
 		t.Fatalf("Kubo identify Nu: %v", err)
 	}
 	var identified struct{ Protocols []string }
-	identifyJSON:=kuboIdentify
-	if at:=strings.LastIndex(kuboIdentify,"{\n\t\"ID\"");at>=0{identifyJSON=kuboIdentify[at:]}
+	identifyJSON := kuboIdentify
+	if at := strings.LastIndex(kuboIdentify, "{\n\t\"ID\""); at >= 0 {
+		identifyJSON = kuboIdentify[at:]
+	}
 	if err = json.Unmarshal([]byte(identifyJSON), &identified); err != nil {
 		t.Fatalf("decode Kubo identify response %q: %v", kuboIdentify, err)
 	}

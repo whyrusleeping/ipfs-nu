@@ -79,6 +79,11 @@ var atPage = template.Must(template.New("at").Parse(`<!doctype html>
 `))
 
 func (h *Handler) at(w http.ResponseWriter, r *http.Request) {
+	if h.pub != nil {
+		// Snapshots are never public roots (P4): the public listener has no /at/ route.
+		h.notFound(w, r)
+		return
+	}
 	ac, err := h.atContent()
 	if err != nil {
 		writeError(w, err)

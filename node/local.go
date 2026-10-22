@@ -48,6 +48,7 @@ type Local struct {
 	content  *content.Content
 	clusters clusterState
 	reps     replicas
+	public   publicState
 	started  time.Time
 	// API and Gateway are the bound listen addresses, set by the daemon.
 	API, Gateway string
@@ -131,6 +132,7 @@ func (n *Local) Status(ctx context.Context) (*apiv0.Status, error) {
 			Started: n.started,
 			API:     n.API,
 			Gateway: n.Gateway,
+			Public:  n.PublicOrigin(),
 		},
 		Paths:      Paths(n.Repo),
 		Operations: n.Ops.Counts(),

@@ -20,6 +20,7 @@ optional). Files are 0600, directories 0700.
 | `api`, `gateway` | URL of the running daemon's listeners, written at start and removed at clean shutdown; clients discover the daemon through `api` |
 | `daemon.lock` | flock held by the running daemon, containing its PID; a second daemon fails with `conflict` |
 | `tokens/<name>.json` | push tokens of the producer listener (0600; `nu api token`; deleting the file revokes it) |
+| `public.cert`/`public.key` (config) | the public listener's PEM chain and key live wherever the operator keeps them, outside `$NU_PATH` |
 | `cluster/net/ingest/` | retained bytes of interrupted item URL downloads, with their validators |
 | `version` | layout version (`1`) |
 
@@ -28,7 +29,8 @@ Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:81
 `store.limit = "0"` (physical budget, unlimited), `store.free_reserve = "1G"`,
 `store.gc_watermark = 0.9` ([D17 A5](data.md#accounting-and-budgets); sizes take a
 K/M/G/T/P suffix or a bare byte count). The daemon refuses non-loopback API/gateway
-listeners until authentication exists.
+listeners until authentication exists. `[public]` (off by default) configures the
+[public listener](#public-listener-0043).
 
 ## Error envelope and exit categories
 
@@ -126,6 +128,9 @@ GET    /api/v0/at/record?target=at://…      AtRecord (verified record JSON wit
 POST   /api/v0/at/snapshot  {target, blobs?} → 202 operation (result: AtSnapshot)
 POST   /api/v0/car/import   {path, profile?, key?, offline?, pin?} → 202 operation (result: CarImport)
 GET    /api/v0/car?target=<cid>&profile=    CAR bytes (application/vnd.ipld.car)
+GET    /api/v0/public                       Page[PublicRoot] (0043)
+POST   /api/v0/public       {cid}           → PublicRoot (https/site/rasl set while the public listener runs)
+DELETE /api/v0/public/{cid}                 → 204
 ```
 
 `add` also takes `{url, meta?}` (URL import) and `meta` for local paths; the result then
@@ -163,7 +168,9 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
 - **`pin add <cid>`** is an operation (stage `checking` walks the content, `pinning`
   records it); content that is not fully held fails with `not_found` until fetching
   arrives. **`pin rm`** removes every explicit pin of the CID; **`pin ls`** lists
-  `{cid, name?, mode, source}` for all sources.
+  `{cid, name?, mode, source}` for all sources. **`public add|rm|ls`** manage the
+  `public` source for the [public listener](#public-listener-0043) (`add` requires held,
+  complete content and is synchronous).
 - **`dag get <cid[/path]>`** prints a DRISL object as atproto-style JSON (`$link`,
   `$bytes`); a path selects map keys and array indexes and follows links on the way, and a
   final link is printed as `{"$link"}`. A raw CID is `invalid_argument` (use `cat`).
@@ -479,6 +486,60 @@ These are the mechanics of rules G1–G9 of the
   caching, `Range`; query string ignored; `404` for anything not held (nothing is
   fetched), `400` for a non-CID, no CORS header on loopback. See [D21](dasl.md#rasl).
 
+## Public listener (0043)
+
+The public HTTPS seed is the gateway handler in public mode on its own listener
+(rules [P1–P6](operations.md#p-public-and-member-only-serving); runbook under P6).
+
+```toml
+[public]
+listen = ":443"            # off when absent/empty
+domain = "seed.example"    # sites on <cid>.seed.example; "seed.example:8443" when not 443
+cert = "/etc/nu/fullchain.pem"
+key = "/etc/nu/privkey.pem"
+# behind_proxy = true      # instead of cert/key: plain HTTP for a TLS proxy; listen must be loopback
+# max_requests = 256       # concurrent requests, total
+# per_ip = 32              # concurrent requests per client address
+```
+
+- **Hosts.** `Host` must be exactly `domain` (a trailing dot and `:443` are ignored) or
+  `<cid>.domain`; anything else is `403`. `domain` must be a DNS name with two or more
+  labels: no IP literal, `localhost` or `*.localhost` (P5).
+- **What is served.** Only CIDs under a *public root*: `nu public add <cid>` marks a
+  held, complete tree, file or blob (the mark is a pin with source `public`, so GC keeps
+  it); `nu public rm` unmarks; `nu public ls` lists roots with their URLs while the
+  listener runs. The daemon keeps the set of every object reachable from the public roots
+  in memory (built at start, extended on add, rebuilt on remove) and answers `404` for
+  any other CID exactly as for unheld content, on `/tree/`, `/blob/`, RASL and site
+  origins alike. Nothing is fetched on demand (P4). `/at/` does not exist on this
+  listener; `/api/` never does (P1).
+- **Routes and behavior** are the loopback gateway's (`/`, `/tree/<cid>/<path>`,
+  `/blob/<cid>`, `/.well-known/rasl/<cid>`, and `https://<cid>.<domain>/<path>` as the
+  site origin): same non-active fallback on the bare origin, same types, caching, `Range`,
+  redirects and listing CSP; the `Link: rel="alternate"` and "open as site" URLs use
+  `https://<cid>.<domain>/`. RASL responses add `Access-Control-Allow-Origin: *` here
+  (P5), so a page on any origin can fetch an object and verify it by hash (SHA-256 with
+  WebCrypto; BLAKE3 needs a Nu-aware client). Only `GET`/`HEAD`; no cookies, no other
+  CORS.
+- **TLS.** `cert`/`key` are a PEM chain and key, loaded at start (a bad pair refuses the
+  listener) and re-read within a minute of a change (renewals apply without restart; a
+  failed reload keeps the last good pair). TLS 1.2+, HTTP/2 and HTTP/1.1. With
+  `behind_proxy = true` the listener speaks plain HTTP and must be on a loopback
+  address; the proxy terminates TLS for `domain` and `*.domain` and passes `Host`
+  through. ACME is not built in (wildcards need DNS-01).
+- **Refusals** (`invalid_argument`, action names the key): the node is a member of a
+  private or isolated cluster (P3); no `cert`/`key` and no `behind_proxy`;
+  `behind_proxy` off loopback; invalid `domain`.
+- **Limits.** `max_requests` and `per_ip` bound concurrency (`503`, `Retry-After: 2`);
+  `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers. Behind a proxy `per_ip` sees
+  the proxy's address.
+- **Share.** `nu share <cid>[/path]` (and `PublicRoot`) carry `https` (the bare-origin
+  URL: `/tree/<cid>/<path>` with a trailing slash for directories, `/blob/<cid>` for raw
+  blobs), `site` (`https://<cid>.<domain>/<path>/`, directories only) and `rasl`
+  (`rasl://<cid>/?hint=<domain>`) only while the public listener of the node answering
+  the request serves the root (P2); otherwise the fields are absent. `nu status` shows
+  `daemon.public` (the origin) when the listener runs.
+
 ## Safe extraction (`nu get -o`)
 
 `node/extract.Extract(ctx, dest, walk)` writes a pre-order tree walk under `dest`:
@@ -498,7 +559,7 @@ prints each one (rules X1–X6 of the [contract](operations.md#x-extraction-nu-g
 
 ## Daemonless commands
 
-Content commands (`add`, `cat`, `ls`, `get`, `share`, `pin`, `dag`, `car`) try the daemon first (address
+Content commands (`add`, `cat`, `ls`, `get`, `share`, `pin`, `public`, `dag`, `car`) try the daemon first (address
 file, then a status ping). When none answers they take the repo lock, remove stale
 address files, and run an in-process node (`node.Local`, which opens the store) for the
 duration of the command, saying so on stderr; `add`, `pin add` and `dag put` add that the

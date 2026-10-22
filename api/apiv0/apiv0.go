@@ -331,6 +331,8 @@ type Daemon struct {
 	// API and Gateway are the bound listen addresses as host:port.
 	API     string `json:"api"`
 	Gateway string `json:"gateway"`
+	// Public is the public listener's origin (https://<domain>) when it is running.
+	Public string `json:"public,omitempty"`
 }
 
 // Paths lists the `$NU_PATH` layout.
@@ -478,4 +480,10 @@ type ShareLink struct {
 	Addrs []string `json:"addrs"`
 	// Serving reports whether this node is accepting connections for the content now.
 	Serving bool `json:"serving"`
+	// HTTPS, Site and RASL are set only when this node's public listener serves the
+	// root now (operations.md P2): the bare-origin browser URL, the site origin for a
+	// tree, and the rasl:// link with the seed as hint.
+	HTTPS string `json:"https,omitempty"`
+	Site  string `json:"site,omitempty"`
+	RASL  string `json:"rasl,omitempty"`
 }

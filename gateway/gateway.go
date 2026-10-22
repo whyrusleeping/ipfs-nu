@@ -6,6 +6,10 @@
 // root, http://<cid>.localhost:8171/…, serves a tree as a site (index.html, listings,
 // active content allowed) because origin isolation, not the gateway, keeps it from
 // touching anything else. The decided rules are in docs/api.md "Gateway".
+//
+// The same handler in public mode (NewPublic) is the public HTTPS seed of backlog 0043:
+// Host must be the operator's domain or <cid>.<domain>, only roots marked public are
+// served, and RASL answers carry CORS there. See public.go.
 package gateway
 
 import (
@@ -30,6 +34,8 @@ import (
 type Handler struct {
 	content Content
 	mux     *http.ServeMux
+	// pub is set on the public listener (NewPublic); nil on the loopback gateway.
+	pub *PublicOptions
 }
 
 // New returns a gateway over content. A nil content serves only the root page and
@@ -49,16 +55,19 @@ func New(content Content) *Handler {
 
 // request carries the per-request origin decision.
 type request struct {
-	// site is the root CID when the request arrived on a <cid>.localhost origin.
+	// site is the root CID when the request arrived on a <cid>.localhost (or
+	// <cid>.<domain>) origin.
 	site string
 	port string
+	// pub is the public listener's options, nil on loopback.
+	pub *PublicOptions
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// Cookies are never set or read; a stray one is simply ignored.
 	r.Header.Del("Cookie")
-	rq, err := parseHost(r)
+	rq, err := h.parseHost(r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -87,10 +96,14 @@ func reqInfo(r *http.Request) request {
 	return rq
 }
 
-// parseHost validates Host: a loopback name or address, or <cid>.localhost, always with
-// this listener's port. Anything else (a public name rebound to 127.0.0.1, another port)
-// is refused.
-func parseHost(r *http.Request) (request, error) {
+// parseHost validates Host. On loopback: a loopback name or address, or <cid>.localhost,
+// always with this listener's port; anything else (a public name rebound to 127.0.0.1,
+// another port) is refused. On the public listener: exactly the configured domain or
+// <cid>.<domain> (P5).
+func (h *Handler) parseHost(r *http.Request) (request, error) {
+	if h.pub != nil {
+		return h.pub.parseHost(r)
+	}
 	host, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host, port = r.Host, ""
@@ -121,6 +134,17 @@ func parseHost(r *http.Request) (request, error) {
 	return rq, forbidden("host %q is not localhost, a loopback address or <cid>.localhost", r.Host)
 }
 
+// allowed reports whether root may be served on this listener: always on loopback; on
+// the public listener only when the operator marked it (or a root above it) public (P2).
+// A refused root reads exactly like unheld content, so the listener reveals nothing about
+// what the node holds privately.
+func (h *Handler) allowed(root string) error {
+	if h.pub == nil || h.pub.Serves(root) {
+		return nil
+	}
+	return apiv0.Errorf(apiv0.CodeNotFound, "%s is not served here", root)
+}
+
 func forbidden(format string, args ...any) *apiv0.Error {
 	return apiv0.Errorf(apiv0.CodeForbidden, format, args...).
 		WithAction("open the gateway as http://localhost:<port>/ or http://<cid>.localhost:<port>/")
@@ -142,6 +166,11 @@ func writeError(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
+	if h.pub != nil {
+		writeError(w, apiv0.Errorf(apiv0.CodeNotFound, "no such route").
+			WithAction("use /tree/<cid>/<path>, /blob/<cid>, /.well-known/rasl/<cid> or "+h.pub.SiteURL("<cid>")))
+		return
+	}
 	writeError(w, apiv0.Errorf(apiv0.CodeNotFound, "no such gateway route").
 		WithAction("use /tree/<cid>/<path>, /blob/<cid>, /at/<did>/…, /.well-known/rasl/<cid> or http://<cid>.localhost:<port>/"))
 }
@@ -166,6 +195,11 @@ node to your browser.</p>
 func (h *Handler) root(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", listingCSP)
+	if h.pub != nil {
+		w.Header().Set("Cache-Control", "no-store")
+		_ = publicRootPage.Execute(w, struct{ Name, Version, Domain string }{nu.Name, nu.Version, h.pub.Domain})
+		return
+	}
 	_ = rootPage.Execute(w, struct{ Name, Version, Port string }{nu.Name, nu.Version, reqInfo(r).port})
 }
 
@@ -184,6 +218,10 @@ func (h *Handler) blob(w http.ResponseWriter, r *http.Request) {
 	cid := r.PathValue("cid")
 	if !target.IsCID(cid) {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a CID", cid))
+		return
+	}
+	if err := h.allowed(cid); err != nil {
+		writeError(w, err)
 		return
 	}
 	info, err := h.resolve(r.Context(), cid, "")
@@ -222,6 +260,10 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, root, p string, 
 	}
 	p = strings.Trim(p, "/")
 	if err := validatePath(p); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := h.allowed(root); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -301,8 +343,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, 
 		hdr.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": safeFilename(info.Name, info.CID)}))
 	}
 	if !site {
-		rq := reqInfo(r)
-		if u := siteURL(rq.port, r.URL.EscapedPath()); u != "" {
+		if u := reqInfo(r).siteURL(r.URL.EscapedPath()); u != "" {
 			hdr.Set("Link", "<"+u+">; rel=\"alternate\"")
 		}
 	}
@@ -310,16 +351,21 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, info *Info, 
 	http.ServeContent(w, r, "", time.Time{}, f)
 }
 
-// siteURL maps a bare-origin /tree/<cid>/<path> URL (escaped form) to its site-origin URL.
-func siteURL(port, urlPath string) string {
+// siteURL maps a bare-origin /tree/<cid>/<path> URL (escaped form) to its site-origin
+// URL: http://<cid>.localhost:<port>/<path> on loopback, https://<cid>.<domain>/<path> on
+// the public listener.
+func (rq request) siteURL(urlPath string) string {
 	rest, ok := strings.CutPrefix(urlPath, "/tree/")
 	if !ok {
 		return ""
 	}
 	cid, p, _ := strings.Cut(rest, "/")
+	if rq.pub != nil {
+		return rq.pub.SiteURL(cid) + p
+	}
 	u := "http://" + cid + ".localhost"
-	if port != "" {
-		u += ":" + port
+	if rq.port != "" {
+		u += ":" + rq.port
 	}
 	return u + "/" + p
 }
@@ -410,7 +456,7 @@ var listingPage = template.Must(template.New("listing").Parse(`<!doctype html>
 func (h *Handler) serveListing(w http.ResponseWriter, r *http.Request, root, p string, info *Info, site bool) {
 	data := listingData{Name: nu.Name, Root: root, Path: p, CID: info.CID, Size: info.Size, Site: site, Parent: p != ""}
 	if !site {
-		data.SiteURL = siteURL(reqInfo(r).port, r.URL.EscapedPath())
+		data.SiteURL = reqInfo(r).siteURL(r.URL.EscapedPath())
 	}
 	for e, err := range h.content.List(r.Context(), info) {
 		if err != nil {

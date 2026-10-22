@@ -3,16 +3,23 @@
 <title>nu browser origin-isolation check</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;max-width:50em;margin:2em auto;padding:0 1em}td,th{text-align:left;padding:.2em .6em;border-bottom:1px solid #eee;vertical-align:top}.pass{color:#060}.fail{color:#a00}.info{color:#555}pre{background:#f4f4f4;padding:.5em;white-space:pre-wrap}</style>
 <h1>nu browser check</h1>
-<p>This page is served from a <code>&lt;cid&gt;.localhost</code> site origin and tries to reach
-things it must not. Rows reference docs/validation.md "Browser origin-isolation checks";
-paste the result block there. Set the second site's CID below for B4/B6.</p>
+<p>This page is served from a <code>&lt;cid&gt;.localhost</code> site origin (or, for the
+public seed of backlog 0043, <code>&lt;cid&gt;.&lt;domain&gt;</code>) and tries to reach things it
+must not. Rows reference docs/validation.md "Browser origin-isolation checks"; paste the
+result block there. Set the second site's CID below for B4/B6.</p>
 <p>Other site CID: <input id="other" size="64" placeholder="b…"> <button id="run">run</button></p>
 <table id="t"><tr><th>#</th><th>check</th><th>result</th></tr></table>
 <h2>Result block</h2>
 <pre id="out">(not run)</pre>
 <iframe id="fr" hidden></iframe>
 <script>
-const GW_PORT = location.port || "8171", API = "http://127.0.0.1:5171/api/v0";
+const API = "http://127.0.0.1:5171/api/v0";
+const host = location.hostname, cid = host.split(".")[0], domain = host.slice(cid.length + 1);
+const isLocal = domain === "localhost", GW_PORT = location.port || (isLocal ? "8171" : "443");
+const portSuffix = location.port ? ":" + location.port : "";
+// Bare origins: the loopback gateway's two names, or the public seed's domain.
+const bare = isLocal ? [`http://localhost:${GW_PORT}`, `http://127.0.0.1:${GW_PORT}`] : [`${location.protocol}//${domain}${portSuffix}`];
+const siteOf = c => isLocal ? `http://${c}.localhost:${GW_PORT}/` : `${location.protocol}//${c}.${domain}${portSuffix}/`;
 const rows = [], out = document.getElementById("out");
 function row(id, what, ok, detail) {
   rows.push({ id, what, ok, detail });
@@ -26,19 +33,24 @@ async function blockedRead(url, init) {
   try { const r = await fetch(url, init); await r.text(); return { ok: false, detail: `readable, status ${r.status}` }; }
   catch (e) { return { ok: true, detail: "blocked: " + e.message }; }
 }
+// base32 (lowercase, no padding) decoder for CIDs; returns bytes.
+function b32(s) {
+  const A = "abcdefghijklmnopqrstuvwxyz234567"; let bits = 0, v = 0; const o = [];
+  for (const ch of s) { const i = A.indexOf(ch); if (i < 0) throw new Error("bad base32"); v = (v << 5) | i; bits += 5; if (bits >= 8) { o.push((v >> (bits - 8)) & 255); bits -= 8; } }
+  return new Uint8Array(o);
+}
 async function run() {
   document.querySelectorAll("#t tr:not(:first-child)").forEach(e => e.remove()); rows.length = 0;
   const other = document.getElementById("other").value.trim();
-  const me = location.hostname;
-  row("B1", "served from " + location.origin, me.endsWith(".localhost"), me.endsWith(".localhost") ? "*.localhost resolves" : "not a site origin: open this page as http://<cid>.localhost:" + GW_PORT + "/");
-  const cid = me.split(".")[0];
-  for (const h of ["localhost", "127.0.0.1"]) {
-    const r = await blockedRead(`http://${h}:${GW_PORT}/tree/${cid}/`); row("B2", `read http://${h}:${GW_PORT}/tree/<me>/`, r.ok, r.detail);
+  const site = cid.startsWith("b") && cid.length > 40 && domain !== "";
+  row("B1", "served from " + location.origin, site, site ? (isLocal ? "*.localhost resolves" : "public site origin on " + domain) : "not a site origin: open this page as " + siteOf("<cid>"));
+  for (const b of bare) {
+    const r = await blockedRead(`${b}/tree/${cid}/`); row("B2", `read ${b}/tree/<me>/`, r.ok, r.detail);
   }
-  let r = await blockedRead(API + "/status"); row("B3", "read " + API + "/status", r.ok, r.detail);
+  let r = await blockedRead(API + "/status"); row("B3", "read " + API + "/status" + (isLocal ? "" : " (the visitor's own local daemon, from a public page)"), r.ok, r.detail);
   if (other) {
-    r = await blockedRead(`http://${other}.localhost:${GW_PORT}/`); row("B4", "read other site", r.ok, r.detail);
-    const fr = document.getElementById("fr"); fr.src = `http://${other}.localhost:${GW_PORT}/`;
+    r = await blockedRead(siteOf(other)); row("B4", "read other site", r.ok, r.detail);
+    const fr = document.getElementById("fr"); fr.src = siteOf(other);
     await new Promise(res => { fr.onload = res; setTimeout(res, 3000); });
     let doc = null; try { doc = fr.contentDocument; } catch (e) {}
     row("B4", "iframe of other site: contentDocument", doc === null, doc === null ? "inaccessible" : "ACCESSIBLE");
@@ -48,14 +60,25 @@ async function run() {
   row("B5", "POST /add as application/json", r.ok, r.detail + " (preflight refused)");
   try { await fetch(API + "/add", { method: "POST", mode: "no-cors", headers: { "Content-Type": "text/plain" }, body }); } catch (e) {}
   row("B5", "POST /add as text/plain (sent, opaque)", null, "now run `nu operations`: there must be no add of /nu-browser-check-must-not-exist");
-  document.cookie = "nucheck_domain=" + cid.slice(0, 8) + "; domain=localhost; path=/";
+  document.cookie = "nucheck_domain=" + cid.slice(0, 8) + "; domain=" + domain + "; path=/";
   document.cookie = "nucheck_host=" + cid.slice(0, 8) + "; path=/";
   localStorage.setItem("nucheck", cid.slice(0, 8));
   const seen = document.cookie.split(/;\s*/).filter(c => c.startsWith("nucheck")), mine = cid.slice(0, 8);
   const foreign = seen.filter(c => !c.endsWith("=" + mine)), ls = localStorage.getItem("nucheck");
   row("B6", "cookies visible here: " + (seen.join(", ") || "none"), foreign.length === 0, foreign.length ? "FOREIGN values present: " + foreign.join(", ") : "only this origin's values (open the other site and the bare origin's /tree/<cid>/ page to confirm nothing leaks there; this check reports what each origin sees)");
   row("B6", "localStorage nucheck=" + ls, ls === mine, "");
-  row("B7", "manual", null, `open http://127.0.0.1:${GW_PORT}/tree/${cid}/index.html → must download, not render`);
+  row("B7", "manual", null, `open ${bare[bare.length - 1]}/tree/${cid}/index.html → must download, not render`);
+  // B9 (public seed only): RASL is readable cross-origin there (CORS) and verifiable by hash.
+  // The root CID is a SHA-256 DRISL object, so WebCrypto can check it.
+  if (!isLocal) {
+    try {
+      const res = await fetch(`${bare[0]}/.well-known/rasl/${cid}`), bytes = new Uint8Array(await res.arrayBuffer());
+      const want = b32(cid.slice(1)), digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const okPrefix = want[0] === 1 && (want[1] === 0x71 || want[1] === 0x55) && want[2] === 0x12 && want[3] === 0x20;
+      const same = okPrefix && digest.every((b, i) => b === want[4 + i]);
+      row("B9", "RASL of this root readable cross-origin and SHA-256 matches the CID", same, `status ${res.status}, ${bytes.length} bytes, acao=${res.headers.get("access-control-allow-origin")}`);
+    } catch (e) { row("B9", "RASL cross-origin read", false, "failed: " + e.message); }
+  }
   out.textContent = JSON.stringify({ ua: navigator.userAgent, origin: location.origin, when: new Date().toISOString(), rows }, null, 1);
 }
 document.getElementById("run").onclick = run;

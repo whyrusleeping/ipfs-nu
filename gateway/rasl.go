@@ -30,6 +30,10 @@ func (h *Handler) rasl(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiv0.NotImplemented("RASL on this gateway"))
 		return
 	}
+	if err := h.allowed(c); err != nil {
+		writeError(w, err)
+		return
+	}
 	f, err := oc.OpenObject(r.Context(), c)
 	if err != nil {
 		writeError(w, err)
@@ -41,5 +45,10 @@ func (h *Handler) rasl(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Cache-Control", immutableCache)
 	hdr.Set("ETag", `"`+c+`"`)
 	hdr.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": c}))
+	if h.pub != nil {
+		// P5: on the public listener browsers may read RASL bytes cross-origin and verify
+		// them by hash. Only this route, only here.
+		hdr.Set("Access-Control-Allow-Origin", "*")
+	}
 	http.ServeContent(w, r, "", time.Time{}, f)
 }

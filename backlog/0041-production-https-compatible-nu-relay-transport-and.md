@@ -1,7 +1,7 @@
 ---
 id: "0041"
 title: Production HTTPS-compatible Nu relay transport and reach
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-22"

@@ -38,6 +38,9 @@ func TestDHTModeAndReachabilityHook(t *testing.T) {
 	if s.DHT() == nil || s.DHTStatus().Mode != "client" {
 		t.Fatalf("client mode: %+v", s.DHTStatus())
 	}
+	// Stop the connectivity owner's own confirmation loop so its verdicts do not race
+	// the explicit ones below.
+	s.connectivity.close()
 	s.dhtReachable(true)
 	if s.DHTStatus().Mode != "server" || !hasProtocol(s, kad.Protocol) {
 		t.Fatal("public verdict did not enable server mode")

@@ -329,8 +329,7 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 		}
 		var reqs []autonat.Request
 		for _, candidate := range n.candidates("") {
-			ip := candidate.Addr.Addr()
-			if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() {
+			if !IsPublicIP(candidate.Addr.Addr()) {
 				continue
 			}
 			addr, err := host.UDPAddress(net.UDPAddrFromAddrPort(candidate.Addr))
@@ -403,7 +402,7 @@ func confirmedAddresses(proofs map[netip.AddrPort]map[netip.Addr]bool) []wire.Mu
 	var out []wire.Multiaddr
 	for endpoint, servers := range proofs {
 		ip := endpoint.Addr().Unmap()
-		if len(servers) < 2 || endpoint.Port() == 0 || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || magicsock.IsVirtual(endpoint) {
+		if len(servers) < 2 || endpoint.Port() == 0 || !IsPublicIP(ip) || magicsock.IsVirtual(endpoint) {
 			continue
 		}
 		if addr, err := host.UDPAddress(net.UDPAddrFromAddrPort(endpoint)); err == nil {

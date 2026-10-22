@@ -685,11 +685,13 @@ Honest caveats: the machine has no public IPv4/IPv6, so AutoNAT never confirmed 
 address and both nodes stayed DHT **clients** (server mode was not exercised live; it is
 exercised in-process). The address A announced was its Tailscale interface address
 (`100.126.232.79`, CGNAT `100.64/10`, which Go's `IsPrivate` does not classify as private
-and the publication filter therefore admits); it is reachable from B only because B runs
-on the same machine. Provider records reached independent Amino servers and came back
-through an independent lookup, so the Amino provide/find path is verified; global
-reachability of the provider is not, and would need a public address or a configured
-relay. Two issues were found and fixed during the run: connected Amino routing peers
+and the publication filter at the time therefore admitted); it was reachable from B only
+because B ran on the same machine. Provider records reached independent Amino servers and
+came back through an independent lookup, so the Amino provide/find path is verified;
+global reachability of the provider is not, and would need a public address or a
+configured relay. The publication filter now excludes 100.64.0.0/10, so a rerun of this
+check from this machine would report "no public address to announce" and fail at the
+provide step until a relay or public address is configured — the honest outcome. Two issues were found and fixed during the run: connected Amino routing peers
 were offered to the fetcher as candidates and hung `/nu/tree/1` requests for the 2 min
 request timeout each (now peers whose identify shows no `/nu` protocol are skipped), and
 lookups always ran 16 rounds (now they stop when the K closest known peers were asked,

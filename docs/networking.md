@@ -390,8 +390,11 @@ that operator-selected gateway for the shared socket's port. Mappings remain ten
 candidates; no automatic gateway discovery is claimed. Two independent observer IPs
 must AutoNAT-verify the same endpoint before public reachability withdraws reservations.
 Those verified public endpoints enter the address snapshot before withdrawal. Public
-signed identify records omit LAN/loopback literals; explicit user share links can
-still carry LAN hints. Network invalidation revokes confirmed endpoints and restores
+signed identify records and DHT provider records omit LAN/loopback literals and the
+CGNAT range 100.64.0.0/10 (RFC 6598; also tailnets such as Tailscale), which is
+reachable only inside its carrier/tailnet (`swarm.IsPublicIP`); the same filter applies
+to AutoNAT candidates/proofs and to Amino routing referrals. Explicit user share links
+can still carry LAN, tailnet and loopback hints. Network invalidation revokes confirmed endpoints and restores
 relay demand before rechecking reachability.
 D12 runs real invalidation/confirmation/mapping-refresh/renewal/push/probing hooks.
 Physical socket replacement is **not implemented**: route/address changes revoke

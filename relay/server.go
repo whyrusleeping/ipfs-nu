@@ -2,6 +2,7 @@ package relay
 
 import (
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/proto/autonat"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
@@ -17,6 +18,8 @@ type Config struct {
 	Core    proto.Config
 	AutoNAT autonat.Config
 	Lookup  *LookupConfig // nil disables public dnsaddr/routing services
+	// Netcheck, when set, serves /nu/netcheck/1 NAT-profiling observers (0018).
+	Netcheck *netcheck.ServerConfig
 }
 type Server struct {
 	Host    *host.Host
@@ -24,6 +27,8 @@ type Server struct {
 	Core    *proto.Service
 	AutoNAT *autonat.Service
 	Lookup  *LookupService
+	// Netcheck is nil unless Config.Netcheck was set.
+	Netcheck *netcheck.Server
 }
 
 func New(cfg Config) (*Server, error) {
@@ -54,6 +59,16 @@ func New(cfg Config) (*Server, error) {
 		s.Close()
 		return nil, err
 	}
+	// 0018 netcheck observer: UDP probe sockets plus the descriptor stream.
+	if cfg.Netcheck != nil {
+		if s.Netcheck, err = netcheck.NewServer(*cfg.Netcheck); err == nil {
+			err = s.Netcheck.Register(h)
+		}
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 	if cfg.Lookup != nil {
 		s.Lookup, err = NewLookup(*cfg.Lookup)
 		if err != nil {
@@ -66,6 +81,9 @@ func New(cfg Config) (*Server, error) {
 func (s *Server) Close() error {
 	if s.Lookup != nil {
 		s.Lookup.Close()
+	}
+	if s.Netcheck != nil {
+		s.Netcheck.Close()
 	}
 	if s.Circuit != nil {
 		s.Circuit.Close()

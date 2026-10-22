@@ -10,6 +10,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/p2p/homerelay"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
 	p2pproto "github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
@@ -193,6 +194,10 @@ func (c *connectivity) admitHints(id wire.PeerID, addrs []wire.Multiaddr) error 
 	for _, a := range addrs {
 		if !host.IsCircuitAddress(a) {
 			continue
+		}
+		a, err := lookup.NormalizeAddress(id, a)
+		if err != nil {
+			return err
 		}
 		relay, rid, peer, err := circuit.ParseAddress(a)
 		if err != nil || peer != id || c.s.host.IsLocalOnlyMultiaddr(relay) {

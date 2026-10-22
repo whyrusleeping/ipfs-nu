@@ -66,6 +66,9 @@ type Config struct {
 	Relays            []wire.Multiaddr
 	Private, Isolated bool
 	Peers             map[wire.PeerID][]wire.Multiaddr
+	// LookupSources is the public streaming resolver attachment point (0072).
+	// Sources must honor cancellation; the caller owns their service lifetimes.
+	LookupSources []lookup.Source
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -143,7 +146,13 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err != nil {
 		return nil, err
 	}
-	lcfg := lookup.Config{Cache: s.cache, DisableMDNS: !cfg.MDNS || cfg.Private, MDNS: lookup.MDNSConfig{
+	sources := append([]lookup.Source(nil), cfg.LookupSources...)
+	if cfg.Private || cfg.Isolated {
+		sources = nil
+	} else {
+		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
+	}
+	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private, MDNS: lookup.MDNSConfig{
 		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces}}
 	s.lookup, err = lookup.New(bg, lcfg)
 	if err != nil && cfg.MDNS {
@@ -227,7 +236,9 @@ func (s *Swarm) Addrs() []wire.Multiaddr {
 		homes := s.connectivity.homes
 		s.connectivity.mu.Unlock()
 		if homes != nil {
-			addrs = append(addrs, homes.Addresses()...)
+			// Links cap hints at three: keep BOTH relay routes ahead of direct
+			// expansion so a multi-interface node cannot truncate its backup.
+			addrs = append(homes.Addresses(), addrs...)
 		}
 	}
 	return addrs

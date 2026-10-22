@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/lookup"
+	p2pproto "github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/relay"
 )
@@ -26,6 +28,25 @@ func TestCrossedCircuitAndActiveStreamFailover(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal("crossed connection", err)
 		}
+	}
+	if _, err := a.identify.WaitPeer(ctx, b.ID(), func(info p2pproto.PeerInfo) bool { return info.Certified != nil && len(info.Certified.Addresses) >= 3 }); err != nil {
+		t.Fatal(err)
+	}
+	certifiedRoutes := 0
+	if err := a.signedAddresses(ctx, b.ID(), func(r lookup.Address) bool {
+		if r.Source == "signed-identify" && host.IsCircuitAddress(r.Addr) {
+			certifiedRoutes++
+		}
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if certifiedRoutes != 2 {
+		t.Fatal("signed relay routes missing from resolver", certifiedRoutes)
+	}
+	published := b.Addrs()
+	if len(published) < 3 || !host.IsCircuitAddress(published[0]) || !host.IsCircuitAddress(published[1]) {
+		t.Fatal("bounded links would lose a relay", published)
 	}
 	before, ok := a.host.Connection(b.ID())
 	if !ok {

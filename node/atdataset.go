@@ -151,6 +151,11 @@ func (n *Local) refreshAtrepo(ctx context.Context, c *cluster.Cluster, ds string
 	fail := func(mode string, err error) {
 		n.atrepoNote(ds, func(s *atrepoState) { s.refreshed, s.err, s.mode = now, err.Error(), mode })
 	}
+	if _, err := c.Signer(cluster.Op{Collection: cluster.NSHead, RKey: ds}); err != nil {
+		// Storage-only members follow the admins' heads; they never fetch from the PDS.
+		n.atrepoNote(ds, func(s *atrepoState) { s.refreshed, s.err, s.mode = now, "", "member" })
+		return
+	}
 	cl, err := n.atproto()
 	if err != nil {
 		fail("", err)

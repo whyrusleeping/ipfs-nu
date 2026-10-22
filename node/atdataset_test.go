@@ -75,9 +75,9 @@ func TestAtrepoArchiveDataset(t *testing.T) {
 	rev1 := pub.Rev()
 	post("3ccc", "third post")
 	pub.Delete("app.bsky.feed.post", "3aaa")
-	before := f.Requests["com.atproto.sync.getRepo"]
+	before := getRepos(f)
 	d, err = n.DatasetUpdate(ctx, ScopeLocal, "pub", apiv0.DatasetUpdateRequest{})
-	if err != nil || d.Head.Rev != pub.Rev() || d.Atrepo.Mode != "since" || f.Requests["com.atproto.sync.getRepo"] != before+1 {
+	if err != nil || d.Head.Rev != pub.Rev() || d.Atrepo.Mode != "since" || getRepos(f) != before+1 {
 		t.Fatalf("update: %+v %v (mode %s)", d, err, d.Atrepo.Mode)
 	}
 	v2 := d.Version
@@ -95,8 +95,8 @@ func TestAtrepoArchiveDataset(t *testing.T) {
 		t.Fatalf("deleted record at head: %v", err)
 	}
 	// No change at the PDS: nothing is fetched.
-	before = f.Requests["com.atproto.sync.getRepo"]
-	if d, err = n.DatasetUpdate(ctx, ScopeLocal, "pub", apiv0.DatasetUpdateRequest{}); err != nil || d.Atrepo.Mode != "status" || f.Requests["com.atproto.sync.getRepo"] != before {
+	before = getRepos(f)
+	if d, err = n.DatasetUpdate(ctx, ScopeLocal, "pub", apiv0.DatasetUpdateRequest{}); err != nil || d.Atrepo.Mode != "status" || getRepos(f) != before {
 		t.Fatalf("no-op update: %+v %v", d.Atrepo, err)
 	}
 
@@ -213,6 +213,12 @@ func TestAtrepoArchiveDataset(t *testing.T) {
 	if _, err := n.DatasetCreate(ctx, ScopeLocal, apiv0.DatasetCreateRequest{Name: "bad", Archive: true, SourceAt: atfix.LikeURI}); !isCode(err, apiv0.CodeInvalidArgument) {
 		t.Fatalf("record source: %v", err)
 	}
+}
+
+// getRepos counts the fixture's getRepo requests (under its lock).
+func getRepos(f *atfix.Fixture) (n int) {
+	f.Set(func(f *atfix.Fixture) { n = f.Requests["com.atproto.sync.getRepo"] })
+	return n
 }
 
 // Opt-in live smoke (NU_LIVE=1): archive a small real account from its PDS, then run an

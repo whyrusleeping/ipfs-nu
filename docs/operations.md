@@ -647,7 +647,9 @@ destination.**
   created per producer by `nu api token create` rather than at init; `rotate` and `rm`
   apply on the next request. There is no TLS in this build: the daemon refuses to start
   the listener unless `api.producer.trusted_network = true`, and `api.producer.hosts`
-  replaces the loopback check of A2. `api.listen` itself stays loopback-only (A1).
+  replaces the loopback check of A2. `api.listen` itself stays loopback-only (A1). A
+  token push never names the receiving node's local files (`path`/`nocopy` are refused)
+  and names only blobs that token uploaded to that collection (0077).
 
 ### G. Gateway and browsers
 
@@ -829,6 +831,7 @@ required by the named task before it ships.
 | N40 | P5/P1 | public `Host` is an IP literal, `localhost`, another domain, `<cid>.<other>`, `x.<cid>.<domain>`, or the domain with a foreign port; non-GET methods | 403; 400, no CORS | `gateway.TestPublicListener` |
 | N41 | P1 | public listener without cert/key and without `behind_proxy`; `behind_proxy` off loopback; `public.domain = localhost` | refuses to start, action names the key | `daemon.TestPublicListener` |
 | N42 | P2 | published small file whose bytes are a MASL file node naming an unpublished blob, requested as `<DRISL codec + file multihash>` on `/tree`, `/blob`, RASL and its site origin | 404; the store refuses the DRISL read of raw-stored bytes | `node.TestPublicCodecSwap`, `store.TestSmallBlobsAndBlocks` |
+| N43 | A8 | producer token push naming `files.<n>.path` (an existing secret such as `node.key`, with `nocopy`, or a missing path); naming another token's upload or any other held CID | 403, same answer for existing and missing paths; 404, nothing queued | `main.TestProducerPushCLI` |
 
 ### Feature-entry gates
 

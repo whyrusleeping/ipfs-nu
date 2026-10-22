@@ -114,6 +114,50 @@ func TestProducerPushCLI(t *testing.T) {
 		}
 	}
 
+	// N43 (0077): a token cannot read the receiving node's files (path, nocopy) — the
+	// same refusal whether the path exists or not — nor name a blob it did not upload to
+	// this collection itself (here: another s2 token's upload).
+	var tok2 struct {
+		Token string `json:"token"`
+	}
+	json.Unmarshal(nu("api", "token", "create", "pilot2", "--collection", "s2"), &tok2)
+	call := func(token, method, path, ctype string, body []byte) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, prod+apiv0.Prefix+path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", ctype)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var b bytes.Buffer
+		b.ReadFrom(res.Body)
+		return res.StatusCode, b.Bytes()
+	}
+	for _, f := range []string{
+		`{"path": "` + r.Path("node.key") + `"}`,
+		`{"path": "` + r.Path("node.key") + `", "nocopy": true}`,
+		`{"path": "/nonexistent/x"}`,
+	} {
+		body := `{"path": "x/1", "meta": {"n": 1}, "files": {"k": ` + f + `}}`
+		if code, out := call(tok.Token, "POST", "/cluster/collections/s2/items", "application/json", []byte(body)); code != http.StatusForbidden {
+			t.Fatalf("producer push of local path %s: %d %s", f, code, out)
+		}
+	}
+	code, out := call(tok2.Token, "POST", "/cluster/collections/s2/uploads", "application/octet-stream", []byte("theirs"))
+	var up apiv0.CollectionUpload
+	if json.Unmarshal(out, &up); code != http.StatusOK || up.CID == "" {
+		t.Fatalf("upload: %d %s", code, out)
+	}
+	body := []byte(`{"path": "x/2", "meta": {"n": 2}, "files": {"k": {"upload": "` + up.CID + `"}}}`)
+	if code, out := call(tok.Token, "POST", "/cluster/collections/s2/items", "application/json", body); code != http.StatusNotFound {
+		t.Fatalf("push of another token's upload: %d %s", code, out)
+	}
+	if code, out := call(tok2.Token, "POST", "/cluster/collections/s2/items", "application/json", body); code != http.StatusAccepted && code != http.StatusOK {
+		t.Fatalf("push of own upload: %d %s", code, out)
+	}
+
 	var rm apiv0.CollectionPush
 	json.Unmarshal(nu("cluster", "collection", "rm", "s2", "2026/10/21/S2B_1", "--wait"), &rm)
 	if rm.State != apiv0.PushRemoved || rm.Head == "" {
@@ -121,7 +165,7 @@ func TestProducerPushCLI(t *testing.T) {
 	}
 	var log apiv0.Page[apiv0.CollectionPush]
 	json.Unmarshal(nu("cluster", "collection", "pushes", "s2"), &log)
-	if len(log.Items) != 1 || log.Items[0].State != apiv0.PushRemoved {
+	if len(log.Items) != 2 || log.Items[0].State != apiv0.PushRemoved || log.Items[1].Path != "x/2" {
 		t.Fatalf("push log %+v", log)
 	}
 	nu("api", "token", "rm", "pilot")

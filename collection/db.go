@@ -58,6 +58,10 @@ var schema = []string{
 	// 0063: the ingest loop's work queue (pushes whose files are not stored yet), so that
 	// pushes waiting for a head write are not rescanned on every wake.
 	`CREATE INDEX pushes_todo ON pushes (next_ms, seq) WHERE state IN ('accepted', 'fetching') AND entry IS NULL;`,
+	// 0077: blobs uploaded by remote producers, so a producer push may only name its own
+	// uploads to this collection (not any CID the node holds).
+	`CREATE TABLE uploads (ds TEXT NOT NULL, producer TEXT NOT NULL, cid BLOB NOT NULL, ms INTEGER NOT NULL,
+		PRIMARY KEY (ds, producer, cid)) WITHOUT ROWID;`,
 }
 
 func openDB(path string) (*sql.DB, string, error) {

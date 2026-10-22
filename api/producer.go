@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -77,7 +79,10 @@ func (p *Producer) scoped(h handlerFunc) handlerFunc {
 		name := r.PathValue("name")
 		for _, c := range cols {
 			if c == name {
-				return h(w, r)
+				// The push is a remote producer's: no local paths, only its own uploads
+				// (0077). The token's hash identifies it (a rotated token starts afresh).
+				sum := sha256.Sum256([]byte(strings.TrimSpace(tok)))
+				return h(w, r.WithContext(node.WithProducer(r.Context(), hex.EncodeToString(sum[:16]))))
 			}
 		}
 		return apiv0.Errorf(apiv0.CodeForbidden, "the token may not push into collection %q", name).

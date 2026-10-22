@@ -600,6 +600,13 @@ every request, so rotation and revocation apply immediately. Producers run
 `NU_API_TOKEN`). The loopback API stays unauthenticated (A1–A7), and `api.listen` is still
 refused off loopback.
 
+A token push is a remote producer's, so it cannot reach the receiving node's own data
+(0077): a `{path}` file (with or without `nocopy`) is `forbidden` before the path is looked
+at (no existence oracle), and an `{upload}` file must name a blob this same token uploaded
+to this collection within the last 24 hours (`not_found` otherwise, also for any other CID
+the node holds). Uploads are scoped by the token's secret, so a rotated token starts with
+none. Only the loopback API may push local paths or reuse arbitrary held blobs.
+
 ## Loopback protections
 
 Mechanics of rules A1–A7 of the [security contract](operations.md#a-local-api). The API

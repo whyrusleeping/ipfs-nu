@@ -1,7 +1,7 @@
 ---
 id: "0077"
 title: 'Security fixes from internal review: public-listener codec swap, producer token local file read, public /c/ /nu/, cross-site GETs, P3 runtime, bounds'
-status: in_progress
+status: done
 priority: 1
 created: "2026-10-22"
 updated: "2026-10-22"

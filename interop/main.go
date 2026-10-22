@@ -3,12 +3,10 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -16,13 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/snappy"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
-
-const ethPing = "/eth2/beacon_chain/req/ping/1/ssz_snappy"
 
 type result struct {
 	Address      string   `json:"address,omitempty"`
@@ -42,7 +37,7 @@ type result struct {
 func main() {
 	mode := flag.String("mode", "probe", "probe or transport (unified-testing)")
 	addr := flag.String("addr", "", "literal QUIC-v1 multiaddr including /p2p/<id>")
-	ping := flag.String("ping", "libp2p", "libp2p, eth2, or none")
+	ping := flag.String("ping", "libp2p", "libp2p or none")
 	timeout := flag.Duration("timeout", 30*time.Second, "probe deadline")
 	flag.Parse()
 	var err error
@@ -124,9 +119,6 @@ func probe(ctx context.Context, addr, ping string, r *result) error {
 	case "libp2p":
 		r.PingProtocol = proto.PingID
 		rtt, err = s.Ping(ctx, c.PeerID())
-	case "eth2":
-		r.PingProtocol = ethPing
-		rtt, err = ethereumPing(ctx, h, c.PeerID())
 	default:
 		return fmt.Errorf("unknown ping mode %q", ping)
 	}
@@ -135,47 +127,6 @@ func probe(ctx context.Context, addr, ping string, r *result) error {
 		return fmt.Errorf("ping: %w", err)
 	}
 	return nil
-}
-
-// Ethereum consensus clients use their SSZ-snappy Ping RPC, NOT /ipfs/ping.
-// Ping/Pong are uint64 metadata sequence numbers; no consensus participation.
-func ethereumPing(ctx context.Context, h *host.Host, id wire.PeerID) (time.Duration, error) {
-	start := time.Now()
-	s, err := h.OpenStream(ctx, id, ethPing)
-	if err != nil {
-		return 0, err
-	}
-	defer s.Close()
-	stop := context.AfterFunc(ctx, s.Reset)
-	defer stop()
-	deadline, _ := ctx.Deadline()
-	if err = s.SetDeadline(deadline); err != nil {
-		return 0, err
-	}
-	if _, err = s.Write([]byte{8}); err != nil {
-		return 0, err
-	}
-	w := snappy.NewBufferedWriter(s)
-	if _, err = w.Write(make([]byte, 8)); err != nil {
-		return 0, err
-	}
-	if err = w.Close(); err != nil {
-		return 0, err
-	}
-	// Read exactly the response header (avoid buffering past it into snappy).
-	var header [2]byte
-	if _, err = io.ReadFull(s, header[:]); err != nil {
-		return 0, err
-	}
-	if header != [2]byte{0, 8} {
-		return 0, fmt.Errorf("unexpected eth2 response code/length %x", header)
-	}
-	var payload [8]byte
-	if _, err = io.ReadFull(snappy.NewReader(io.LimitReader(s, 1024)), payload[:]); err != nil {
-		return 0, err
-	}
-	fmt.Fprintf(os.Stderr, "eth2 pong metadata sequence: %d\n", binary.LittleEndian.Uint64(payload[:]))
-	return time.Since(start), nil
 }
 
 func millis(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }

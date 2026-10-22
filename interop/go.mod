@@ -2,10 +2,7 @@ module github.com/whyrusleeping/nu/interop
 
 go 1.26.0
 
-require (
-	github.com/golang/snappy v1.0.0
-	github.com/whyrusleeping/nu v0.0.0
-)
+require github.com/whyrusleeping/nu v0.0.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect

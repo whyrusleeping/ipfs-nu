@@ -6,13 +6,12 @@ no go-libp2p dependency is added to Nu (or to this driver). Reference implementa
 are built in independent Docker images from pinned upstream sources.
 
 **All six transport directions now pass locally:** Go, Rust, and JS with
-ChainSafe's native QUIC transport. Kubo and Lighthouse pass their black-box checks.
+ChainSafe's native QUIC transport. Kubo passes its black-box check.
 The stock unified-testing JS plan still comments out QUIC; `js/` supplies a small
 compatible test plan using pinned js-libp2p 3.5.1 and `@chainsafe/libp2p-quic` 2.1.5,
 not WebTransport. JS is a required job with real dial/listen/ping assertions,
 not an unsupported-row exemption. Remote CI execution remains to be observed.
-Lodestar is an optional failing probe: its secp256k1-only **remote peer** policy
-rejects Nu's Ed25519 identity (details below), not evidence of a QUIC wire failure.
+Interop targets are go-, rust- and js-libp2p and Kubo over QUIC only.
 
 ## Run
 
@@ -31,9 +30,9 @@ python3 interop/run.py blackbox --out interop/results/blackbox
 python3 interop/run.py amino --public --out interop/results/amino
 ```
 
-For the 0029 preview sanity, add `--daemon` to `transport` and `blackbox
---client kubo`. Both Nu transport roles and the black-box dialer then use the
-actual `daemon.Start` assembly (local API/gateway/store, serving/fetching,
+For the 0029 preview sanity, add `--daemon` to `transport` and `blackbox`. Both
+Nu transport roles and the black-box dialer then use the actual `daemon.Start`
+assembly (local API/gateway/store, serving/fetching,
 sessions, mDNS, magicsock, disco, AutoNAT, netmon), not the minimal host fixture.
 No replacement protocol handlers or private/NoNetwork switches are used. The
 probe still does not enable operator-only public HTTPS, producer listeners,
@@ -75,7 +74,7 @@ applies that same revision's upstream `transport-fix.patch` files, and runs the
 Nu-only QUIC submatrix on Docker networks with Redis coordination. Dockerfiles use
 fixed Go 1.26.0/Rust 1.90.0 build tools rather than upstream's old/moving tool images;
 Go uses `-mod=readonly`, Rust uses `--locked`. See `SOURCES` in `run.py` for exact
-commits. Black-box image manifests and Redis are digest-pinned there as well.
+commits. The Kubo black-box image manifest and Redis are digest-pinned there as well.
 
 ### JS peer
 
@@ -135,7 +134,6 @@ two spaces; upstream's current shell extractor only recognizes two spaces.
 ```sh
 (cd interop && go build -o nu-interop .)
 interop/nu-interop -addr /ip4/IP/udp/PORT/quic-v1/p2p/PEER
-interop/nu-interop -addr /ip4/IP/udp/PORT/quic-v1/p2p/PEER -ping eth2
 interop/nu-interop -addr /ip4/IP/udp/PORT/quic-v1/p2p/PEER -ping none
 ```
 
@@ -147,28 +145,7 @@ identify; only transport mode's handshake-plus-one-RTT field is the suite metric
 
 - **Kubo v0.40.0:** disposable repo, only QUIC listener, empty bootstrap list,
   routing disabled, internal Docker network. Connect, identify, `/ipfs/ping/1.0.0`.
-- **Lighthouse v8.0.1:** disposable genesis-start beacon node on an internal Docker
-  network, no real execution engine, no validators, no public network access.
-  The absent execution endpoint produces expected warnings. Connect and identify
-  authenticate its **secp256k1** identity (asserted, not inferred from the name).
-  Lighthouse does not advertise `/ipfs/ping/1.0.0`; it supports Ethereum's
-  `/eth2/beacon_chain/req/ping/1/ssz_snappy`. The driver sends a uint64 metadata
-  sequence, validates the success/8-byte header and reads a bounded snappy Pong.
-  This is an Ethereum-native ping, **not** a claim that Lighthouse implements IPFS
-  ping or that Nu participates in Ethereum consensus. Snappy stays in this module.
-- **Lodestar v1.50.0 (optional, currently fails):** digest-pinned disposable
-  `dev` beacon node with a minimal eight-validator genesis but **no running
-  validators**, mock execution, discovery off and an internal Docker network.
-  Rayon/Tokio workers are capped at two (avoids allocating a worker per host CPU).
-  QUIC authenticates Lodestar's secp256k1 identity, but its peer manager explicitly
-  [disconnects non-secp256k1 peers](https://github.com/ChainSafe/lodestar/blob/003bd66543fa65b5c1e954eec9e8077054c226dc/packages/beacon-node/src/network/peers/peerManager.ts#L754-L761),
-  including Nu's Ed25519 identity, before identify completes. The probe reports
-  `identify: unexpected EOF`; ping is **not tested/passed**. A js-libp2p Ed25519
-  control peer reproduces the same failure. This is not a native binary/platform
-  limitation. Changing Nu's own key type or modifying the black-box peer's policy
-  is outside this task. Default black-box CI remains Kubo + Lighthouse. Reproduce
-  explicitly with `python3 interop/run.py blackbox --client lodestar` (exit 1).
-  `--client all` also includes it and therefore fails; there is no hidden waiver.
+  This is the only black-box client; `--client` accepts `kubo` only.
 - **Amino:** `amino.json` pins three PeerIds plus DNS host/UDP port. These endpoints
   were obtained from `_dnsaddr.bootstrap.libp2p.io` and its am6/sv15/ny5 TXT records
   on 2026-10-21. Only A resolution may change: identity is always checked against

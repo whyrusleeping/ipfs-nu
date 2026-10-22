@@ -44,6 +44,16 @@ func checkIsolated(cfg *repo.Config, c *cluster.Cluster) error {
 	if cfg.Swarm.PortmapGateway != "" {
 		bad = append(bad, "swarm.portmap_gateway")
 	}
+	// The DHT, dnsaddr and routing/v1 lookups all talk to third-party infrastructure.
+	if cfg.Swarm.DHT != "" && cfg.Swarm.DHT != "off" {
+		bad = append(bad, "swarm.dht (set it to \"off\")")
+	}
+	if cfg.Swarm.LookupDomain != "" {
+		bad = append(bad, "swarm.lookup_domain")
+	}
+	if cfg.Swarm.RoutingURL != "" {
+		bad = append(bad, "swarm.routing_url")
+	}
 	if cfg.Follow != nil && cfg.Follow.Jetstream != "" {
 		bad = append(bad, "follow.jetstream")
 	}

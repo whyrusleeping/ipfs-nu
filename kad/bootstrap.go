@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -151,9 +152,17 @@ func (s *Service) allowRoutingAddress(a wire.Multiaddr) bool {
 	if code != ma.P_IP4 && code != ma.P_IP6 {
 		return false
 	}
-	ip := net.ParseIP(parts[0].Value())
-	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
+	ip, err := netip.ParseAddr(parts[0].Value())
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	// Public routing peers only: private, CGNAT/tailnet (100.64/10), loopback and
+	// link-local referrals are undialable from the public network.
+	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !cgnat.Contains(ip) && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
 }
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
 func IsQUICAddress(a wire.Multiaddr, id wire.PeerID) bool {
 	text := a.String()

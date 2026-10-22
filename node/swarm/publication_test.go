@@ -3,6 +3,7 @@ package swarm
 import (
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/whyrusleeping/nu/p2p/host"
@@ -47,5 +48,29 @@ func TestPublicationRequiresIndependentPublicProofs(t *testing.T) {
 	}
 	if shared := s.Addrs(); len(shared) != 1 {
 		t.Fatal("explicit user LAN link was lost, or a virtual key was published", shared)
+	}
+}
+
+// CGNAT/tailnet addresses (100.64.0.0/10) are not public: they stay out of signed records
+// and DHT provider records but remain usable in explicit user links like other private
+// ranges.
+func TestPublicationExcludesCGNAT(t *testing.T) {
+	for ip, public := range map[string]bool{"100.126.232.79": false, "100.64.0.1": false, "100.127.255.255": false, "100.128.0.1": true, "198.18.1.2": true, "10.0.0.2": false, "::ffff:100.100.0.1": false, "2001:db8::1": true} {
+		if got := IsPublicIP(netip.MustParseAddr(ip)); got != public {
+			t.Fatalf("IsPublicIP(%s) = %v", ip, got)
+		}
+	}
+	h, _, err := sharedHost(host.Config{Key: swarmKey(t), Listen: []string{"0.0.0.0:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	s := &Swarm{host: h, cfg: Config{InterfaceIPs: func() []net.IP { return []net.IP{net.ParseIP("100.126.232.79"), net.ParseIP("198.18.1.2")} }}}
+	if shared := s.Addrs(); len(shared) != 2 {
+		t.Fatal("tailnet address missing from user links", shared)
+	}
+	published := s.publicationAddrs()
+	if len(published) != 1 || !strings.HasPrefix(published[0].String(), "/ip4/198.18.1.2/udp/") {
+		t.Fatal("CGNAT address published or public address dropped", published)
 	}
 }

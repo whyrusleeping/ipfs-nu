@@ -371,10 +371,24 @@ func (d *dht) provide(keys []cid.CID) {
 	d.s.log.Info("DHT provide cycle", "keys", len(keys), "provided", n, "errors", len(errs))
 }
 
-// eligible enumerates the D15 announce set of the given pins: each pin's root, and for
-// recursive nu-tree pins every file node and blob beneath it; never directory shards or
-// headers' interior nodes. Follow pins announce their root only (the swarm key is not
-// implemented yet). Roots marked --no-announce are skipped entirely.
+// announceSources are the pin sources with public intent (D15; cluster.md "network
+// modes"): explicit adds/pins, `nu public add`, the node's own names and follows.
+// Cluster, surplus, collection and push pins are member-only dataset content and are
+// never provided; so are IPFS imports, whose roots become dataset heads.
+var announceSources = map[string]bool{store.SourceExplicit: true, store.SourcePublic: true, store.SourceMyNames: true, store.SourceFollow: true}
+
+// announceable reports whether a pin's content may appear in provider records.
+func announceable(p store.Pin) bool {
+	if !announceSources[p.Source] {
+		return false
+	}
+	return !strings.HasPrefix(p.Name, "ipfs-import:") && !strings.HasPrefix(p.Name, "ipfs-manifest:")
+}
+
+// eligible enumerates the D15 announce set of the given pins: each announceable pin's
+// root, and for recursive nu-tree pins every file node and blob beneath it; never
+// directory shards or headers' interior nodes. Follow pins announce their root only
+// (the swarm key is not implemented yet). Roots marked --no-announce are skipped.
 func (d *dht) eligible(pins []store.Pin) ([]cid.CID, error) {
 	skip := map[string]bool{}
 	if d.s.cfg.DHT.NoAnnounce != nil {
@@ -399,7 +413,7 @@ func (d *dht) eligible(pins []store.Pin) ([]cid.CID, error) {
 	}
 	errFull := errors.New("full")
 	for _, p := range pins {
-		if skip[p.CID.String()] {
+		if skip[p.CID.String()] || !announceable(p) {
 			continue
 		}
 		if !add(p.CID) {

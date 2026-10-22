@@ -4,7 +4,7 @@ title: '0a: libp2p wire primitives: keys, PeerId, multiaddr subset, signed peer 
 status: done
 priority: 1
 created: "2026-09-24"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0001"
 spec_refs:
@@ -14,7 +14,7 @@ spec_refs:
 ## Description
 The encoding layer of the libp2p subset (`p2p/wire`). No networking yet.
 
-- Keys: ed25519 (our own identity: generate, load and store the node key as a 0600 file per D17). *Verify-only* support for secp256k1 (Ethereum), ECDSA and RSA peer keys. Protobuf key encoding per the libp2p peer-id spec.
+- Keys: ed25519 (our own identity: generate, load and store the node key as a 0600 file per D17). *Verify-only* support for secp256k1, ECDSA and RSA peer keys. Protobuf key encoding per the libp2p peer-id spec.
 - PeerId: identity multihash / sha256 rules; string forms base58btc and CIDv1 `libp2p-key` in base32/base36 (base36 is needed for DNS labels, D13).
 - Multiaddr subset: `/ip4`, `/ip6`, `/dns`, `/dns4`, `/dns6`, `/dnsaddr`, `/udp`, `/quic-v1`, `/p2p`, `/p2p-circuit`. Other protocols parse opaquely and round-trip.
 - Signed envelopes + peer records (libp2p RFC 0002/0003).
@@ -28,3 +28,4 @@ The encoding layer of the libp2p subset (`p2p/wire`). No networking yet.
 
 ## Work log
 - 2026-10-21: Done on track/net (afd806c, merged 4ae1cad). p2p/wire keys/PeerId/multiaddr/envelopes/peer records. Evidence: TestKeyVectors, TestNodeKeyFile, TestPeerIDVectors, TestMultiaddrVectors, TestSignedPeerRecord (byte-exact upstream vectors); fuzz seeds FuzzKeyProtobuf, FuzzMultiaddrBytes, FuzzSignedEnvelope, FuzzPeerID, FuzzProtobuf. D18 now lists decred secp256k1 (verify-only). Vector generator: experiments/cmd/wirevectors.
+- 2026-10-22: 0079 withdrew the non-IPFS client interop criterion; secp256k1 verify-only support stays as a libp2p peer-id spec key type (and k256 signing/verification stays in core/atrepo for atproto).

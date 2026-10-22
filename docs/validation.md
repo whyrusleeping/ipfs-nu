@@ -316,7 +316,7 @@ are registered. It does not replace protocol handlers or disable network feature
 Public HTTPS, producer listeners, cluster membership and relay fleet are
 operator-configured features, not toggles invented for this probe. Builds include
 all daemon code. The pinned implementations/images remain those in
-[0011](../interop/README.md); no public Amino or Ethereum clients are required here.
+[0011](../interop/README.md); no public Amino peers are required here.
 
 | Final full-daemon transport direction | Handshake + ping (ms) | Ping RTT (ms) |
 |---|---:|---:|
@@ -823,26 +823,11 @@ starting any containers.
 | Black-box target | Local evidence |
 |---|---|
 | Kubo v0.40.0 (`kubo/0.40.0/882b7d2`) | QUIC connect, authenticated Ed25519 identity, identify, `/ipfs/ping/1.0.0`; ping 0.322 ms |
-| Lighthouse v8.0.1 (`Lighthouse/v8.0.1-ced49dd/x86_64-linux`) | QUIC connect, authenticated **secp256k1** key type asserted, identify, Ethereum `/eth2/beacon_chain/req/ping/1/ssz_snappy`; ping 0.541 ms |
 
-Lighthouse does **not** advertise IPFS ping. Its native Ping/Pong uses an SSZ
-uint64 metadata sequence and snappy framing; this is not an IPFS-ping pass or
-Ethereum consensus participation. Both black-box containers use disposable
-state and an internal Docker network. Lighthouse starts from its bundled genesis
-with a deliberately absent execution engine; expected execution warnings do not
-prevent its P2P service from answering. No validator or public chain sync runs.
-
-**Optional Lodestar v1.50.0 attempt:** the digest-pinned image starts a disposable
-minimal dev genesis with no running validators, mock execution and discovery off.
-QUIC connects and authenticates the remote secp256k1 key, but identify gets
-`unexpected EOF`, so ping is **not** counted as tested. Lodestar's
-[peer manager explicitly rejects non-secp256k1 remote identities](https://github.com/ChainSafe/lodestar/blob/003bd66543fa65b5c1e954eec9e8077054c226dc/packages/beacon-node/src/network/peers/peerManager.ts#L754-L761),
-including Nu's Ed25519 key. An independent js-libp2p Ed25519 control reproduces
-identify EOF and Lodestar's outgoing Goodbye. This is a client admission policy,
-not evidence of a Nu QUIC bug or missing platform binary (the image includes
-ChainSafe QUIC 2.1.5). The probe is retained behind `blackbox --client lodestar`
-(exit 1) for reproduction, not enabled in the required/default nightly suite.
-Changing Nu's own identity policy is deliberately not part of this interop patch.
+The black-box container uses disposable state and an internal Docker network.
+Kubo is the only black-box client: libp2p interop targets are go-, rust- and
+js-libp2p and Kubo over QUIC (backlog 0079 withdrew the earlier non-IPFS client
+probes and their evidence).
 
 Public Amino was separately opted into locally in the original `43ffedc` run:
 all three pinned identities in
@@ -867,8 +852,7 @@ python3 interop/run.py amino --public --out interop/results/amino
 
 Local raw evidence remains in ignored `interop/results/chainsafe-final-matrix/`,
 `chainsafe-final-blackbox/`, and the original `amino/` (results JSON, per-container
-logs, identity/protocol JSON and build logs). The optional Lodestar failure/control
-is recorded under `interop/results/lodestar-final/` and `lodestar-js-control/`. `.github/workflows/interop.yml` runs these commands nightly
+logs, identity/protocol JSON and build logs). `.github/workflows/interop.yml` runs these commands nightly
 and on demand, uploading results even on failure; public Amino on manual dispatch
 requires its explicit input. **Remote CI execution/artifact publication has not
 yet been observed**, because this branch has not been pushed.
@@ -880,10 +864,8 @@ extractor only accepts two). No main-module dependencies changed. Pre-commit
 passed, as did the separate interop module's vet/staticcheck/build checks and
 Python compilation. Root tests remain network/Docker independent.
 
-Deferred/unmet: remote CI execution; Lodestar connect/identify/ping with Nu's
-Ed25519 identity (blocked by Lodestar policy); no claim of standard IPFS ping on
-Lighthouse, reverse black-box client dialing, NAT traversal, sustained Ethereum
-sessions or data exchange. The original JS capability gap is resolved without
+Deferred/unmet: remote CI execution; reverse black-box client dialing, NAT
+traversal or data exchange. The original JS capability gap is resolved without
 waiving either matrix direction.
 
 ## Linux NAT lab smoke (2026-10-21)

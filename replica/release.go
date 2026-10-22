@@ -223,6 +223,7 @@ func (m *Manager) planFor(v *cluster.View, name string, d *cluster.Dataset, rs R
 		headShort = append(headShort, apiv0.MissingOwner{Peer: self.Base36(), Reason: "structure of the current head is not held here"})
 	}
 	slices.Sort(headConf)
+	p.rep.HeadConfirmed, p.rep.HeadShortfall = headOK, headShort
 	// A member outside placement (draining) releases everything it holds, the head
 	// included; an eligible one keeps the head, the live set and retained versions
 	// (those leave by an explicit prune).

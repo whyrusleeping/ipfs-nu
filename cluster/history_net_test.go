@@ -81,7 +81,9 @@ func TestClusterArchive(t *testing.T) {
 	if err != nil || rb.Head.Target != v1root.String() || !rb.Metadata.Acknowledged {
 		t.Fatalf("rollback %+v %v", rb, err)
 	}
-	if _, err := b.Local.DatasetPrune(ctx(t), node.ScopeCluster, "logs", apiv0.PruneRequest{}); waitCode(err) != apiv0.CodeNotSupported {
-		t.Fatalf("networked prune must be dry-run only: %v", err)
+	// A networked prune needs the live set confirmed by its owners (S1–S3, 0048): the
+	// incomplete v2 is live, so pruning is refused with the shortfall.
+	if _, err := b.Local.DatasetPrune(ctx(t), node.ScopeCluster, "logs", apiv0.PruneRequest{}); waitCode(err) != apiv0.CodeFailed {
+		t.Fatalf("networked prune with an unconfirmed live set: %v", err)
 	}
 }

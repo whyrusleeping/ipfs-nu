@@ -117,15 +117,20 @@ type ReleaseCandidate struct {
 
 // ReleaseReport is the per-member release decision for one dataset (S1–S4, S8).
 type ReleaseReport struct {
-	Dataset    string             `json:"dataset"`
-	Auto       bool               `json:"auto"`
-	DryRun     bool               `json:"dry_run"`
-	Target     string             `json:"target,omitempty"`
-	Live       string             `json:"live,omitempty"`
-	Epoch      string             `json:"epoch,omitempty"`
-	Policy     string             `json:"policy,omitempty"`
-	Deferred   []string           `json:"deferred"`
-	Candidates []ReleaseCandidate `json:"candidates"`
+	Dataset  string   `json:"dataset"`
+	Auto     bool     `json:"auto"`
+	DryRun   bool     `json:"dry_run"`
+	Target   string   `json:"target,omitempty"`
+	Live     string   `json:"live,omitempty"`
+	Epoch    string   `json:"epoch,omitempty"`
+	Policy   string   `json:"policy,omitempty"`
+	Deferred []string `json:"deferred"`
+	// HeadConfirmed says every blob of the head and live set has k confirmed owner
+	// copies (the evidence that releases earlier versions); HeadShortfall names the
+	// owners missing otherwise.
+	HeadConfirmed bool               `json:"head_confirmed"`
+	HeadShortfall []MissingOwner     `json:"head_shortfall,omitempty"`
+	Candidates    []ReleaseCandidate `json:"candidates"`
 	// Released lists the versions unpinned and the surplus blobs dropped by this call.
 	Released      []string `json:"released,omitempty"`
 	ReleasedBlobs int64    `json:"released_blobs,omitempty"`

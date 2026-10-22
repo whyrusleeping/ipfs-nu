@@ -874,7 +874,8 @@ required by the named task before it ships.
 - **0043 (public HTTPS)**: A8 (if any non-loopback API ships), P1–P6, N28; browser rows
   rerun against the public origin scheme in all three browsers; cert/deployment runbook.
   Implemented: P1–P6 as the public listener (state note under P6; N28, N29 public half,
-  N40, N41 automated), no non-loopback API shipped (A8 unchanged), runbook above. Not
+  N40, N41 automated), no non-loopback API shipped (A8 unchanged), runbook above. The
+  2026-10-22 internal review's findings are fixed with rows N42–N48 (0077). Not
   met until the browser rows B1–B7 and B9 are recorded against a real public domain
   (validation.md) and the independent review signs off.
 - **0052 (RASL)**: N29; RASL on loopback has no CORS; the SSRF rows of 0061 for `rasl://`.

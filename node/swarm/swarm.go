@@ -241,14 +241,32 @@ func (s *Swarm) Addrs() []wire.Multiaddr {
 	if s.connectivity != nil {
 		s.connectivity.mu.Lock()
 		homes := s.connectivity.homes
+		network, closed := s.connectivity.network, s.connectivity.closed
 		s.connectivity.mu.Unlock()
+		if network != nil && !closed {
+			network.mu.Lock()
+			confirmed := append([]wire.Multiaddr(nil), network.confirmed...)
+			network.mu.Unlock()
+			addrs = append(confirmed, addrs...)
+		}
 		if homes != nil {
 			// Links cap hints at three: keep BOTH relay routes ahead of direct
 			// expansion so a multi-interface node cannot truncate its backup.
 			addrs = append(homes.Addresses(), addrs...)
 		}
 	}
-	return addrs
+	seen := make(map[string]bool, len(addrs))
+	unique := make([]wire.Multiaddr, 0, len(addrs))
+	for _, addr := range addrs {
+		if s.host.IsLocalOnlyMultiaddr(addr) {
+			continue
+		}
+		if !seen[addr.String()] {
+			seen[addr.String()] = true
+			unique = append(unique, addr)
+		}
+	}
+	return unique
 }
 
 // Peers counts connected peers (node.Net).

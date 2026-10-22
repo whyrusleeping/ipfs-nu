@@ -29,7 +29,7 @@ func TestCrossedCircuitAndActiveStreamFailover(t *testing.T) {
 			t.Fatal("crossed connection", err)
 		}
 	}
-	if _, err := a.identify.WaitPeer(ctx, b.ID(), func(info p2pproto.PeerInfo) bool { return info.Certified != nil && len(info.Certified.Addresses) >= 3 }); err != nil {
+	if _, err := a.identify.WaitPeer(ctx, b.ID(), func(info p2pproto.PeerInfo) bool { return info.Certified != nil && len(info.Certified.Addresses) >= 2 }); err != nil {
 		t.Fatal(err)
 	}
 	certifiedRoutes := 0

@@ -11,8 +11,8 @@ negative results.
 ## Real daemon relay sessions and failover (0020, 2026-10-22)
 
 Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport
-and signed identify address seams. Baseline `ee06f0c` plus the daemon NAT-lab test
-and circuit share-link parser fix; stock quic-go v0.64.1, Go 1.26.0, rootless Linux
+and signed identify address seams. Baseline `8111314` plus address-publication
+hardening; stock quic-go v0.64.1, Go 1.26.0, rootless Linux
 user/network namespaces. These are bounded fixtures, **not field success rates**.
 
 Reproduce from the worktree root:
@@ -32,18 +32,20 @@ conflicting destination identities and stacked/unsupported circuit hints.
 | Daemon fixture | Result |
 |---|---|
 | EIM/APDF ↔ EIM/APDF; direct initially blocked | 19,500,000 bytes fetched via a real circuit share link; SHA-256 of extracted file matched |
-| Abrupt home failure during that get | SIGKILL of the provider's selected active home at 1,051,616 verified bytes (2.347 s); same caller/operation succeeded without retry/error via the other relay, 10.464 s total including failure detection/recovery |
-| EIM/APDF after removing the direct block and emitting route invalidations | Both real daemons reported authenticated direct paths with warm backup relay; 19.301 s in the recorded run (includes owner hooks/backoff), not an instantaneous-upgrade claim |
-| ADM/APDF ↔ ADM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 83 ms whole CLI operation |
-| APDM/APDF ↔ APDM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 82 ms whole CLI operation |
-| Native Linux conntrack NAT pair | Real-daemon relay get succeeded; 273,000 verified bytes, 86 ms whole CLI operation; no RFC NAT-class promise for the kernel allocator |
+| Abrupt home failure during that get | SIGKILL of the provider's selected active home at 1,051,616 verified bytes (2.370 s); same caller/operation succeeded without retry/error via the other relay, 12.733 s total including failure detection/recovery |
+| EIM/APDF after removing the direct block and emitting route invalidations | Both real daemons reported authenticated direct paths with warm backup relay; 16.994 s in the recorded run (includes owner hooks/backoff), not an instantaneous-upgrade claim |
+| ADM/APDF ↔ ADM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 84 ms whole CLI operation |
+| APDM/APDF ↔ APDM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 75 ms whole CLI operation |
+| Native Linux conntrack NAT pair | Real-daemon relay get succeeded; 273,000 verified bytes, 72 ms whole CLI operation; no RFC NAT-class promise for the kernel allocator |
 | All forwarded UDP blocked; fresh recipient daemon/new CID | Get failed `unavailable`, with the explicit online/UDP-reachability action; it did not silently satisfy the request from previously held bytes |
 
 All four daemon mapping cases connected successfully. APDM is not advertised as
 direct-hole-punch success. Loopback assembly tests separately establish crossed
 attempt convergence, active-stream failover on the **same** inner QUIC connection,
 exact endpoint authorization/negative targets, private candidate non-disclosure,
-private/isolated shutdown and real D12 hook registration. An actual route event
+LAN/loopback exclusion from public signed snapshots, two-observer proof aggregation
+and mapped-address publication before relay withdrawal, private/isolated shutdown
+and real D12 hook registration. An actual route event
 returns the physical-rebind limitation rather than a false successful rebind.
 
 A race-instrumented loopback assembly run measured the first five-byte application

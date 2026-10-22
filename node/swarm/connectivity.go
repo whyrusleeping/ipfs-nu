@@ -113,7 +113,7 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 		return host.ErrLimit
 	}
 	var err error
-	s.identify, err = p2pproto.New(s.host, p2pproto.Config{AgentVersion: nu.Name + "/" + nu.Version, Addresses: s.Addrs, OnPeerRecord: c.learn})
+	s.identify, err = p2pproto.New(s.host, p2pproto.Config{AgentVersion: nu.Name + "/" + nu.Version, Addresses: s.publicationAddrs, OnPeerRecord: c.learn})
 	if err != nil {
 		return err
 	}

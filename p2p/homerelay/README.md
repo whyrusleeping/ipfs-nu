@@ -46,8 +46,11 @@ retried with identity-based staggers; a live leg is never overwritten. The old l
 is always closed/joined before reattachment. This package still promotes only
 **reservations**; active inner packet-path repair belongs to that owner.
 
-Identify and share links use the same direct + live relay snapshot, with both
-relay hints first so bounded links retain a backup. Public relay prefixes must be
+Identify and share links derive from the same direct + live relay snapshot, with
+both relay hints first so bounded links retain a backup. Explicit user links may
+carry LAN hints; public signed identify records filter LAN/loopback literals.
+Two-observer AutoNAT-verified mapped/reflexive addresses enter the common snapshot
+before reservations are withdrawn, and are invalidated on network changes. Public relay prefixes must be
 configured or independently known from an explicit link; signed records alone do
 not authorize a new relay or disco destination. Owner configuration and diagnostics
 are described in docs/networking.md. Physical socket replacement remains absent;

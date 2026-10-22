@@ -358,6 +358,10 @@ prediction, DNS target resolution or blanket-true authorization are installed.
 that operator-selected gateway for the shared socket's port. Mappings remain tentative
 candidates; no automatic gateway discovery is claimed. Two independent observer IPs
 must AutoNAT-verify the same endpoint before public reachability withdraws reservations.
+Those verified public endpoints enter the address snapshot before withdrawal. Public
+signed identify records omit LAN/loopback literals; explicit user share links can
+still carry LAN hints. Network invalidation revokes confirmed endpoints and restores
+relay demand before rechecking reachability.
 D12 runs real invalidation/confirmation/mapping-refresh/renewal/push/probing hooks.
 Physical socket replacement is **not implemented**: route/address changes revoke
 proofs and explicitly report that limitation rather than claiming successful rebind.

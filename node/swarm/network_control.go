@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
 	ma "github.com/multiformats/go-multiaddr"
 	"github.com/whyrusleeping/nu/p2p/disco"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/magicsock"
 	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/proto/autonat"
@@ -31,6 +33,8 @@ type networkControl struct {
 	allowed      map[wire.PeerID]map[netip.AddrPort]bool
 	opened       map[*host.Conn]bool
 	reach        string
+	confirmed    []wire.Multiaddr // only current two-observer AutoNAT proofs
+	generation   uint64
 	lastReaction netmon.Reaction
 	confirm      chan struct{}
 }
@@ -45,7 +49,9 @@ func literalEndpoint(a wire.Multiaddr) (netip.AddrPort, bool) {
 }
 func (c *connectivity) initNetwork() error {
 	n := &networkControl{c: c, allowed: make(map[wire.PeerID]map[netip.AddrPort]bool), opened: make(map[*host.Conn]bool), reach: "unknown", confirm: make(chan struct{}, 1)}
+	c.mu.Lock()
 	c.network = n
+	c.mu.Unlock()
 	for id, addrs := range c.s.cfg.ProbeAllowed {
 		for _, a := range addrs {
 			n.allow(id, a)
@@ -142,7 +148,7 @@ func (n *networkControl) candidates(id wire.PeerID) []disco.Candidate {
 		c.Addr = netip.AddrPortFrom(a, c.Addr.Port())
 		// No LAN/loopback disclosure to arbitrary relayed public identities. An
 		// independent exact-endpoint grant creates an explicit peer relationship.
-		if a.Is4() != bound.Addr().Unmap().Is4() || a.IsUnspecified() || a.IsMulticast() || a.IsLinkLocalUnicast() || !c.Expires.After(now) || seen[c.Addr] {
+		if a.Is4() != bound.Addr().Unmap().Is4() || a.IsUnspecified() || a.IsMulticast() || a.IsLinkLocalUnicast() || magicsock.IsVirtual(c.Addr) || !c.Expires.After(now) || seen[c.Addr] {
 			continue
 		}
 		if (a.IsPrivate() || a.IsLoopback()) && !trusted {
@@ -206,7 +212,10 @@ func (c *connectivity) runNetwork() error {
 			err := n.disco.RestartProbing(ctx, e)
 			n.mu.Lock()
 			n.reach = "unknown"
+			n.confirmed = nil
+			n.generation++
 			n.mu.Unlock()
+			c.homes.SetNeeded(true)
 			if e.Kind & ^netmon.Resync != 0 {
 				return errors.Join(err, errPhysicalRebind)
 			}
@@ -301,6 +310,9 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	n.mu.Lock()
+	generation := n.generation
+	n.mu.Unlock()
 	// Two independent observer IPs must verify the SAME shared-socket candidate.
 	// Observations/mappings alone, a single relay, or two IDs at one IP never
 	// disable reservations. Unknown keeps home+backup warm.
@@ -355,18 +367,26 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 		}
 		proofs[addr][observer.Addr().Unmap()] = true
 	}
+	confirmed := confirmedAddresses(proofs)
 	reach := "unknown"
-	for _, servers := range proofs {
-		if len(servers) >= 2 {
-			reach = "public"
-		}
+	if len(confirmed) > 0 {
+		reach = "public"
 	}
 	if checked > 0 && failed == checked {
 		reach = "private"
 	}
 	n.mu.Lock()
+	if generation != n.generation {
+		n.mu.Unlock()
+		return errors.New("swarm: network changed during reachability confirmation; retaining relays")
+	}
+	changed := !sameAddresses(n.confirmed, confirmed)
+	n.confirmed = confirmed
 	n.reach = reach
 	n.mu.Unlock()
+	if changed {
+		n.c.s.identify.AddressesChanged()
+	}
 	n.c.mu.Lock()
 	homes := n.c.homes
 	n.c.mu.Unlock()
@@ -375,7 +395,40 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 	}
 	return errors.Join(errs...)
 }
+
+// Proof aggregation is deliberately conservative: independent IPs, the same
+// candidate, and no private/virtual endpoints. A mapping/observation isn't proof.
+func confirmedAddresses(proofs map[netip.AddrPort]map[netip.Addr]bool) []wire.Multiaddr {
+	var out []wire.Multiaddr
+	for endpoint, servers := range proofs {
+		ip := endpoint.Addr().Unmap()
+		if len(servers) < 2 || endpoint.Port() == 0 || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || magicsock.IsVirtual(endpoint) {
+			continue
+		}
+		if addr, err := host.UDPAddress(net.UDPAddrFromAddrPort(endpoint)); err == nil {
+			out = append(out, addr)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+func sameAddresses(a, b []wire.Multiaddr) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].String() != b[i].String() {
+			return false
+		}
+	}
+	return true
+}
+
 func (n *networkControl) close() {
+	n.mu.Lock()
+	n.confirmed = nil
+	n.reach = "disabled"
+	n.mu.Unlock()
 	if n.monitor != nil {
 		n.monitor.Close()
 	}

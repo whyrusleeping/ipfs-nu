@@ -34,3 +34,4 @@ Acceptance: the listed packages and config keys are gone, `go build ./...`, `go 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (b8f06eb; merged): removed p2p/noise, p2p/wss, p2p/yamux, host TCP adapters, relay WSS listener/flags/keys, swarm.proxy/relay_cert_pins + transport/fallback diagnostics, fallback endpoint logic, WSS experiments and natlab tests (−3,615/+240 lines). Docs/doctor state UDP-blocked networks are unsupported until a replacement is accepted. Evidence: build/vet/staticcheck/test/depguard green; natlab relay matrix, failover, pair-aware peer relay and one-sided restart cases pass (74 s); Docker interop go/rust/js 6/6 + Kubo pass. Only remaining grep hits are the unrelated Jetstream websocket client.

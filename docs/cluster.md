@@ -707,8 +707,18 @@ Neither mode sends any traffic, even encrypted, through third parties.
   therefore comes from mutual authentication and connection gating. Private and isolated
   nodes accept and dial only PeerIds with non-removed member records. Joiners are admitted
   only for the join exchange on `/nu/cluster/1`; while an invite is live a non-member's
-  connection that has not sent `join` within 10 s is closed (refused joins after 2 s). In public mode, gating covers cluster
-  protocols, and local datasets are served only to members unless `announce` is set.
+  connection that has not sent `join` within 10 s is closed (refused joins after 2 s). In
+  public mode, gating covers cluster protocols, and local datasets are served only to
+  members unless `announce` is set. *Current build (0069 decision):* `announce` is not
+  implemented, so every networked cluster dataset is member-only. Enforced: state, heads,
+  holdings and heartbeats only over the member-gated `/nu/cluster/1`; no provider, DHT or
+  `nu.name` records for dataset roots; `nu public add` refuses a dataset head or retained
+  version (`forbidden`). Not enforced per object: the content protocols (`/nu/bytes/1`,
+  `/nu/have/1`, `/nu/tree/1`, Bitswap) answer any connected peer that names a held CID,
+  so in public mode a CID of member-only content is a read capability (as is a
+  `nu share` link a member hands out). Per-object serving policy (a member-only object
+  set consulted per request, as the public listener does for its public set) lands with
+  `announce`.
 - **Exposure:** a non-member that reaches a listening port can complete the server's half of
   the TLS handshake and learn its PeerId, but cannot open streams. Deployments needing
   concealment rely on network isolation, which isolated mode assumes, or a VPN.

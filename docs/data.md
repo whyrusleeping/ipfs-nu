@@ -515,6 +515,12 @@ A1–A8; the transfer rules are in [operations](operations.md#capacity-and-trans
   space, or raise `store.limit`); protected content ([S7](operations.md#s-safe-release))
   is never released to make a new update fit. Pressure (content headroom 0) leaves the
   state reserve: an authority with a full store still writes member and head records.
+  `nu.db` uses `auto_vacuum=INCREMENTAL` (0078): a GC that deleted rows returns the
+  database's free pages to the filesystem and truncates the WAL, so removed blocks and
+  inline blobs leave the physical total. The in-page part of a small deleted row (under
+  about 1 KiB per row at 4 KiB pages) stays inside `nu.db` as space SQLite reuses before
+  the file grows; `prune --dry-run` reports both what it frees (`free_bytes`, objects)
+  and what the next GC returns to the filesystem (`reclaim_bytes`).
 - **A8 Status.** `nu status` and `GET /api/v0/status` report the `store` section:
   `{objects, pins, bytes (physical), blobs, outboards, partials, db, staging, reserved
   (admitted, unwritten fetch bytes), nocopy, free, limit, reserve, headroom, pressure}`,

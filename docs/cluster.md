@@ -374,7 +374,9 @@ nu cluster dataset rollback <ds> <v>              # append restored head; existi
 - **Pruning (0047)**: `nu dataset prune <ds> [--dry-run]` lists versions outside the live
   set whose content is still pinned, with the bytes releasing them would free (objects no
   other pin reaches, so content shared with live versions, other datasets or explicit
-  pins is reported as shared and kept) and applies only with explicit intent. On a
+  pins is reported as shared and kept) and what the next GC returns to the filesystem
+  (`reclaim_bytes`, [A7](data.md#accounting-and-budgets)), and applies only with explicit
+  intent. On a
   networked cluster it applies only once the live set's owners confirm it in a settled
   epoch (S1–S3, 0048). The current head, last ready,
   held and staged targets and every live root are never pruned.

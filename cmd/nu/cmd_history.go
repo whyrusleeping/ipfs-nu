@@ -303,7 +303,7 @@ func historyCommands(scope string, get func(*env, context.Context) (node.Cluster
 					if !r.DryRun {
 						verb = "released"
 					}
-					fmt.Fprintf(w, "%s %d version(s): %d B freed, %d B shared with other pins (kept)\n", verb, len(r.Candidates), r.FreeBytes, r.SharedKept)
+					fmt.Fprintf(w, "%s %d version(s): %d B freed (%d B returned to the filesystem by the next gc), %d B shared with other pins (kept)\n", verb, len(r.Candidates), r.FreeBytes, r.ReclaimBytes, r.SharedKept)
 					for _, c := range r.Candidates {
 						fmt.Fprintf(w, "  %s %s %s\n", c.TID, c.Root, c.Label)
 					}

@@ -308,7 +308,7 @@ func runArchive(t *testing.T, cfg config, vs [][]fixtures.File, res *pilot.Shape
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := stats(t, a).Bytes
+	before := stats(t, a)
 	pr, err := a.Local.DatasetPrune(ctx(t, cfg.wait), node.ScopeLocal, "ds", apiv0.PruneRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,10 @@ func runArchive(t *testing.T, cfg config, vs [][]fixtures.File, res *pilot.Shape
 	if _, err := a.Local.Store.GC(ctx(t, cfg.wait), store.GCOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	res.Prune = &pilot.PruneStep{Pruned: len(pr.Pruned), FreeBytes: dry.FreeBytes, Reclaimed: before - stats(t, a).Bytes}
+	after := stats(t, a)
+	content := func(s store.Stats) int64 { return s.Blobs + s.Outboards + s.Blocks }
+	res.Prune = &pilot.PruneStep{Pruned: len(pr.Pruned), FreeBytes: dry.FreeBytes, ReclaimBytes: dry.ReclaimBytes, Reclaimed: before.Bytes - after.Bytes,
+		Content: content(before) - content(after), DB: before.DB - after.DB}
 }
 
 // runShare is the first-magic journey: a sharer daemon adds the tree and shares a link;

@@ -1904,7 +1904,9 @@ What the run shows about the mechanisms, on synthetic data only:
   lookups during readiness evaluation (`evalTarget`) and archive establishment
   (`establishArchive`), repeated across versions and heartbeats. Restores of the same
   trees took 2–7 s. This is a follow-up candidate for the replica and readiness path, and
-  a reason to measure entry counts with pilots before publishing limits.
+  a reason to measure entry counts with pilots before publishing limits. Addressed by 0078: see
+  [per-file overhead and space reclaim](#per-file-overhead-and-space-reclaim-0078-2026-10-22)
+  (`sparse` update about 9 s → 1.1 s; cluster `ready` about 8.7 s → 1.5 s).
 - **Budgets behave per C5 on every shape.** An over-budget update was refused with
   `insufficient_storage` and an action; held versions stayed complete and readable; and
   one intervention (raising `store.limit`) resumed the update.
@@ -1912,11 +1914,97 @@ What the run shows about the mechanisms, on synthetic data only:
   shape reclaimed 0.38 MiB against a 0.76 MiB estimate, and `site` reclaimed −0.06 MiB
   (the prune and GC grew the DB). Small blocks deleted from SQLite do not shrink the
   file. This is an input to the [capacity-UX gate](pilots.md#capacity-adjustment-ux).
+  0078 made GC return the space and the prune estimate honest (`reclaim_bytes`: 0.95×
+  of what GC returned on `sparse`).
 - **The cluster stays at the transfer floor without amplification.** On `dump` and
   `items` it moved 1.5–1.6× the novel bytes (floor 1.33×). Repair restored two copies
   after a member loss with no intervention once the loss was detected, in 1–12 s with
   compressed windows. The writer's surplus release (`dataset gc`) is the one operator
   step each cluster run needed.
+
+## Per-file overhead and space reclaim (0078, 2026-10-22)
+
+The 0034 smoke run found per-file costs dominating small-object updates (below). Method:
+`NU_BENCH_PILOT=sparse,site NU_BENCH_OUT=<dir> go test ./bench/pilot -run TestPilot`
+(the [harness](pilots.md#benchmark-fixtures-and-runner): seed 1, scale 1, 4 versions, tmpfs,
+compressed cluster windows). Before is commit `c49d5d2`, run at load average 6–9. After is
+commit `7d5d047`, two runs at load average 17–21, so the after figures are conservative.
+Raw data: `bench/results/2026-10-22-0078-{before-c49d5d2,after-7d5d047}.json`. These are
+harness figures on synthetic data, not pilot evidence.
+
+| `sparse` (2,000 files, 14.7 MiB) | before | after (run 1 / 2) | factor |
+|---|---|---|---|
+| One node: update (add + head write), mean of v1–v3 | 9.21 s | 1.08 / 1.05 s | 8.5–8.8× |
+| One node: first import (v0) | 5.10 s | 1.34 / 1.32 s | 3.8× |
+| One node: exact restore of the oldest version | 5.22 s | 0.94 / 0.96 s | 5.5× |
+| Cluster: update to `ready`, mean of v1–v3 | 8.70 s | 1.54 / 1.42 s | 5.6–6.1× |
+| Cluster: update to `held` by every owner | 9.20 s | 1.54 / 1.42 s | 6.0–6.5× |
+| Cluster: oldest version restored on a member | 6.80 s | 1.84 / 1.79 s | 3.7× |
+| Cluster: repair restore after a member loss | 12.67 s | 9.68 / 7.74 s | 1.3–1.6× |
+| DB growth per update | 0.41 MiB | 0.32 / 0.32 MiB | |
+| Reclaim after pruning 3 versions: estimate → reclaimed | `free_bytes` 0.76 → 0.38 MiB (0.50×) | `reclaim_bytes` 2.71 → 2.58 MiB (0.95×), 2.61 → 2.48 MiB (0.95×) | |
+
+For `site` (45 files), an update went from 0.11 s to 0.03 s. Reclaim went from a
+0.02 MiB estimate against −0.06 MiB actually returned, to 0.25 MiB estimated against
+0.23 MiB returned (0.92×). Cluster readiness stayed bound by the heartbeat (0.13 s →
+0.14 s).
+
+**Causes**, from CPU profiles of the `sparse` runs:
+- **Per-object completeness checks.** 71% of CPU went to per-object `store.Has` called from
+  `replica.Manager.check`. Every reconcile pass and every readiness evaluation walked the
+  head and every live version with one or two SQL queries per object and one `Get` per
+  structure node. Evaluations come from `Groups` for status, waits and archive
+  establishment.
+- **Per-object store walks.** `store.Walk` made the same per-object lookups for
+  `requireComplete`, `walkBlobs`, prune impact and GC marking.
+- **No space returned after GC.** `nu.db` never shrank after GC: auto_vacuum was off and
+  the WAL was never truncated. The prune estimate counted object bytes, which the
+  database kept as free pages.
+
+**Changes:**
+- **Batched lookups.** `store.HasMany` and `store.GetMany` answer up to 500 objects per
+  query.
+- **Memoized completeness checks** (`replica/check.go`).
+  - A check walks a tree one level at a time with batched lookups.
+  - The walk is memoized per root while the store has removed nothing
+    (`store.Removals`, bumped after a GC, a release of corrupt objects or an
+    invalidated `--nocopy` row). Structure is immutable, and "held" stays true until a
+    removal.
+  - Later checks re-query only blobs not yet known to be held. Whether *every* blob is
+    held (non-owners) is answered by re-checking the last missing blob, usually one
+    lookup.
+  - Owners are cached per placement epoch and policy.
+  - `Groups` uses the structure alone.
+- **Prefetching walks.** `store.Walk` prefetches the tree level by level (up to 131,072
+  objects) and visits it depth-first from memory in the same order as before.
+- **Space returned after GC.** `nu.db` uses `auto_vacuum=INCREMENTAL`; existing stores are
+  converted once at open (U2). GC runs `incremental_vacuum` and
+  `wal_checkpoint(TRUNCATE)`.
+- **Honest reclaim estimate.** `prune` reports `reclaim_bytes`:
+  - blob files and outboards;
+  - the overflow pages of freed database rows;
+  - the WAL and free pages already in `nu.db`.
+
+  The in-page part of small deleted rows stays as reusable space inside `nu.db`, which
+  is why `reclaim_bytes` can be below `free_bytes` for tiny objects. The remaining 5–8%
+  gap between estimate and result has not been broken down further.
+- **Two races exposed by the faster passes:**
+  - An `archive-ready` wait started on a member before the new version record arrived
+    bound the previous live set and never succeeded (`cluster.TestClusterArchive`, 4 of
+    6 runs). It now rebinds until its target is in the live set.
+  - A new select follow's rules were checked against facets before the collection
+    manager had seen the dataset (`nutest.TestFollowSelectNetwork`, about 1 suite run in
+    3).
+
+**Still per-file:**
+- The fetcher checks each blob before fetching it (`fetch.(*run).blob`: about 6 s of CPU
+  in the run). That path dominates the repair restore and a member's restore.
+- Head writes compute `new_bytes` by walking the parent version.
+
+Neither blocks 0078's acceptance. A memo shared across trees that reuses verified
+subtrees between versions via MST diffs would cut a new version's first walk from
+O(files) to O(changes). It is not needed at these sizes. Revisit it with pilot entry
+counts ([pilots](pilots.md#per-entry-overhead-from-the-harness-evaluate-with-pilots)).
 
 ## Reporting method
 

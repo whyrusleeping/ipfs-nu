@@ -134,8 +134,13 @@ type PruneReport struct {
 	Candidates []PruneCandidate `json:"candidates"`
 	FreeBytes  int64            `json:"free_bytes"`
 	SharedKept int64            `json:"shared_bytes"`
-	Pruned     []string         `json:"pruned,omitempty"`
-	Warnings   []string         `json:"warnings,omitempty"`
+	// ReclaimBytes is what the next GC returns to the filesystem (0078): the freed blob
+	// files and outboards, the overflow pages of freed database rows, and the WAL and free
+	// pages already in nu.db. The in-page part of small freed rows stays inside nu.db as
+	// space the store reuses, so it can be less than FreeBytes.
+	ReclaimBytes int64    `json:"reclaim_bytes"`
+	Pruned       []string `json:"pruned,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // PruneCandidate is one version a prune would release.

@@ -1,0 +1,421 @@
+{
+  "note": "Harness smoke results, not pilot evidence: synthetic bench/fixtures shapes on one shared machine, in-process nodes over loopback QUIC, compressed cluster timings. No support or scale claim follows from them.",
+  "commit": "c49d5d2",
+  "go": "go1.26.2",
+  "os": "linux/amd64",
+  "cpu_model": "AMD EPYC 9684X 96-Core Processor",
+  "cpus": 192,
+  "gomaxprocs": 16,
+  "tmpdir": "/dev/shm",
+  "seed": 1,
+  "scale": 1,
+  "versions": 4,
+  "cluster_timings": {
+    "Heartbeat": "200ms",
+    "EvidenceFresh": "2s",
+    "DownAfter": "1s",
+    "UpAfter": "1s",
+    "Settle": "500ms"
+  },
+  "shapes": [
+    {
+      "name": "sparse",
+      "archive": [
+        {
+          "v": 0,
+          "files": 2000,
+          "logical": 15408511,
+          "whole_file": 15408511,
+          "novel": 15408511,
+          "new_bytes": 15408511,
+          "stored": 7072671,
+          "db": 15801312,
+          "physical": 22873983,
+          "store_total": 22993471,
+          "AddSec": 5.09804642,
+          "CPUSec": 5.938105
+        },
+        {
+          "v": 1,
+          "files": 2006,
+          "logical": 15409587,
+          "whole_file": 193503,
+          "novel": 193503,
+          "new_bytes": 193503,
+          "stored": 79666,
+          "db": 724992,
+          "physical": 804658,
+          "store_total": 23798129,
+          "AddSec": 8.879882943,
+          "CPUSec": 10.415093
+        },
+        {
+          "v": 2,
+          "files": 2012,
+          "logical": 15453396,
+          "whole_file": 239652,
+          "novel": 239652,
+          "new_bytes": 239652,
+          "stored": 125461,
+          "db": 0,
+          "physical": 125461,
+          "store_total": 23923590,
+          "AddSec": 9.305865101,
+          "CPUSec": 10.948397
+        },
+        {
+          "v": 3,
+          "files": 2018,
+          "logical": 15454513,
+          "whole_file": 264911,
+          "novel": 264911,
+          "new_bytes": 264911,
+          "stored": 147177,
+          "db": 557056,
+          "physical": 704233,
+          "store_total": 24627823,
+          "AddSec": 9.43364826,
+          "CPUSec": 11.132886
+        }
+      ],
+      "restore": [
+        {
+          "where": "archive",
+          "v": 0,
+          "bytes": 15408511,
+          "sec": 5.21838738,
+          "verified": true,
+          "served": 0
+        },
+        {
+          "where": "archive",
+          "v": 3,
+          "bytes": 15454513,
+          "sec": 5.252725202,
+          "verified": true,
+          "served": 0
+        }
+      ],
+      "budget": {
+        "Limit": 24740938,
+        "Usage": 24627823,
+        "Need": 226231,
+        "Refused": true,
+        "Code": "insufficient_storage",
+        "Message": "store limit reached: 58.5 KiB needed, 35.7 KiB left of the 23.6 MiB limit",
+        "Action": "release content (`nu pin rm`) or raise store.limit (`nu config set store.limit ...`), then run the command again; nothing pinned is removed automatically",
+        "HeldIntact": true,
+        "AfterRaise": true,
+        "Interventions": [
+          "raise store.limit"
+        ]
+      },
+      "cluster": {
+        "Members": 3,
+        "Replicas": 2,
+        "Versions": [
+          {
+            "V": 0,
+            "Novel": 15408511,
+            "WholeFile": 15408511,
+            "Transfer": 20844799,
+            "StoredTotal": 55880942,
+            "AddSec": 4.287543861,
+            "ReadySec": 4.766902942,
+            "HeldSec": 5.241580893,
+            "ReadyBeats": 23.834514709999997,
+            "CPUSec": 18.079652
+          },
+          {
+            "V": 1,
+            "Novel": 193503,
+            "WholeFile": 193503,
+            "Transfer": 388098,
+            "StoredTotal": 929683,
+            "AddSec": 6.50643496,
+            "ReadySec": 6.964549133,
+            "HeldSec": 7.485600106,
+            "ReadyBeats": 34.822745665,
+            "CPUSec": 26.712447
+          },
+          {
+            "V": 2,
+            "Novel": 239652,
+            "WholeFile": 239652,
+            "Transfer": 513538,
+            "StoredTotal": 1065418,
+            "AddSec": 8.323847698,
+            "ReadySec": 8.774420388,
+            "HeldSec": 9.28303877,
+            "ReadyBeats": 43.87210193999999,
+            "CPUSec": 32.817259
+          },
+          {
+            "V": 3,
+            "Novel": 264911,
+            "WholeFile": 264911,
+            "Transfer": 454714,
+            "StoredTotal": 925766,
+            "AddSec": 9.850101229,
+            "ReadySec": 10.352172879,
+            "HeldSec": 10.846274956,
+            "ReadyBeats": 51.76086439499999,
+            "CPUSec": 38.177413
+          }
+        ],
+        "Release": {
+          "Blobs": 649,
+          "Bytes": 5029881,
+          "Sec": 1.64187565
+        },
+        "Storage": [
+          22310812,
+          17221520,
+          17578946
+        ],
+        "Restore": [
+          {
+            "where": "member",
+            "v": 0,
+            "bytes": 15408511,
+            "sec": 6.801952771,
+            "verified": true,
+            "served": 10990615
+          }
+        ],
+        "Repair": {
+          "DetectSec": 1.08286292,
+          "RestoreSec": 12.672568036,
+          "Transfer": 6012610,
+          "Stored": 3007960,
+          "Ready": true,
+          "Interventions": null
+        },
+        "Interventions": [
+          "writer `dataset gc` (surplus release)"
+        ]
+      },
+      "prune": {
+        "pruned": 3,
+        "free_bytes": 798141,
+        "reclaimed": 395101
+      }
+    },
+    {
+      "name": "site",
+      "archive": [
+        {
+          "v": 0,
+          "files": 45,
+          "logical": 5657450,
+          "whole_file": 5657450,
+          "novel": 5657450,
+          "new_bytes": 5657450,
+          "stored": 5454186,
+          "db": 1264840,
+          "physical": 6719026,
+          "store_total": 6838514,
+          "AddSec": 0.103927712,
+          "CPUSec": 0.114328
+        },
+        {
+          "v": 1,
+          "files": 47,
+          "logical": 5713754,
+          "whole_file": 62448,
+          "novel": 62448,
+          "new_bytes": 62448,
+          "stored": 48746,
+          "db": 280160,
+          "physical": 328906,
+          "store_total": 7167420,
+          "AddSec": 0.121858024,
+          "CPUSec": 0.152579
+        },
+        {
+          "v": 2,
+          "files": 49,
+          "logical": 5777405,
+          "whole_file": 69995,
+          "novel": 69995,
+          "new_bytes": 69995,
+          "stored": 52308,
+          "db": 300760,
+          "physical": 353068,
+          "store_total": 7520488,
+          "AddSec": 0.107233739,
+          "CPUSec": 0.128038
+        },
+        {
+          "v": 3,
+          "files": 51,
+          "logical": 5922982,
+          "whole_file": 152121,
+          "novel": 152121,
+          "new_bytes": 152121,
+          "stored": 132657,
+          "db": 284280,
+          "physical": 416937,
+          "store_total": 7937425,
+          "AddSec": 0.086857242,
+          "CPUSec": 0.111133
+        }
+      ],
+      "restore": [
+        {
+          "where": "archive",
+          "v": 0,
+          "bytes": 5657450,
+          "sec": 0.048738456,
+          "verified": true,
+          "served": 0
+        },
+        {
+          "where": "archive",
+          "v": 3,
+          "bytes": 5922982,
+          "sec": 0.048677605,
+          "verified": true,
+          "served": 0
+        }
+      ],
+      "budget": {
+        "Limit": 7965025,
+        "Usage": 7937425,
+        "Need": 55201,
+        "Refused": true,
+        "Code": "insufficient_storage",
+        "Message": "store limit reached: 32.4 KiB needed, 27.0 KiB left of the 7.6 MiB limit",
+        "Action": "release content (`nu pin rm`) or raise store.limit (`nu config set store.limit ...`), then run the command again; nothing pinned is removed automatically",
+        "HeldIntact": true,
+        "AfterRaise": true,
+        "Interventions": [
+          "raise store.limit"
+        ]
+      },
+      "share": {
+        "AddSec": 0.032556078,
+        "GetSec": 0.072813338,
+        "BrowseSec": 0.003292435,
+        "Bytes": 5657450,
+        "Served": 5684339,
+        "Updates": [
+          {
+            "V": 1,
+            "Novel": 62448,
+            "Served": 285095,
+            "GetSec": 0.036105434
+          },
+          {
+            "V": 2,
+            "Novel": 69995,
+            "Served": 300362,
+            "GetSec": 0.034609222
+          },
+          {
+            "V": 3,
+            "Novel": 152121,
+            "Served": 394319,
+            "GetSec": 0.034980361
+          }
+        ],
+        "Steps": [
+          "sharer: nu add -r \u003cdir\u003e (prints the link)",
+          "recipient: nu get \u003clink\u003e -o \u003cdir\u003e (no daemon, no init)",
+          "browser: open the gateway page"
+        ]
+      },
+      "cluster": {
+        "Members": 3,
+        "Replicas": 2,
+        "Versions": [
+          {
+            "V": 0,
+            "Novel": 5657450,
+            "WholeFile": 5657450,
+            "Transfer": 6135959,
+            "StoredTotal": 14626847,
+            "AddSec": 0.112478167,
+            "ReadySec": 0.218112612,
+            "HeldSec": 0.2224991,
+            "ReadyBeats": 1.09056306,
+            "CPUSec": 0.583753
+          },
+          {
+            "V": 1,
+            "Novel": 62448,
+            "WholeFile": 62448,
+            "Transfer": 67477,
+            "StoredTotal": 810252,
+            "AddSec": 0.088521936,
+            "ReadySec": 0.091865831,
+            "HeldSec": 0.09681483,
+            "ReadyBeats": 0.45932915499999993,
+            "CPUSec": 0.289443
+          },
+          {
+            "V": 2,
+            "Novel": 69995,
+            "WholeFile": 69995,
+            "Transfer": 139170,
+            "StoredTotal": 1001524,
+            "AddSec": 0.127584714,
+            "ReadySec": 0.137069511,
+            "HeldSec": 0.144600894,
+            "ReadyBeats": 0.685347555,
+            "CPUSec": 0.410748
+          },
+          {
+            "V": 3,
+            "Novel": 152121,
+            "WholeFile": 152121,
+            "Transfer": 297791,
+            "StoredTotal": 1283771,
+            "AddSec": 0.161707663,
+            "ReadySec": 0.170307818,
+            "HeldSec": 0.177393361,
+            "ReadyBeats": 0.8515390899999999,
+            "CPUSec": 0.541768
+          }
+        ],
+        "Release": {
+          "Blobs": 19,
+          "Bytes": 647231,
+          "Sec": 0.01149854
+        },
+        "Storage": [
+          7688425,
+          3025137,
+          7213056
+        ],
+        "Restore": [
+          {
+            "where": "member",
+            "v": 0,
+            "bytes": 5657450,
+            "sec": 0.108912791,
+            "verified": true,
+            "served": 9203879
+          }
+        ],
+        "Repair": {
+          "DetectSec": 1.198724724,
+          "RestoreSec": 1.0883935710000001,
+          "Transfer": 688938,
+          "Stored": 1295480,
+          "Ready": true,
+          "Interventions": null
+        },
+        "Interventions": [
+          "writer `dataset gc` (surplus release)"
+        ]
+      },
+      "prune": {
+        "pruned": 3,
+        "free_bytes": 26007,
+        "reclaimed": -65920
+      }
+    }
+  ],
+  "max_rss": 94081024
+}

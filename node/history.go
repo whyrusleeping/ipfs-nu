@@ -623,6 +623,13 @@ func (n *Local) DatasetPrune(ctx context.Context, scope, name string, req apiv0.
 	if err := n.pruneImpact(ctx, name, candRoots, rep); err != nil {
 		return nil, err
 	}
+	if len(cands) > 0 {
+		db, err := n.Store.DBReclaimable()
+		if err != nil {
+			return nil, err
+		}
+		rep.ReclaimBytes += db
+	}
 	if req.DryRun || len(cands) == 0 {
 		return rep, nil
 	}
@@ -660,6 +667,10 @@ func (n *Local) pruneImpact(ctx context.Context, name string, cands map[cid.CID]
 			return err
 		}
 	}
+	reclaim, err := n.Store.Reclaimer()
+	if err != nil {
+		return err
+	}
 	seen := map[cid.Multihash]bool{}
 	for c := range cands {
 		if _, err := n.Store.Walk(ctx, n.pinOf(c), func(c cid.CID, held bool) error {
@@ -676,6 +687,7 @@ func (n *Local) pruneImpact(ctx context.Context, name string, cands map[cid.CID]
 				rep.SharedKept += int64(info.Physical)
 			} else {
 				rep.FreeBytes += int64(info.Physical)
+				rep.ReclaimBytes += reclaim(c, info)
 			}
 			return nil
 		}); err != nil {

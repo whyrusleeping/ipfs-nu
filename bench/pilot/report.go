@@ -83,8 +83,14 @@ type Budget struct {
 // PruneStep is retention reclaim: prune to keep_last 1, then GC.
 type PruneStep struct {
 	Pruned    int   `json:"pruned"`
-	FreeBytes int64 `json:"free_bytes"` // the dry run's estimate
-	Reclaimed int64 `json:"reclaimed"`  // physical bytes actually freed
+	FreeBytes int64 `json:"free_bytes"` // the dry run's estimate: freed objects
+	// ReclaimBytes is the dry run's estimate of what GC returns to the filesystem.
+	ReclaimBytes int64 `json:"reclaim_bytes"`
+	Reclaimed    int64 `json:"reclaimed"` // physical bytes actually freed
+	// Content is the freed blob, outboard and block bytes (the estimate's measure); DB the
+	// change of the database files (nu.db and its WAL), whose free pages GC returns.
+	Content int64 `json:"content"`
+	DB      int64 `json:"db"`
 }
 
 // Share is the first-magic journey (site shape).
@@ -158,6 +164,9 @@ func ratio(a, b int64) string {
 	if b <= 0 {
 		return "—"
 	}
+	if r := float64(a) / float64(b); r < 10 {
+		return fmt.Sprintf("%.2f×", r)
+	}
 	return fmt.Sprintf("%.1f×", float64(a)/float64(b))
 }
 
@@ -215,10 +224,10 @@ func (r *Report) Markdown() string {
 			MiB(novel/n), MiB(whole/n), MiB(stored/n), MiB(db/n), ratio(phys, novel), sec(add/float64(n)), restore, budget)
 	}
 
-	b.WriteString("\n**Retention reclaim** (history keep_last 2: prune after the over-budget probe's extra version, then store GC):\n\n| shape | pruned versions | dry-run estimate | reclaimed |\n|---|---|---|---|\n")
+	b.WriteString("\n**Retention reclaim** (history keep_last 2: prune after the over-budget probe's extra version, then store GC; free = the dry run's free_bytes, estimate = its reclaim_bytes; reclaimed = physical store bytes; content = blob, outboard and block bytes, DB = database files incl. WAL):\n\n| shape | pruned versions | free (objects) | estimate (filesystem) | reclaimed | of which content | of which DB files | reclaimed ÷ estimate |\n|---|---|---|---|---|---|---|---|\n")
 	for _, s := range r.Shapes {
 		if p := s.Prune; p != nil {
-			fmt.Fprintf(&b, "| %s | %d | %s | %s |\n", s.Name, p.Pruned, MiB(p.FreeBytes), MiB(p.Reclaimed))
+			fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %s | %s | %s |\n", s.Name, p.Pruned, MiB(p.FreeBytes), MiB(p.ReclaimBytes), MiB(p.Reclaimed), MiB(p.Content), MiB(p.DB), ratio(p.Reclaimed, p.ReclaimBytes))
 		}
 	}
 

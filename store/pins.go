@@ -140,6 +140,10 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 	}
 	var st WalkStats
+	pre, err := s.prefetch(ctx, p.CID, links)
+	if err != nil {
+		return st, err
+	}
 	// Keyed by full CID: the same bytes linked as raw and as DRISL are two objects (the
 	// DRISL one has links), 0077.
 	seen := map[cid.CID]bool{}
@@ -155,9 +159,14 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 		seen[c] = true
 		st.Objects++
-		info, ok, err := s.Has(c)
-		if err != nil {
-			return st, err
+		e, cached := pre.objs[c.Multihash()]
+		info, ok := e.info, e.ok
+		// The prefetch is keyed by multihash; when the stored codec differs, ask the
+		// codec-checking Has (0077: DRISL reads of raw-only bytes are not held).
+		if !cached || (ok && info.Codec != c.Codec()) {
+			if info, ok, err = s.Has(c); err != nil {
+				return st, err
+			}
 		}
 		held := ok && info.Complete
 		if held {
@@ -173,9 +182,11 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		if links == nil || !held || c.Codec() != cid.DRISL {
 			continue
 		}
-		data, err := s.Get(c)
-		if err != nil {
-			return st, err
+		data := e.data
+		if data == nil || e.codec != c.Codec() {
+			if data, err = s.Get(c); err != nil {
+				return st, err
+			}
 		}
 		kids, err := links(c, data)
 		if err != nil {
@@ -251,6 +262,12 @@ func (s *Store) GC(ctx context.Context, o GCOptions) (GCResult, error) {
 	}
 	if err := tx.Commit(); err != nil {
 		return res, err
+	}
+	if res.Blocks+res.Blobs > 0 {
+		s.removals.Add(1)
+	}
+	if res.Blocks+res.Blobs+res.Partials > 0 {
+		_ = s.reclaimDB() // best effort: the rows are gone either way
 	}
 	for _, f := range files {
 		_ = os.Remove(f) // a nocopy blob's data path is its source, never under blobs/

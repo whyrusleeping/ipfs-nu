@@ -42,7 +42,7 @@ type BitswapSource struct {
 }
 
 func NewBitswapSource(h *host.Host, p ProviderFinder) *BitswapSource {
-	return &BitswapSource{Host: h, Providers: p, Timeout: 20 * time.Second, pending: map[IPFSCID][]chan bitswapReply{}}
+	return &BitswapSource{Host: h, Providers: p, Timeout: 60 * time.Second, pending: map[IPFSCID][]chan bitswapReply{}}
 }
 func (s *BitswapSource) ensureHandler() error {
 	s.mu.Lock()
@@ -143,20 +143,34 @@ func parseDontHaves(b []byte) []IPFSCID {
 	return out
 }
 
+// Provider fan-out bounds: wants go to up to maxBitswapDials providers at once, each dial
+// and want bounded by bitswapDialTimeout, so dead provider records cannot use up the
+// whole block deadline.
+const (
+	maxBitswapDials    = 8
+	bitswapDialTimeout = 10 * time.Second
+)
+
+// GetBlock finds providers of id, sends the want to each reachable one concurrently and
+// returns the first verified block. It fails when every provider was unreachable or
+// answered DONT_HAVE, or at the deadline.
 func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
 	if s.Providers == nil {
 		return nil, errors.New("bitswap: provider finder required")
+	}
+	if s.Host == nil {
+		return nil, errors.New("bitswap: host required")
 	}
 	if e := s.ensureHandler(); e != nil {
 		return nil, e
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
-		timeout = 20 * time.Second
+		timeout = 60 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	replyCh := make(chan bitswapReply, 1)
+	replyCh := make(chan bitswapReply, 2*maxBitswapDials)
 	s.mu.Lock()
 	s.pending[id] = append(s.pending[id], replyCh)
 	s.mu.Unlock()
@@ -178,88 +192,109 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 	if e != nil {
 		return nil, e
 	}
-	var errs []string
+	type sent struct{ err error }
+	results := make(chan sent, len(ps))
+	sem := make(chan struct{}, maxBitswapDials)
+	tries := 0
 	for _, p := range ps {
-		if s.Host == nil {
-			return nil, errors.New("bitswap: host required")
-		}
 		if p.ID == s.Host.ID() {
 			continue
 		}
-		conn, ok := s.Host.Connection(p.ID)
-		var dialErr error
-		if !ok {
-			for _, raw := range p.Addrs {
-				a, er := wire.MultiaddrFromBytes(raw, 2048)
-				if er != nil || a.Opaque() {
-					continue
-				}
-				text, er := a.Text()
-				if er != nil {
-					continue
-				}
-				if !strings.Contains(text, "/p2p/") {
-					text += "/p2p/" + p.ID.String()
-				}
-				ma, er := wire.ParseMultiaddr(text, 4096)
-				if er != nil {
-					continue
-				}
-				conn, er = s.Host.Dial(ctx, ma)
-				dialErr = er
-				if er == nil {
-					break
-				}
+		tries++
+		go func(p kad.Peer) {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results <- sent{ctx.Err()}
+				return
 			}
-		}
-		if conn == nil {
-			if dialErr != nil {
-				errs = append(errs, fmt.Sprintf("%s: %v", p.ID, dialErr))
-			} else {
-				errs = append(errs, fmt.Sprintf("%s: no usable address", p.ID))
+			defer func() { <-sem }()
+			dctx, dcancel := context.WithTimeout(ctx, bitswapDialTimeout)
+			defer dcancel()
+			if err := s.want(dctx, p, id); err != nil {
+				results <- sent{fmt.Errorf("%s: %w", p.ID, err)}
+				return
 			}
-			continue
-		}
-		st, er := s.Host.OpenStream(ctx, p.ID, BitswapProtocol)
-		if er != nil {
-			errs = append(errs, er.Error())
-			continue
-		}
-		if er = bitswapSend(st, id); er != nil {
-			errs = append(errs, er.Error())
-			continue
-		}
-		break
+			results <- sent{}
+		}(p)
 	}
-	if len(errs) > 0 {
+	if tries == 0 {
+		return nil, &MissingBlockError{CID: id, Err: errors.New("bitswap: no providers found")}
+	}
+	var errs []string
+	pending, wanted, refused := tries, 0, 0
+	for {
 		select {
+		case r := <-results:
+			pending--
+			if r.err != nil {
+				errs = append(errs, r.err.Error())
+			} else {
+				wanted++
+			}
 		case reply := <-replyCh:
 			if reply.err != nil {
-				return nil, reply.err
+				refused++
+				errs = append(errs, reply.err.Error())
+				break
 			}
 			if e = id.Verify(reply.data); e != nil {
-				return nil, e
+				refused++
+				errs = append(errs, e.Error())
+				break
 			}
 			return reply.data, nil
-		default:
+		case <-ctx.Done():
+			if len(errs) > 0 {
+				return nil, fmt.Errorf("bitswap: all providers failed: %s; %w", strings.Join(errs, "; "), ctx.Err())
+			}
+			return nil, ctx.Err()
 		}
-	}
-	select {
-	case reply := <-replyCh:
-		if reply.err != nil {
-			return nil, reply.err
+		if pending == 0 && refused >= wanted {
+			return nil, &MissingBlockError{CID: id, Err: fmt.Errorf("bitswap: no provider supplied the block: %s", strings.Join(errs, "; "))}
 		}
-		if e = id.Verify(reply.data); e != nil {
-			return nil, e
-		}
-		return reply.data, nil
-	case <-ctx.Done():
-		if len(errs) > 0 {
-			return nil, fmt.Errorf("bitswap: all providers failed: %s; %w", strings.Join(errs, "; "), ctx.Err())
-		}
-		return nil, ctx.Err()
 	}
 }
+
+// want connects to p if needed and sends a want for id.
+func (s *BitswapSource) want(ctx context.Context, p kad.Peer, id IPFSCID) error {
+	conn, ok := s.Host.Connection(p.ID)
+	var dialErr error
+	if !ok {
+		for _, raw := range p.Addrs {
+			a, er := wire.MultiaddrFromBytes(raw, 2048)
+			if er != nil || a.Opaque() {
+				continue
+			}
+			text, er := a.Text()
+			if er != nil {
+				continue
+			}
+			if !strings.Contains(text, "/p2p/") {
+				text += "/p2p/" + p.ID.String()
+			}
+			ma, er := wire.ParseMultiaddr(text, 4096)
+			if er != nil {
+				continue
+			}
+			if conn, dialErr = s.Host.Dial(ctx, ma); dialErr == nil {
+				break
+			}
+		}
+	}
+	if conn == nil {
+		if dialErr != nil {
+			return dialErr
+		}
+		return errors.New("no usable address")
+	}
+	st, err := s.Host.OpenStream(ctx, p.ID, BitswapProtocol)
+	if err != nil {
+		return err
+	}
+	return bitswapSend(st, id)
+}
+
 func bitswapSend(st *host.Stream, id IPFSCID) error {
 	defer st.Close()
 	entry := pbBytes(nil, 1, id.Bytes())

@@ -288,6 +288,8 @@ type DatasetCreateRequest struct {
 	Mirror     bool           `json:"mirror,omitempty"`
 	History    *HistoryPolicy `json:"history,omitempty"`
 	SourcePath string         `json:"source_path,omitempty"`
+	// SourceName is the followed name of a name-sourced dataset (0045).
+	SourceName string `json:"source_name,omitempty"`
 }
 
 // DatasetIngest is a collection's push policy: Hosts are the exact host names receiving
@@ -334,8 +336,10 @@ type Dataset struct {
 	// or rollback appended.
 	History    *HistoryPolicy `json:"history,omitempty"`
 	SourcePath string         `json:"source_path,omitempty"`
-	Archive    *ContentState  `json:"archive,omitempty"`
-	Version    *VersionInfo   `json:"version,omitempty"`
+	// SourceName is the followed name of a name-sourced dataset (0045).
+	SourceName string        `json:"source_name,omitempty"`
+	Archive    *ContentState `json:"archive,omitempty"`
+	Version    *VersionInfo  `json:"version,omitempty"`
 }
 
 // DatasetHead is a head record by one signer.

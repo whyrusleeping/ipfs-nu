@@ -120,14 +120,14 @@ nu get at://<did>/<collection>/<rkey> # verified atproto record → JSON
 nu get at://<did>                    # verified repo snapshot; ls/cat browse it
 nu masl bundle <tree-cid>            # export a MASL bundle / .tile CAR
 
-nu login alice.example.com           # atproto OAuth, Nu records only
+nu login alice.example.com           # atproto OAuth, Nu records only; nu logout
 nu node register [--label laptop] [--seed]
-nu publish <name> <cid>              # public name write, NOT replication readiness
-nu resolve alice.example.com/<name>
+nu publish <name> <cid> [--wait-seed <peer>]  # public name write, NOT replication readiness; the seed wait is
+nu resolve alice.example.com/<name> [--fresh|--offline|--max-age 1h]   # a separate result (W4)
 nu get alice.example.com/<name>[/path]
-nu names | unpublish
-nu follow alice.example.com[/name] [--path p] [--lazy] [--max-size n] [--no-announce]
-nu follow ls | nu unfollow <name>    # a follow is a local mirror dataset: observed/syncing/held, lag, blockers
+nu names | unpublish <name>
+nu follow alice.example.com/<name> [--cluster --all] [--max-size n] [--no-announce]  # --path/--lazy, DID-wide: later
+nu follow ls | refresh | nu unfollow <ds-or-name>   # a follow is a mirror dataset: observed/syncing/held, lag, blockers
 nu devices
 
 nu dataset create <ds> --archive|--mirror [--source …]  # one-node datasets: no cluster setup, no PDS

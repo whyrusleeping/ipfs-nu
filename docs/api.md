@@ -136,7 +136,24 @@ GET    /api/v0/car?target=<cid>&profile=    CAR bytes (application/vnd.ipld.car)
 GET    /api/v0/public                       Page[PublicRoot] (0043)
 POST   /api/v0/public       {cid}           → PublicRoot (https/site/rasl set while the public listener runs)
 DELETE /api/v0/public/{cid}                 → 204
+POST   /api/v0/auth/login   {identifier}    → 202 LoginStart {operation, url, did, handle, pds}; the operation's result is Account (0045)
+GET    /api/v0/auth/accounts                [Account]
+DELETE /api/v0/auth/accounts/{account}      → 204 (`-`: the only account)
+POST   /api/v0/names        PublishRequest  → PublishResult {publication, wait?, note}; a timed-out seed wait is 408 with details.result
+GET    /api/v0/names?account=               NameList (each name verified)
+DELETE /api/v0/names/{name}?account=        → Publication (the deletion's rev)
+GET    /api/v0/resolve?target=&max_age=&fresh=1&offline=1   NameResolution {target, rev, source: pds|cache, age, held}
+POST   /api/v0/node/register {label?, seed?} → NodeRecord
+GET    /api/v0/node/devices?account=        DeviceList
+POST   /api/v0/follows      FollowRequest   → 201 Follow (mirror dataset with a name source)
+GET    /api/v0/follows                      [Follow] {observed, syncing, held, state, blockers, content}
+DELETE /api/v0/follows/{dataset}            → Follow (state unfollowed, orphans = released pins)
+POST   /api/v0/follows:refresh{dataset?}   → [Follow]
 ```
+
+The gateway also serves `/nu/<handle-or-did>/<name>[/path]` (0045): a 302 to the immutable
+`/tree/<cid>/…` of the verified target (`X-Nu-Root`, `X-Nu-Source: pds|cache`); `?held=1`
+selects a local follow's held snapshot (`X-Nu-Source: held`), which may be older.
 
 `add` also takes `{url, meta?}` (URL import) and `meta` for local paths; the result then
 carries `source` (provenance), `meta` and `entry`.

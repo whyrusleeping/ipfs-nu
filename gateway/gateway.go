@@ -51,6 +51,8 @@ func New(content Content) *Handler {
 	h.mux.HandleFunc("GET /.well-known/rasl/{cid}", h.rasl)
 	h.mux.HandleFunc("GET /c/{ds}", h.dataset)
 	h.mux.HandleFunc("GET /c/{ds}/{path...}", h.dataset)
+	h.mux.HandleFunc("GET /nu/{authority}/{name}", h.name)
+	h.mux.HandleFunc("GET /nu/{authority}/{name}/{path...}", h.name)
 	h.mux.HandleFunc("/", h.notFound)
 	return h
 }

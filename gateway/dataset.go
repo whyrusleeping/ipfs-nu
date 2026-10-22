@@ -16,6 +16,52 @@ type DatasetContent interface {
 	ResolveDataset(ctx context.Context, name, version string) (string, error)
 }
 
+// NameContent resolves a public name <handle-or-did>/<name> to its current verified
+// target (cached per docs/names.md D6); content that implements it serves /nu/ (0045).
+// held selects the follow's held root instead of the resolved target.
+type NameContent interface {
+	ResolveName(ctx context.Context, authority, name string, held bool) (root string, source string, err error)
+}
+
+// name serves /nu/<handle-or-did>/<name>/<path> as a redirect to the immutable
+// /tree/<cid>/<path> URL of the resolved target (X-Nu-Root, X-Nu-Source: pds|cache|held).
+// ?held=1 serves the local follow's held snapshot, which may be older than the name.
+func (h *Handler) name(w http.ResponseWriter, r *http.Request) {
+	auth, name, p := r.PathValue("authority"), r.PathValue("name"), r.PathValue("path")
+	if p != "" {
+		if err := validatePath(p); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	nc, ok := h.content.(NameContent)
+	if !ok || h.content == nil {
+		writeError(w, apiv0.NotImplemented("names on the gateway"))
+		return
+	}
+	root, source, err := nc.ResolveName(r.Context(), auth, name, r.URL.Query().Get("held") == "1")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("X-Nu-Source", source)
+	redirectRoot(w, r, root, p)
+}
+
+func redirectRoot(w http.ResponseWriter, r *http.Request, root, p string) {
+	loc := "/tree/" + root + "/"
+	if p != "" {
+		var segs []string
+		for _, s := range strings.Split(p, "/") {
+			segs = append(segs, url.PathEscape(s))
+		}
+		loc += strings.Join(segs, "/")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Nu-Root", root)
+	http.Redirect(w, r, loc, http.StatusFound)
+}
+
 // dataset serves /c/<dataset>[@<version>]/<path> as a redirect to the immutable
 // /tree/<cid>/<path> URL of the resolved root, so a multi-file reader binds to one root
 // and the bare origin's non-active rules apply. The redirect itself is never cached. A
@@ -44,15 +90,5 @@ func (h *Handler) dataset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	loc := "/tree/" + root + "/"
-	if p != "" {
-		var segs []string
-		for _, s := range strings.Split(p, "/") {
-			segs = append(segs, url.PathEscape(s))
-		}
-		loc += strings.Join(segs, "/")
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Nu-Root", root)
-	http.Redirect(w, r, loc, http.StatusFound)
+	redirectRoot(w, r, root, p)
 }

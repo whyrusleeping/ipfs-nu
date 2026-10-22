@@ -221,6 +221,61 @@
       "delete": {"summary": "Remove the public mark; the listener stops serving the root.",
         "parameters": [{"name": "cid", "in": "path", "required": true, "schema": {"type": "string"}}],
         "responses": {"204": {"description": "removed"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/auth/login": {
+      "post": {"summary": "0045: start an atproto OAuth login (PAR, PKCE, DPoP; Nu record scopes only). Open the returned url in a browser; the operation (result: Account) finishes when the server redirects to the daemon's loopback callback.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["identifier"], "properties": {"identifier": {"type": "string", "description": "handle or DID"}}}}}},
+        "responses": {"202": {"description": "login started", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginStart"}}}}, "400": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/auth/accounts": {
+      "get": {"summary": "List logged-in accounts (never tokens).", "responses": {"200": {"description": "accounts", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Account"}}}}}}}
+    },
+    "/auth/accounts/{account}": {
+      "delete": {"summary": "Log out: revoke (best effort) and forget the session. `-` names the only account.",
+        "parameters": [{"name": "account", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "logged out"}, "403": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/names": {
+      "post": {"summary": "Publish a name: write io.ipfs.nu.name/<name> to the account's PDS, write the head of any dataset following the name here, then optionally wait for seeds (W4). The result separates publication (the record write, never readiness) from wait.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublishRequest"}}}},
+        "responses": {"200": {"description": "publication and optional seed wait", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublishResult"}}}}, "403": {"$ref": "#/components/responses/Error"}, "408": {"description": "seed wait timed out (details.result carries the PublishResult)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}}}},
+      "get": {"summary": "List an account's names, each verified by its own proof.", "parameters": [{"$ref": "#/components/parameters/account"}],
+        "responses": {"200": {"description": "names", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NameList"}}}}}}
+    },
+    "/names/{name}": {
+      "delete": {"summary": "Unpublish: delete the name record. Followers see a verified deletion and keep their last target as a visible orphan.",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}, {"$ref": "#/components/parameters/account"}],
+        "responses": {"200": {"description": "the deletion's commit", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Publication"}}}}, "403": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/resolve": {
+      "get": {"summary": "Resolve <handle-or-did>/<name> to its verified target (D6). Cached answers are labeled source=cache with their age; fresh=1 forces a PDS fetch; offline=1 answers only from the cache.",
+        "parameters": [{"name": "target", "in": "query", "required": true, "schema": {"type": "string"}}, {"name": "max_age", "in": "query", "schema": {"type": "string"}}, {"name": "fresh", "in": "query", "schema": {"type": "string", "enum": ["1"]}}, {"name": "offline", "in": "query", "schema": {"type": "string", "enum": ["1"]}}],
+        "responses": {"200": {"description": "resolution", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NameResolution"}}}}, "404": {"$ref": "#/components/responses/Error"}, "503": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/node/register": {
+      "post": {"summary": "Write this node's io.ipfs.nu.node/<peerId> record (roles device, optionally seed) into the account.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"account": {"type": "string"}, "label": {"type": "string"}, "seed": {"type": "boolean"}}}}}},
+        "responses": {"200": {"description": "the node record", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NodeRecord"}}}}, "403": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/node/devices": {
+      "get": {"summary": "List an account's node records (each verified).", "parameters": [{"$ref": "#/components/parameters/account"}],
+        "responses": {"200": {"description": "devices", "content": {"application/json": {"schema": {"type": "object", "properties": {"did": {"type": "string"}, "handle": {"type": "string"}, "devices": {"type": "array", "items": {"$ref": "#/components/schemas/NodeRecord"}}}}}}}}}
+    },
+    "/follows": {
+      "post": {"summary": "Follow <handle-or-did>/<name> as a mirror-preset dataset with a name source (docs/follow.md): the first verified target becomes its head at once; later ones on publish (own names), refresh or the poll backstop. Scoped and lazy modes answer not_supported.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FollowRequest"}}}},
+        "responses": {"201": {"description": "the follow", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Follow"}}}}, "409": {"$ref": "#/components/responses/Error"}, "501": {"$ref": "#/components/responses/Error"}}},
+      "get": {"summary": "List follows with observed/syncing/held roots, state, lag and blockers.", "responses": {"200": {"description": "follows", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Follow"}}}}}}}
+    },
+    "/follows/{dataset}": {
+      "delete": {"summary": "Unfollow (by dataset or <handle-or-did>/<name>): delete the dataset record and release that follow's pins only (orphans lists them).",
+        "parameters": [{"name": "dataset", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "the removed follow", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Follow"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/follows:refresh": {
+      "post": {"summary": "Re-resolve one follow (dataset) or all from their PDSes now.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"dataset": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "the refreshed follows", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Follow"}}}}}}}
     }
   },
   "components": {
@@ -228,7 +283,8 @@
       "id": {"name": "id", "in": "path", "required": true, "schema": {"type": "string"}},
       "cursor": {"name": "cursor", "in": "query", "schema": {"type": "string"}, "description": "opaque cursor from next_cursor"},
       "limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 0, "maximum": 1000}, "description": "page size (default 100)"},
-      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path, a nu:// link, a rasl:// link (hints become HTTPS sources), or an at:// URI (ls/cat); other target forms answer not_supported"}
+      "target": {"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "CID with optional /path, a nu:// link, a rasl:// link (hints become HTTPS sources), an at:// URI (ls/cat), a public name <handle-or-did>/<name>[/path] (0045) or a dataset <dataset>[@<version>][/path]"},
+      "account": {"name": "account", "in": "query", "schema": {"type": "string"}, "description": "handle or DID of a logged-in account (the only one when omitted)"}
     },
     "responses": {
       "Error": {"description": "error envelope", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
@@ -341,7 +397,18 @@
       "CarImport": {"type": "object", "required": ["root", "profile", "blocks", "bytes", "objects", "pinned"], "properties": {"root": {"type": "string"}, "profile": {"type": "string"}, "blocks": {"type": "integer"}, "bytes": {"type": "integer"}, "unreferenced": {"type": "integer"}, "objects": {"type": "integer"}, "pinned": {"type": "boolean"}, "did": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "signature": {"type": "string"}, "signed_by": {"type": "string"}}},
       "PublicRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}},
       "PublicRoot": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "https": {"type": "string", "description": "bare-origin browser URL on the public listener; only while it runs"}, "site": {"type": "string", "description": "site origin https://<cid>.<domain>/ of a tree"}, "rasl": {"type": "string", "description": "rasl://<cid>/?hint=<domain>"}}},
-      "PublicRootPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PublicRoot"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean"}}}
+      "PublicRootPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PublicRoot"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean"}}},
+      "LoginStart": {"type": "object", "required": ["operation", "url", "did"], "properties": {"operation": {"$ref": "#/components/schemas/Operation"}, "url": {"type": "string"}, "did": {"type": "string"}, "handle": {"type": "string"}, "pds": {"type": "string"}}},
+      "Account": {"type": "object", "required": ["did", "pds", "scopes"], "properties": {"did": {"type": "string"}, "handle": {"type": "string"}, "pds": {"type": "string"}, "scopes": {"type": "array", "items": {"type": "string"}}, "logged_in": {"type": "string", "format": "date-time"}, "updated": {"type": "string", "format": "date-time"}}},
+      "PublishRequest": {"type": "object", "required": ["name", "target"], "properties": {"name": {"type": "string"}, "target": {"type": "string", "description": "CID"}, "kind": {"type": "string", "enum": ["tree", "file", "blob"]}, "note": {"type": "string"}, "account": {"type": "string"}, "wait_seed": {"type": "array", "items": {"type": "string"}, "description": "seed PeerIds (cluster members) to wait for (W4)"}, "timeout": {"type": "string"}}},
+      "Publication": {"type": "object", "required": ["uri", "did", "name"], "properties": {"uri": {"type": "string"}, "did": {"type": "string"}, "handle": {"type": "string"}, "name": {"type": "string"}, "target": {"type": "string"}, "kind": {"type": "string"}, "size": {"type": "integer"}, "record": {"type": "string"}, "rev": {"type": "string"}, "dataset": {"type": "string", "description": "the dataset following this name here"}}},
+      "PublishResult": {"type": "object", "required": ["publication", "note"], "properties": {"publication": {"$ref": "#/components/schemas/Publication"}, "wait": {"$ref": "#/components/schemas/WaitResult"}, "note": {"type": "string"}}},
+      "NameResolution": {"type": "object", "required": ["uri", "did", "name", "target", "kind", "rev", "source", "age", "held"], "properties": {"uri": {"type": "string"}, "did": {"type": "string"}, "handle": {"type": "string"}, "name": {"type": "string"}, "target": {"type": "string"}, "kind": {"type": "string"}, "size": {"type": "integer"}, "note": {"type": "string"}, "updated_at": {"type": "string"}, "rev": {"type": "string"}, "commit": {"type": "string"}, "record": {"type": "string"}, "source": {"type": "string", "enum": ["pds", "cache"]}, "age": {"type": "string"}, "identity_age": {"type": "string"}, "held": {"type": "boolean"}}},
+      "NameList": {"type": "object", "required": ["did", "names"], "properties": {"did": {"type": "string"}, "handle": {"type": "string"}, "names": {"type": "array", "items": {"$ref": "#/components/schemas/NameResolution"}}}},
+      "NodeRecord": {"type": "object", "required": ["uri", "did", "peer", "roles"], "properties": {"uri": {"type": "string"}, "did": {"type": "string"}, "peer": {"type": "string"}, "label": {"type": "string"}, "roles": {"type": "array", "items": {"type": "string"}}, "relays": {"type": "array", "items": {"type": "string"}}, "dnsaddr": {"type": "string"}, "created_at": {"type": "string"}, "rev": {"type": "string"}, "self": {"type": "boolean"}}},
+      "FollowRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "<handle-or-did>/<name>"}, "dataset": {"type": "string"}, "scope": {"type": "string", "enum": ["local", "cluster"]}, "path": {"type": "string"}, "lazy": {"type": "boolean"}, "max_size": {"type": "integer"}, "no_announce": {"type": "boolean"}, "all": {"type": "boolean"}, "replicas": {"type": "integer"}}},
+      "FollowRoot": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string"}, "rev": {"type": "string"}, "age": {"type": "string"}}},
+      "Follow": {"type": "object", "required": ["dataset", "scope", "uri", "did", "name", "mode", "state", "content"], "properties": {"dataset": {"type": "string"}, "scope": {"type": "string"}, "uri": {"type": "string"}, "did": {"type": "string"}, "handle": {"type": "string"}, "name": {"type": "string"}, "mode": {"type": "string"}, "observed": {"$ref": "#/components/schemas/FollowRoot"}, "syncing": {"$ref": "#/components/schemas/FollowRoot"}, "held": {"$ref": "#/components/schemas/FollowRoot"}, "state": {"type": "string", "enum": ["observed", "syncing", "held", "lagging", "paused", "error", "ended", "unfollowed"]}, "detail": {"type": "string"}, "blockers": {"type": "array", "items": {"type": "string"}}, "ended": {"$ref": "#/components/schemas/FollowRoot"}, "orphans": {"type": "array", "items": {"type": "string"}}, "content": {"$ref": "#/components/schemas/ContentState"}, "refreshed": {"type": "string", "format": "date-time"}, "error": {"type": "string"}}}
     }
   }
 }

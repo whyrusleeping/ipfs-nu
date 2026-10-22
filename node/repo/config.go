@@ -35,6 +35,18 @@ type Config struct {
 	// Public configures the public HTTPS content listener (operations.md P1–P6); nil
 	// when the section is absent (never written by init).
 	Public *PublicConfig `toml:"public,omitempty"`
+	// Follow configures following (0045); nil when the section is absent.
+	Follow *FollowConfig `toml:"follow,omitempty"`
+}
+
+// FollowConfig is the `[follow]` section. Jetstream is an optional hint source
+// (`wss://jetstream2.us-east.bsky.network/subscribe`): the daemon subscribes only to the
+// DIDs it follows and the io.ipfs.nu.name collection, and every event triggers a
+// verified re-resolution from the PDS; it is never a feed ingest. Poll is the
+// re-resolution backstop (default 1h).
+type FollowConfig struct {
+	Jetstream string `toml:"jetstream,omitempty"`
+	Poll      string `toml:"poll,omitempty"`
 }
 
 // PublicConfig is the `[public]` section: the explicitly configured public content

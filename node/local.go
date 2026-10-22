@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
+	"github.com/whyrusleeping/nu/names"
 	"github.com/whyrusleeping/nu/node/content"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/repo"
@@ -46,6 +47,7 @@ type Local struct {
 	Atproto *atproto.Client
 
 	content  *content.Content
+	names    namesState
 	clusters clusterState
 	reps     replicas
 	public   publicState
@@ -87,6 +89,7 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 	n := &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
 		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}
 	c.SetDatasets(n.ResolveDataset)
+	c.SetNames(n.gatewayName)
 	return n, nil
 }
 
@@ -253,6 +256,13 @@ func (n *Local) parseTarget(ctx context.Context, t string) (target.Target, cid.C
 	if pt.Kind == target.KindDataset {
 		root, err := n.resolveDataset(ctx, pt)
 		return pt, root, err
+	}
+	if pt.Kind == target.KindName {
+		res, err := n.resolveNameTarget(ctx, pt, names.Options{})
+		if err != nil {
+			return pt, cid.CID{}, err
+		}
+		return pt, res.Target, nil
 	}
 	if pt.Kind == target.KindAtproto {
 		return pt, cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is an atproto target, not content by CID", pt.Raw).

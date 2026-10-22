@@ -118,6 +118,9 @@ func runCtx(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			break // a group with a default action, given flags
 		}
 		next := cmd.lookup(rest[0])
+		if next == nil && cmd.run != nil && rest[0] != "help" {
+			break // a group with a default action, given an argument (`follow <name>`)
+		}
 		if next == nil {
 			if rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
 				printUsage(stdout, cmd, e.path)
@@ -427,5 +430,7 @@ var root = &command{
 		cmdPublic,
 		// 0044
 		cmdRepo,
+		// 0045
+		cmdLogin, cmdLogout, cmdPublish, cmdResolve, cmdNames, cmdUnpublish, cmdNode, cmdDevices, cmdFollow, cmdUnfollow,
 	},
 }

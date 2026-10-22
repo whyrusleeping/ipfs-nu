@@ -113,6 +113,7 @@ func (s *Server) register() {
 	maps.Copy(handlers, s.pushHandlers())
 	maps.Copy(handlers, s.atprotoHandlers())
 	maps.Copy(handlers, s.publicHandlers())
+	maps.Copy(handlers, s.namesHandlers())
 	paths := map[string]bool{}
 	for _, rt := range Routes {
 		h, ok := handlers[rt]

@@ -205,8 +205,8 @@ func (Drop) DRISLType() string { return NSDrop }
 // MaxDropPaths bounds a drop record.
 const MaxDropPaths = 256
 
-// Source is where a dataset's target comes from; only local datasets exist so far (name
-// and atproto sources are 0045 and 0054).
+// Source is where a dataset's target comes from: local heads, or an external Nu name
+// (0045; atproto account sources are 0054).
 type Source struct {
 	Local bool `drisl:"local"`
 	// Path is a writer-local absolute directory that `dataset update` without a target
@@ -214,7 +214,33 @@ type Source struct {
 	Path string `drisl:"path,omitempty"`
 	// Ingest configures producer pushes into a collection (D22 "Ingest").
 	Ingest *Ingest `drisl:"ingest,omitempty"`
+	// 0045: Name is a followed public name, at://<did>/io.ipfs.nu.name/<name>; admins
+	// write each verified target as the head (docs/follow.md). Follow holds its options.
+	Name   string  `drisl:"name,omitempty"`
+	Follow *Follow `drisl:"follow,omitempty"`
 }
+
+// Follow are a name source's options (docs/follow.md "Follow scopes and quotas").
+type Follow struct {
+	Path       string `drisl:"path,omitempty"`
+	Lazy       bool   `drisl:"lazy,omitempty"`
+	MaxSize    int64  `drisl:"max_size,omitempty"`
+	NoAnnounce bool   `drisl:"no_announce,omitempty"`
+}
+
+// Mode is the follow's readiness mode: full, scoped:<path> or lazy.
+func (f *Follow) Mode() string {
+	switch {
+	case f != nil && f.Lazy:
+		return "lazy"
+	case f != nil && f.Path != "":
+		return "scoped:" + f.Path
+	}
+	return "full"
+}
+
+// MaxNameSource bounds a name source URI.
+const MaxNameSource = 512
 
 // Ingest is a collection's push policy: Hosts are the exact host names (no wildcards)
 // receiving members may fetch item URLs from in private mode (and, when set, in public
@@ -308,7 +334,16 @@ type Head struct {
 	Kind   string `drisl:"kind"`
 	Size   int64  `drisl:"size,omitempty"`
 	Note   string `drisl:"note,omitempty"`
-	HLC    string `drisl:"hlc"`
+	// Observed is the proof a name source's head came from (0045): the publisher's
+	// commit rev and CID, so followers accept only newer revs (docs/follow.md).
+	Observed *Observed `drisl:"observed,omitempty"`
+	HLC      string    `drisl:"hlc"`
+}
+
+// Observed is name-source provenance: the signed commit a target was verified in.
+type Observed struct {
+	Rev    string `drisl:"rev"`
+	Commit string `drisl:"commit"`
 }
 
 func (Head) DRISLType() string { return NSHead }
@@ -643,8 +678,14 @@ func decodeValue(r *Record, v any) error {
 		if err := drisl.Assign(v, &d); err != nil {
 			return err
 		}
-		if !d.Source.Local {
-			return errors.New("only local sources are supported")
+		if d.Source.Local == (d.Source.Name != "") {
+			return errors.New("a dataset source is local or a name, not both or neither")
+		}
+		if n := d.Source.Name; n != "" && (len(n) > MaxNameSource || !strings.HasPrefix(n, "at://did:") || !strings.Contains(n, "/io.ipfs.nu.name/")) {
+			return errors.New("a name source is at://<did>/io.ipfs.nu.name/<name>")
+		}
+		if f := d.Source.Follow; f != nil && (f.MaxSize < 0 || len(f.Path) > 1024 || d.Source.Name == "") {
+			return errors.New("follow options apply to name sources; max_size must not be negative")
 		}
 		if in := d.Source.Ingest; in != nil {
 			if d.Collection == nil || len(in.Hosts) > MaxIngestHosts {

@@ -101,6 +101,9 @@ func (m *Manager) indexOn(name string) bool {
 // freshness reports, per member, whether its heartbeat is fresh (received within three
 // heartbeat intervals); this node is always fresh.
 func (m *Manager) freshness() map[string]bool {
+	if m.freshFn != nil {
+		return m.freshFn()
+	}
 	out := map[string]bool{m.cfg.Self.String(): true}
 	if m.cfg.Service == nil {
 		return out

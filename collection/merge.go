@@ -64,6 +64,22 @@ type Union struct {
 	// OnDecide reports the outcome at every re-decided path, so conflict records can be
 	// replaced (losers is empty when the path has no conflict).
 	OnDecide func(path string, win *Leaf, losers []Loser) error
+
+	// dirs keeps the writer directories opened during an Update, so that their nodes are
+	// read and decoded once however many paths are decided in them.
+	dirs map[cid.CID]*mst.Tree[tree.Entry]
+}
+
+// statusAt reports what writer root has at segs, through the Update's directory cache.
+func (u *Union) statusAt(root cid.CID, segs []string) (status, tree.Entry, error) {
+	return statusIn(func(c cid.CID) *mst.Tree[tree.Entry] {
+		t, ok := u.dirs[c]
+		if !ok {
+			t = tree.Dir(u.St, c)
+			u.dirs[c] = t
+		}
+		return t
+	}, root, segs)
 }
 
 type status int
@@ -82,14 +98,14 @@ func split(p string) []string {
 	return strings.Split(p, "/")
 }
 
-// statusAt reports what a tree has at path segs.
-func statusAt(st mst.Store, root cid.CID, segs []string) (status, tree.Entry, error) {
+// statusIn reports what a tree has at path segs, opening directories with dir.
+func statusIn(dir func(cid.CID) *mst.Tree[tree.Entry], root cid.CID, segs []string) (status, tree.Entry, error) {
 	if !root.Defined() {
 		return absent, tree.Entry{}, nil
 	}
 	cur := root
 	for i, s := range segs {
-		e, ok, err := tree.Dir(st, cur).Get(s)
+		e, ok, err := dir(cur).Get(s)
 		if err != nil {
 			return absent, tree.Entry{}, err
 		}
@@ -181,7 +197,7 @@ func (u *Union) decide(p string) (*Leaf, []Loser, error) {
 	var losers []Loser
 	decided := false
 	for _, w := range u.Writers {
-		st, e, err := statusAt(u.St, w.Root, segs)
+		st, e, err := u.statusAt(w.Root, segs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -209,6 +225,8 @@ func (u *Union) decide(p string) (*Leaf, []Loser, error) {
 // the leaves below them, and everything under changed drops. A change of the writers'
 // relative rank re-decides every leaf.
 func (u *Union) Update(writers []Writer, drop []string) error {
+	u.dirs = map[cid.CID]*mst.Tree[tree.Entry]{}
+	defer func() { u.dirs = nil }()
 	ed, err := newEditor(u.St, u.Root, u.Size)
 	if err != nil {
 		return err
@@ -261,7 +279,7 @@ func (u *Union) Update(writers []Writer, drop []string) error {
 			queue[strings.Join(segs[:i], "/")] = true
 		}
 		for _, w := range u.Writers {
-			st, e, err := statusAt(u.St, w.Root, segs)
+			st, e, err := u.statusAt(w.Root, segs)
 			if err != nil {
 				return err
 			}

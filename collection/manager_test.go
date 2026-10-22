@@ -205,7 +205,8 @@ func TestSelection(t *testing.T) {
 	r.rules(fmt.Sprintf(`[{"cloud": {"max": 100}, "max_bytes": %d}]`, clear.Size))
 	r.reconcile()
 	st, err := r.m.Status("s2")
-	if err != nil || st.Local[StateComplete] != 1 || st.Local[StatePaused] != 4 || st.Shortfall == 0 || st.Items != 5 || st.Conflicts != 1 {
+	if err != nil || st.Local[StateComplete] != 1 || st.Local[StatePaused] != 4 || st.Shortfall == 0 || st.Items != 5 || st.Conflicts != 1 ||
+		st.FacetAbsent["cloud"] != 0 || st.FacetAbsent["platform"] != 5 {
 		t.Fatalf("budget status %+v %v", st, err)
 	}
 

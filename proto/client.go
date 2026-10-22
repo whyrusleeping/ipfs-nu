@@ -187,7 +187,7 @@ func FetchRanges(ctx context.Context, open Opener, p *store.Partial, ranges []bl
 		return c.end(corrupt("peer reports size %d, want %d", size, p.Size))
 	}
 	for _, r := range ranges {
-		if err := readSlice(c.r, p.MH, p.Size, r, p.Sink()); err != nil {
+		if err := readPartialSlice(c.r, p, r); err != nil {
 			return c.end(err)
 		}
 	}
@@ -291,7 +291,7 @@ func fetchUnknown(ctx context.Context, open Opener, st *store.Store, c cid.CID) 
 	if err != nil {
 		return cl.end(err)
 	}
-	if err := readSlice(cl.r, mh, size, whole, p.Sink()); err != nil {
+	if err := readPartialSlice(cl.r, p, whole); err != nil {
 		return errors.Join(cl.end(err), p.Close())
 	}
 	if err := cl.end(cl.eof()); err != nil {

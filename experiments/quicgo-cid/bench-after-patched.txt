@@ -1,0 +1,72 @@
+goos: linux
+goarch: amd64
+pkg: github.com/whyrusleeping/nu/experiments/quicgo-cid
+cpu: AMD EPYC 9684X 96-Core Processor               
+BenchmarkCIDTracer/Raw-4         	     172	   5969973 ns/op	 702.57 MB/s	         1.000 GSO	         4.744 lost/op	      1199 tx-bytes/pkt	  480628 B/op	   15312 allocs/op
+BenchmarkCIDTracer/Raw-4         	     222	   6198306 ns/op	 676.69 MB/s	         1.000 GSO	         3.059 lost/op	      1199 tx-bytes/pkt	  478377 B/op	   15344 allocs/op
+BenchmarkCIDTracer/Raw-4         	     207	   5859758 ns/op	 715.78 MB/s	         1.000 GSO	         2.845 lost/op	      1199 tx-bytes/pkt	  474194 B/op	   15320 allocs/op
+BenchmarkCIDTracer/Raw-4         	     210	   5418426 ns/op	 774.08 MB/s	         1.000 GSO	         1.857 lost/op	      1199 tx-bytes/pkt	  480282 B/op	   15290 allocs/op
+BenchmarkCIDTracer/Raw-4         	     181	   5599355 ns/op	 749.07 MB/s	         1.000 GSO	         2.657 lost/op	      1199 tx-bytes/pkt	  482051 B/op	   15304 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     156	   7343098 ns/op	 571.19 MB/s	         1.000 GSO	         3.744 lost/op	      1199 tx-bytes/pkt	 2813895 B/op	   42675 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     153	   8059136 ns/op	 520.44 MB/s	         1.000 GSO	         1.569 lost/op	      1199 tx-bytes/pkt	 2815365 B/op	   42766 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     152	   7989690 ns/op	 524.96 MB/s	         1.000 GSO	         2.737 lost/op	      1199 tx-bytes/pkt	 2825245 B/op	   42695 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     148	   7685630 ns/op	 545.73 MB/s	         1.000 GSO	         3.365 lost/op	      1199 tx-bytes/pkt	 2817941 B/op	   42718 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     175	   8440836 ns/op	 496.91 MB/s	         1.000 GSO	         5.543 lost/op	      1199 tx-bytes/pkt	 2831480 B/op	   42902 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     205	   6081157 ns/op	 689.72 MB/s	         1.000 GSO	         2.190 lost/op	      1199 tx-bytes/pkt	  476997 B/op	   15345 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     202	   5548801 ns/op	 755.89 MB/s	         1.000 GSO	         3.020 lost/op	      1199 tx-bytes/pkt	  477104 B/op	   15305 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     217	   5567248 ns/op	 753.39 MB/s	         1.000 GSO	         2.770 lost/op	      1199 tx-bytes/pkt	  481465 B/op	   15297 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     216	   5844241 ns/op	 717.68 MB/s	         1.000 GSO	         2.634 lost/op	      1199 tx-bytes/pkt	  483719 B/op	   15320 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     223	   5891427 ns/op	 711.93 MB/s	         1.000 GSO	         2.511 lost/op	      1199 tx-bytes/pkt	  476410 B/op	   15314 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     188	   7584513 ns/op	 553.01 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.787 lost/op	      1199 tx-bytes/pkt	 2856041 B/op	   44530 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     150	   7362009 ns/op	 569.72 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.060 lost/op	      1199 tx-bytes/pkt	 2856438 B/op	   44529 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     139	   7410995 ns/op	 565.96 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.259 lost/op	      1199 tx-bytes/pkt	 2858649 B/op	   44504 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     151	   6818084 ns/op	 615.17 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.430 lost/op	      1199 tx-bytes/pkt	 2851208 B/op	   44295 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     159	   7809625 ns/op	 537.07 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.560 lost/op	      1199 tx-bytes/pkt	 2866424 B/op	   44579 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     174	   6083754 ns/op	 689.43 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.667 lost/op	      1199 tx-bytes/pkt	  527436 B/op	   17243 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     176	   5836914 ns/op	 718.58 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.125 lost/op	      1199 tx-bytes/pkt	  530745 B/op	   17210 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     182	   6099731 ns/op	 687.62 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.511 lost/op	      1199 tx-bytes/pkt	  529455 B/op	   17195 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     195	   6391531 ns/op	 656.23 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.774 lost/op	      1199 tx-bytes/pkt	  525514 B/op	   17245 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     213	   6034423 ns/op	 695.06 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.540 lost/op	      1199 tx-bytes/pkt	  528305 B/op	   17191 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     234	   4472183 ns/op	 937.87 MB/s	         1.000 GSO	         1.299 lost/op	      1440 tx-bytes/pkt	  399215 B/op	   12704 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     231	   5105669 ns/op	 821.50 MB/s	         1.000 GSO	         3.645 lost/op	      1440 tx-bytes/pkt	  405432 B/op	   12777 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     237	   4854959 ns/op	 863.92 MB/s	         1.000 GSO	         2.148 lost/op	      1440 tx-bytes/pkt	  402625 B/op	   12722 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     219	   5175921 ns/op	 810.35 MB/s	         1.000 GSO	         1.968 lost/op	      1440 tx-bytes/pkt	  406353 B/op	   12761 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     225	   4975492 ns/op	 842.99 MB/s	         1.000 GSO	         2.604 lost/op	      1440 tx-bytes/pkt	  404304 B/op	   12758 allocs/op
+PASS
+ok  	github.com/whyrusleeping/nu/experiments/quicgo-cid	57.333s
+goos: linux
+goarch: amd64
+pkg: github.com/whyrusleeping/nu/experiments/quicgo-cid
+cpu: AMD EPYC 9684X 96-Core Processor               
+BenchmarkCIDTracer/Raw-4         	     193	   5824634 ns/op	 720.10 MB/s	         1.000 GSO	         2.477 lost/op	      1199 tx-bytes/pkt	  480825 B/op	   15319 allocs/op
+BenchmarkCIDTracer/Raw-4         	     223	   5728163 ns/op	 732.22 MB/s	         1.000 GSO	         1.762 lost/op	      1199 tx-bytes/pkt	  477347 B/op	   15294 allocs/op
+BenchmarkCIDTracer/Raw-4         	     187	   5992535 ns/op	 699.92 MB/s	         1.000 GSO	         3.348 lost/op	      1199 tx-bytes/pkt	  481997 B/op	   15328 allocs/op
+BenchmarkCIDTracer/Raw-4         	     208	   5123726 ns/op	 818.60 MB/s	         1.000 GSO	         1.683 lost/op	      1199 tx-bytes/pkt	  478375 B/op	   15265 allocs/op
+BenchmarkCIDTracer/Raw-4         	     229	   5387019 ns/op	 778.59 MB/s	         1.000 GSO	         2.275 lost/op	      1199 tx-bytes/pkt	  477386 B/op	   15297 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     159	   6903338 ns/op	 607.58 MB/s	         1.000 GSO	         4.855 lost/op	      1199 tx-bytes/pkt	 2821316 B/op	   42497 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     182	   7329555 ns/op	 572.25 MB/s	         1.000 GSO	         2.769 lost/op	      1199 tx-bytes/pkt	 2818756 B/op	   42585 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     182	   7366170 ns/op	 569.40 MB/s	         1.000 GSO	         4.027 lost/op	      1199 tx-bytes/pkt	 2814826 B/op	   42666 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     183	   7187226 ns/op	 583.58 MB/s	         1.000 GSO	         4.104 lost/op	      1199 tx-bytes/pkt	 2822979 B/op	   42667 allocs/op
+BenchmarkCIDTracer/RawObserver-4 	     159	   7232188 ns/op	 579.95 MB/s	         1.000 GSO	         1.560 lost/op	      1199 tx-bytes/pkt	 2806830 B/op	   42626 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     236	   5225966 ns/op	 802.59 MB/s	         1.000 GSO	         1.453 lost/op	      1199 tx-bytes/pkt	  477519 B/op	   15281 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     210	   5931586 ns/op	 707.11 MB/s	         1.000 GSO	         2.229 lost/op	      1199 tx-bytes/pkt	  476353 B/op	   15333 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     195	   5630127 ns/op	 744.97 MB/s	         1.000 GSO	         2.651 lost/op	      1199 tx-bytes/pkt	  477775 B/op	   15317 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     200	   5500258 ns/op	 762.56 MB/s	         1.000 GSO	         2.675 lost/op	      1199 tx-bytes/pkt	  474885 B/op	   15294 allocs/op
+BenchmarkCIDTracer/RawCIDTracer-4         	     205	   5697452 ns/op	 736.17 MB/s	         1.000 GSO	         2.288 lost/op	      1199 tx-bytes/pkt	  478168 B/op	   15310 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     154	   7178717 ns/op	 584.27 MB/s	         1.000 GSO	         0 adapter-drops/op	         4.617 lost/op	      1199 tx-bytes/pkt	 2863468 B/op	   44501 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     159	   7037756 ns/op	 595.97 MB/s	         1.000 GSO	         0 adapter-drops/op	         6.805 lost/op	      1199 tx-bytes/pkt	 2865225 B/op	   44479 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     175	   7562497 ns/op	 554.62 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.703 lost/op	      1199 tx-bytes/pkt	 2866180 B/op	   44539 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     177	  12438691 ns/op	 337.20 MB/s	         1.000 GSO	         0 adapter-drops/op	         5.418 lost/op	      1199 tx-bytes/pkt	 2849886 B/op	   44129 allocs/op
+BenchmarkCIDTracer/VirtualDirectQlog-4    	     193	   6998046 ns/op	 599.35 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.959 lost/op	      1199 tx-bytes/pkt	 2852808 B/op	   44397 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     189	   5905759 ns/op	 710.21 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.741 lost/op	      1199 tx-bytes/pkt	  529898 B/op	   17223 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     204	   5717221 ns/op	 733.63 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.873 lost/op	      1199 tx-bytes/pkt	  530481 B/op	   17196 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     192	   6411921 ns/op	 654.14 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.719 lost/op	      1199 tx-bytes/pkt	  526652 B/op	   17188 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     217	   5745176 ns/op	 730.06 MB/s	         1.000 GSO	         0 adapter-drops/op	         2.622 lost/op	      1199 tx-bytes/pkt	  527481 B/op	   17174 allocs/op
+BenchmarkCIDTracer/VirtualDirect-4        	     186	   5871674 ns/op	 714.33 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.151 lost/op	      1199 tx-bytes/pkt	  532071 B/op	   17193 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     241	   4796367 ns/op	 874.48 MB/s	         1.000 GSO	         2.369 lost/op	      1440 tx-bytes/pkt	  400157 B/op	   12729 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     280	   4960933 ns/op	 845.47 MB/s	         1.000 GSO	         2.021 lost/op	      1440 tx-bytes/pkt	  400057 B/op	   12736 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     250	   5065549 ns/op	 828.01 MB/s	         1.000 GSO	         2.868 lost/op	      1440 tx-bytes/pkt	  403714 B/op	   12749 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     222	   5112458 ns/op	 820.41 MB/s	         1.000 GSO	         3.500 lost/op	      1433 tx-bytes/pkt	  401910 B/op	   12803 allocs/op
+BenchmarkCIDTracer/RawPMTU-4              	     229	  12751535 ns/op	 328.93 MB/s	         1.000 GSO	         2.803 lost/op	      1440 tx-bytes/pkt	  408013 B/op	   12785 allocs/op
+PASS
+ok  	github.com/whyrusleeping/nu/experiments/quicgo-cid	58.514s

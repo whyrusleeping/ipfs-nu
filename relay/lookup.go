@@ -50,14 +50,8 @@ func NewLookup(cfg LookupConfig) (*LookupService, error) {
 		}()
 	}
 	if cfg.DNSListen != "" {
-		udp, err := net.ListenPacket("udp", cfg.DNSListen)
+		udp, tcp, err := listenDNS(cfg.DNSListen)
 		if err != nil {
-			s.Close()
-			return nil, err
-		}
-		tcp, err := net.Listen("tcp", udp.LocalAddr().String())
-		if err != nil {
-			udp.Close()
 			s.Close()
 			return nil, err
 		}
@@ -116,4 +110,32 @@ func (s *LookupService) Close() error {
 		close(s.errors)
 	})
 	return nil
+}
+
+// listenDNS binds UDP and TCP on the same port. With port 0 the kernel picks the
+// UDP port, and that number can already be taken for TCP by an unrelated listener,
+// so it retries with a fresh port a few times; a fixed port fails immediately.
+func listenDNS(addr string) (net.PacketConn, net.Listener, error) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	attempts := 1
+	if port == "0" {
+		attempts = 16
+	}
+	for i := 0; ; i++ {
+		udp, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return nil, nil, err
+		}
+		tcp, err := net.Listen("tcp", udp.LocalAddr().String())
+		if err == nil {
+			return udp, tcp, nil
+		}
+		udp.Close()
+		if i+1 >= attempts {
+			return nil, nil, err
+		}
+	}
 }

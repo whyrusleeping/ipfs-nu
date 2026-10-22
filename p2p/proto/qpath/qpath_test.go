@@ -33,6 +33,16 @@ func udp(t *testing.T, addr string) *net.UDPConn {
 	t.Cleanup(func() { c.Close() })
 	return c
 }
+
+// relayPacketSize, when nonzero, pins the relay host's OUTER packet size (tests
+// the datagram budget refusal); 0 keeps quic-go's 1280 default.
+var relayPacketSize uint16
+
+func relayPacketSizeAppliedToMagic(socket net.PacketConn) bool {
+	_, magic := socket.(*magicsock.Conn)
+	return magic // peers keep the default outer size; only the plain relay host shrinks
+}
+
 func newHost(t *testing.T, socket net.PacketConn) (*host.Host, *wire.NodeKey) {
 	t.Helper()
 	key, err := wire.GenerateNodeKey()
@@ -40,6 +50,9 @@ func newHost(t *testing.T, socket net.PacketConn) (*host.Host, *wire.NodeKey) {
 	cfg := host.Config{Key: key}
 	if socket != nil {
 		cfg.PacketConns = []net.PacketConn{socket}
+	}
+	if relayPacketSize != 0 && !relayPacketSizeAppliedToMagic(socket) {
+		cfg.InitialPacketSize, cfg.DisablePathMTUDiscovery = relayPacketSize, true
 	}
 	h, err := host.New(cfg)
 	check(t, err)
@@ -62,11 +75,13 @@ func address(t *testing.T, h *host.Host) wire.Multiaddr {
 }
 
 type setup struct {
+	server         *circuit.Server
 	a, b, r        *host.Host
 	ma, mb         *magicsock.Conn
 	ac, bc         *circuit.Client
 	relayA, relayB *magicsock.Relay
 	virtualA       wire.Multiaddr
+	sessions       *host.Sessions
 }
 
 func makeSetup(t *testing.T, ctx context.Context, ua, ub, ur *net.UDPConn) *setup {
@@ -80,7 +95,7 @@ func makeSetup(t *testing.T, ctx context.Context, ua, ub, ur *net.UDPConn) *setu
 	ac, err := circuit.NewClient(a, circuit.ClientConfig{})
 	check(t, err)
 	t.Cleanup(func() { ac.Close() })
-	bc, err := circuit.NewClient(b, circuit.ClientConfig{})
+	bc, err := circuit.NewClient(b, circuit.ClientConfig{AcceptDatagram: func(relay, peer wire.PeerID) bool { return relay == r.ID() && peer == a.ID() }})
 	check(t, err)
 	t.Cleanup(func() { bc.Close() })
 	_, err = a.Dial(ctx, address(t, r))
@@ -89,7 +104,7 @@ func makeSetup(t *testing.T, ctx context.Context, ua, ub, ur *net.UDPConn) *setu
 	check(t, err)
 	_, err = bc.Reserve(ctx, r.ID())
 	check(t, err)
-	x := &setup{a: a, b: b, r: r, ma: ma, mb: mb, ac: ac, bc: bc}
+	x := &setup{server: server, a: a, b: b, r: r, ma: ma, mb: mb, ac: ac, bc: bc}
 	x.attach(t, ctx)
 	return x
 }
@@ -139,6 +154,7 @@ func (x *setup) stream(t *testing.T, ctx context.Context) *host.Stream {
 	sessions, err := host.NewSessions(x.a, host.SessionConfig{Cache: cache, Peers: map[wire.PeerID][]wire.Multiaddr{x.b.ID(): {x.virtualA}}})
 	check(t, err)
 	t.Cleanup(func() { sessions.Close() })
+	x.sessions = sessions
 	session, err := sessions.Connect(ctx, x.b.ID())
 	check(t, err)
 	if len(cache.Addresses(x.b.ID())) != 0 {

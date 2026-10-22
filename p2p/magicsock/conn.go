@@ -75,6 +75,8 @@ type Conn struct {
 	received                    atomic.Uint64
 	relayed                     atomic.Uint64
 	directSent                  atomic.Uint64
+	datagramSent                atomic.Uint64
+	datagramReceived            atomic.Uint64
 	sentBytes, receivedBytes    byteCounters
 }
 
@@ -244,6 +246,7 @@ type PathSet struct {
 	Direct   []netip.AddrPort
 	Selected netip.AddrPort
 	Relay    bool
+	Datagram bool // the relay leg currently has a negotiated datagram packet leg
 }
 
 func (c *Conn) Paths(id wire.PeerID) (PathSet, bool) {
@@ -254,6 +257,9 @@ func (c *Conn) Paths(id wire.PeerID) (PathSet, bool) {
 		return PathSet{}, false
 	}
 	set := PathSet{Selected: p.selected, Relay: relayAlive(p.relay)}
+	if set.Relay {
+		set.Datagram = p.relay.HasPacketLeg()
+	}
 	for a := range p.direct {
 		set.Direct = append(set.Direct, a)
 	}
@@ -370,8 +376,11 @@ func drainPackets(ch chan datagram) {
 	}
 }
 
+// Stats: Relayed counts packets queued for the relay leg (stream or datagram);
+// DatagramSent/DatagramReceived count those carried by a negotiated packet leg.
 type Stats struct {
 	Received, Relayed, DirectSent, Dropped uint64
+	DatagramSent, DatagramReceived         uint64
 	Peers, CIDs                            int
 	Sent, Recv                             Bytes // payload bytes by path (see byteCounters)
 }
@@ -379,7 +388,7 @@ type Stats struct {
 func (c *Conn) Stats() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return Stats{c.received.Load(), c.relayed.Load(), c.directSent.Load(), c.dropped.Load(), len(c.peers), len(c.cids), c.sentBytes.snapshot(), c.receivedBytes.snapshot()}
+	return Stats{c.received.Load(), c.relayed.Load(), c.directSent.Load(), c.dropped.Load(), c.datagramSent.Load(), c.datagramReceived.Load(), len(c.peers), len(c.cids), c.sentBytes.snapshot(), c.receivedBytes.snapshot()}
 }
 func (c *Conn) deliver(d datagram) {
 	select {

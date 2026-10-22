@@ -15,16 +15,18 @@ import (
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
+	"github.com/whyrusleeping/nu/p2p/wss"
 )
 
 type Config struct {
 	Host   *host.Host
 	Client *circuit.Client
-	// Relays is an explicit operator-configured/known list, at most 16 literal
-	// /ip4|ip6/.../udp/.../quic-v1/p2p/<relay> endpoints, one per relay PeerID.
-	// This is an authorization list, never extended by remote identify messages.
+	// Relays explicitly authorizes at most 16 relays, each with at most one
+	// literal QUIC and one WSS endpoint. Remote records never extend this list.
 	Relays []wire.Multiaddr
-	Ping   func(context.Context, wire.PeerID) (time.Duration, error)
+	// WSSOptions supplies operator TLS/proxy policy, never remote-record policy.
+	WSSOptions func(wire.PeerID) wss.DialOptions
+	Ping       func(context.Context, wire.PeerID) (time.Duration, error)
 	// Disabled is mandatory for private/isolated owners. It prevents all network
 	// activity, including after SetNeeded(true) or Renew. There are no defaults.
 	Disabled                               bool
@@ -42,6 +44,8 @@ type RelayState struct {
 	LastSuccess time.Time
 	HeldSince   time.Time // start of the current uninterrupted reservation; zero when not held
 	LastError   string
+	Transport   string
+	UDPError    string // last failed UDP attempt; not proof of a blocking firewall
 }
 
 type State struct {
@@ -52,6 +56,7 @@ type State struct {
 }
 
 type candidate struct {
+	endpoints        Endpoints
 	state            RelayState
 	conn             *host.Conn
 	renewAt, retryAt time.Time
@@ -80,7 +85,7 @@ type Manager struct {
 }
 
 func New(ctx context.Context, cfg Config) (*Manager, error) {
-	if cfg.Timeout < 0 || cfg.HealthInterval < 0 || cfg.RetryInterval < 0 || len(cfg.Relays) > 16 {
+	if cfg.Timeout < 0 || cfg.HealthInterval < 0 || cfg.RetryInterval < 0 || len(cfg.Relays) > 32 {
 		return nil, wire.ErrLimit
 	}
 	if cfg.Timeout == 0 {
@@ -97,23 +102,35 @@ func New(ctx context.Context, cfg Config) (*Manager, error) {
 	}
 	child, cancel := context.WithCancel(ctx)
 	m := &Manager{cfg: cfg, ctx: child, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1), renew: make(chan renewRequest), changed: make(chan struct{})}
-	seen := map[wire.PeerID]bool{}
+	seen := map[wire.PeerID]*candidate{}
 	for _, addr := range cfg.Relays {
 		id, err := circuit.RelayPeer(addr)
 		if err != nil {
 			cancel()
 			return nil, err
 		}
-		if seen[id] {
-			cancel()
-			return nil, errors.New("homerelay: duplicate relay PeerID")
-		}
-		seen[id] = true
 		if cfg.Host != nil && (id == cfg.Host.ID() || cfg.Host.IsLocalOnlyMultiaddr(addr)) {
 			cancel()
 			return nil, wire.ErrFormat
 		}
-		m.candidates = append(m.candidates, &candidate{state: RelayState{Peer: id, Address: addr}})
+		c := seen[id]
+		if c == nil {
+			if len(seen) >= 16 {
+				cancel()
+				return nil, wire.ErrLimit
+			}
+			c = &candidate{state: RelayState{Peer: id, Address: addr}}
+			seen[id] = c
+			m.candidates = append(m.candidates, c)
+		}
+		if c.endpoints.Contains(addr) {
+			cancel()
+			return nil, errors.New("homerelay: duplicate relay endpoint")
+		}
+		if err := c.endpoints.Add(addr); err != nil {
+			cancel()
+			return nil, err
+		}
 	}
 	m.needed.Store(true) // unknown reachability is not evidence of public reachability
 	m.publish()
@@ -230,6 +247,11 @@ func (m *Manager) publish() {
 	}
 	m.mu.Lock()
 	publicationChanged := m.state.Home != s.Home || m.state.Backup != s.Backup || m.state.Needed != s.Needed
+	for i, r := range s.Relays {
+		if i >= len(m.state.Relays) || r.Address.String() != m.state.Relays[i].Address.String() {
+			publicationChanged = true
+		}
+	}
 	m.state = s
 	m.liveConns = make(map[wire.PeerID]*host.Conn, len(m.chosen))
 	for _, c := range m.chosen {
@@ -398,13 +420,25 @@ func (m *Manager) reconcile(force, health bool) error {
 				return
 			}
 			defer func() { <-slots }()
-			ctx, cancel := context.WithTimeout(m.ctx, m.cfg.Timeout)
-			defer cancel()
-			conn, err := m.cfg.Host.Dial(ctx, c.state.Address)
+			opts := wss.DialOptions{}
+			if m.cfg.WSSOptions != nil {
+				opts = m.cfg.WSSOptions(c.state.Peer)
+			}
+			conn, addr, udpError, err := c.endpoints.Dial(m.ctx, m.cfg.Host, m.cfg.Timeout, opts)
+			if udpError != "" {
+				c.state.UDPError = udpError
+			}
 			if err != nil {
 				m.failed(c, err)
 				return
 			}
+			c.state.Address = addr
+			c.state.Transport = conn.Transport()
+			if c.state.Transport == "quic-v1" {
+				c.state.UDPError = ""
+			}
+			ctx, cancel := context.WithTimeout(m.ctx, m.cfg.Timeout)
+			defer cancel()
 			rtt, err := m.cfg.Ping(ctx, c.state.Peer)
 			if err != nil {
 				m.failed(c, err)

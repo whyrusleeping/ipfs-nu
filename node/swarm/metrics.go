@@ -17,8 +17,9 @@ import (
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
-// NATProfiler supplies the NAT profile that `nu doctor` shows (D11c §1). Nil in
-// Config means the swarm estimates mapping behavior from identify observations.
+// NATProfiler supplies the NAT profile that status/doctor shows (D11c §1).
+// Returning nil falls back to the estimate from identify observations. Config's
+// default implementation adapts the swarm's netcheck monitor.
 type NATProfiler interface {
 	NATProfile() *apiv0.NATProfile
 }

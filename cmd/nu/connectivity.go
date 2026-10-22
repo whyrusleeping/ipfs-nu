@@ -16,8 +16,21 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 		return
 	}
 	fmt.Fprintf(w, "reachability: %s\n", c.Reachability)
+	if n := c.NAT; n != nil {
+		fmt.Fprintf(w, "nat:        mapping %s, filtering %s (%s); %s\n", n.Mapping, n.Filtering, n.Source, n.Detail)
+	}
 	if c.Home != "" || c.Backup != "" {
 		fmt.Fprintf(w, "relays:     home %s; backup %s\n", c.Home, c.Backup)
+	}
+	for _, r := range c.Relays {
+		fmt.Fprintf(w, "relay:      %s %s", r.PeerID, r.Transport)
+		if r.UDPError != "" {
+			fmt.Fprintf(w, "; UDP attempt failed: %s", r.UDPError)
+		}
+		if r.LastError != "" {
+			fmt.Fprintf(w, "; %s", r.LastError)
+		}
+		fmt.Fprintln(w)
 	}
 	for _, p := range c.Paths {
 		fmt.Fprintf(w, "path:       %s %s", p.PeerID, p.Path)
@@ -25,7 +38,11 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 			fmt.Fprintf(w, " %s", p.Direct)
 		}
 		if p.Relay != "" {
-			fmt.Fprintf(w, " via %s (warm=%t)", p.Relay, p.RelayWarm)
+			fmt.Fprintf(w, " via %s (warm=%t", p.Relay, p.RelayWarm)
+			if p.RelayMode != "" {
+				fmt.Fprintf(w, ", %s", p.RelayMode) // 0019: stream or datagram leg
+			}
+			fmt.Fprint(w, ")")
 		}
 		if p.LastError != "" {
 			fmt.Fprintf(w, "; %s", p.LastError)
@@ -117,7 +134,7 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 		status, action := "ok", ""
 		if c.Home == "" || c.Backup == "" {
 			status = "warn"
-			action = "configure two available swarm.relays for NAT sharing; check UDP access and relay admission"
+			action = "configure two available swarm.relays for NAT sharing; check UDP or declared WSS access and relay admission"
 		}
 		checks = append(checks, check{Name: "home relays", Status: status, Detail: fmt.Sprintf("home %s; backup %s", c.Home, c.Backup), Action: action})
 	}
@@ -125,6 +142,9 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 		name := "relay " + r.PeerID
 		if r.Role != "" {
 			name = "relay " + r.Role + " " + r.PeerID
+		}
+		if r.Transport == "wss" && r.UDPError != "" {
+			checks = append(checks, check{Name: "relay fallback " + r.PeerID, Status: "ok", Detail: "WSS selected; UDP attempt failed: " + r.UDPError})
 		}
 		if r.LastError != "" {
 			checks = append(checks, check{Name: name, Status: "warn", Detail: r.LastError, Action: "check the relay is online and allows this node"})

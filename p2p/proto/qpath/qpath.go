@@ -104,3 +104,43 @@ func LocalAddress(peer wire.PeerID, addr netip.AddrPort) (wire.Multiaddr, error)
 	}
 	return wire.ParseMultiaddr(fmt.Sprintf("/%s/%s/udp/%d/quic-v1/p2p/%s", family, addr.Addr(), addr.Port(), peer), 1024)
 }
+
+// UpgradeDatagram negotiates the Nu datagram relay extension for an existing
+// stream leg (the circuit dialer calls it; the relay offers the other half to the
+// target). The stream leg stays attached as the fallback. On any failure the
+// stream leg is untouched and the error explains why (ErrDatagramUnsupported
+// covers unsupported relays/peers, insufficient budget and refused admission).
+func UpgradeDatagram(ctx context.Context, client *circuit.Client, leg *magicsock.Relay, relay, peer wire.PeerID) (*circuit.DatagramLeg, error) {
+	if client == nil || leg == nil {
+		return nil, magicsock.ErrPeer
+	}
+	if leg.HasPacketLeg() {
+		return nil, magicsock.ErrLegExists
+	}
+	dl, err := client.UpgradeDatagram(ctx, relay, peer)
+	if err != nil {
+		return nil, err
+	}
+	if err := leg.AttachPacketLeg(dl); err != nil {
+		dl.Close()
+		return nil, err
+	}
+	return dl, nil
+}
+
+// AttachDatagram binds a relay-offered datagram leg (circuit.Client.AcceptDatagram)
+// to the live stream leg for the same peer and relay; mismatches close the offer.
+func AttachDatagram(leg *magicsock.Relay, dl *circuit.DatagramLeg, relay, peer wire.PeerID) error {
+	if dl == nil {
+		return magicsock.ErrPeer
+	}
+	if leg == nil || dl.Relay != relay || dl.Peer != peer {
+		dl.Close()
+		return magicsock.ErrPeer
+	}
+	if err := leg.AttachPacketLeg(dl); err != nil {
+		dl.Close()
+		return err
+	}
+	return nil
+}

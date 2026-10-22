@@ -205,6 +205,10 @@ type SwarmConfig struct {
 	MDNS bool `toml:"mdns"`
 	// Public connectivity is opt-in to known relays, never an inferred directory.
 	Relays []string `toml:"relays,omitempty"`
+	// Proxy is an explicit http:// CONNECT proxy for WSS only; no environment discovery.
+	Proxy string `toml:"proxy,omitempty"`
+	// RelayCertPins are peerID@hex-SHA256(leaf DER) pins, additional to Web-PKI.
+	RelayCertPins []string `toml:"relay_cert_pins,omitempty"`
 	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
 	Mode  string   `toml:"mode,omitempty"`
 	Peers []string `toml:"peers,omitempty"`
@@ -212,6 +216,9 @@ type SwarmConfig struct {
 	// A grant also permits private candidate disclosure to that peer.
 	ProbeAllow     []string `toml:"probe_allow,omitempty"`
 	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
+	// PeerRelayAllow makes this public node a bounded circuit relay for exactly
+	// these PeerIDs (an owner's devices or an allow-list); empty disables it.
+	PeerRelayAllow []string `toml:"peer_relay_allow,omitempty"`
 	// DHT: auto (default; Amino client when a non-loopback address is bound, server
 	// once AutoNAT confirms public reachability), client (always a client, never a
 	// server) or off. Private/isolated modes never run it.

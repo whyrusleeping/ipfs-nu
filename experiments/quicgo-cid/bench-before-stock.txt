@@ -1,0 +1,26 @@
+goos: linux
+goarch: amd64
+pkg: github.com/whyrusleeping/nu/experiments/nupath
+cpu: AMD EPYC 9684X 96-Core Processor               
+BenchmarkProductionPaths/Raw-4         	     216	   5710803 ns/op	 734.45 MB/s	         1.000 GSO	         2.375 lost/op	      1199 tx-bytes/pkt	  478541 B/op	   15295 allocs/op
+BenchmarkProductionPaths/Raw-4         	     208	   5481010 ns/op	 765.24 MB/s	         1.000 GSO	         1.947 lost/op	      1199 tx-bytes/pkt	  475218 B/op	   15263 allocs/op
+BenchmarkProductionPaths/Raw-4         	     216	   5544701 ns/op	 756.45 MB/s	         1.000 GSO	         2.532 lost/op	      1199 tx-bytes/pkt	  476748 B/op	   15286 allocs/op
+BenchmarkProductionPaths/Raw-4         	     186	   5614751 ns/op	 747.02 MB/s	         1.000 GSO	         2.602 lost/op	      1199 tx-bytes/pkt	  478392 B/op	   15296 allocs/op
+BenchmarkProductionPaths/Raw-4         	     199	   5826777 ns/op	 719.83 MB/s	         1.000 GSO	         2.080 lost/op	      1199 tx-bytes/pkt	  477525 B/op	   15326 allocs/op
+BenchmarkProductionPaths/RawObserver-4 	     177	   7646283 ns/op	 548.54 MB/s	         1.000 GSO	         3.028 lost/op	      1199 tx-bytes/pkt	 2820365 B/op	   42680 allocs/op
+BenchmarkProductionPaths/RawObserver-4 	     193	   7670566 ns/op	 546.81 MB/s	         1.000 GSO	         2.813 lost/op	      1199 tx-bytes/pkt	 2806230 B/op	   42624 allocs/op
+BenchmarkProductionPaths/RawObserver-4 	     171	   7004638 ns/op	 598.79 MB/s	         1.000 GSO	         2.246 lost/op	      1199 tx-bytes/pkt	 2813645 B/op	   42528 allocs/op
+BenchmarkProductionPaths/RawObserver-4 	     175	   7376659 ns/op	 568.59 MB/s	         1.000 GSO	         3.251 lost/op	      1199 tx-bytes/pkt	 2803329 B/op	   42534 allocs/op
+BenchmarkProductionPaths/RawObserver-4 	     164	   7561164 ns/op	 554.72 MB/s	         1.000 GSO	         3.104 lost/op	      1199 tx-bytes/pkt	 2803564 B/op	   42600 allocs/op
+BenchmarkProductionPaths/VirtualDirect-4         	     174	   7545549 ns/op	 555.86 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.000 lost/op	      1199 tx-bytes/pkt	 2856937 B/op	   44472 allocs/op
+BenchmarkProductionPaths/VirtualDirect-4         	     164	   6974078 ns/op	 601.41 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.317 lost/op	      1199 tx-bytes/pkt	 2853987 B/op	   44424 allocs/op
+BenchmarkProductionPaths/VirtualDirect-4         	     158	   6701097 ns/op	 625.91 MB/s	         1.000 GSO	         0 adapter-drops/op	         5.981 lost/op	      1199 tx-bytes/pkt	 2847911 B/op	   44337 allocs/op
+BenchmarkProductionPaths/VirtualDirect-4         	     176	   6963206 ns/op	 602.35 MB/s	         1.000 GSO	         0 adapter-drops/op	         5.830 lost/op	      1199 tx-bytes/pkt	 2856053 B/op	   44374 allocs/op
+BenchmarkProductionPaths/VirtualDirect-4         	     171	   7178662 ns/op	 584.27 MB/s	         1.000 GSO	         0 adapter-drops/op	         3.187 lost/op	      1199 tx-bytes/pkt	 2858090 B/op	   44402 allocs/op
+BenchmarkProductionPaths/RawPMTU-4               	     292	   4501028 ns/op	 931.85 MB/s	         1.000 GSO	         1.747 lost/op	      1440 tx-bytes/pkt	  400254 B/op	   12712 allocs/op
+BenchmarkProductionPaths/RawPMTU-4               	     271	   4688236 ns/op	 894.64 MB/s	         1.000 GSO	         1.690 lost/op	      1440 tx-bytes/pkt	  400143 B/op	   12721 allocs/op
+BenchmarkProductionPaths/RawPMTU-4               	     223	   5194782 ns/op	 807.41 MB/s	         1.000 GSO	         1.623 lost/op	      1440 tx-bytes/pkt	  403163 B/op	   12760 allocs/op
+BenchmarkProductionPaths/RawPMTU-4               	     232	   4798778 ns/op	 874.04 MB/s	         1.000 GSO	         5.099 lost/op	      1440 tx-bytes/pkt	  403365 B/op	   12755 allocs/op
+BenchmarkProductionPaths/RawPMTU-4               	     253	   4979849 ns/op	 842.26 MB/s	         1.000 GSO	         1.791 lost/op	      1440 tx-bytes/pkt	  400187 B/op	   12716 allocs/op
+PASS
+ok  	github.com/whyrusleeping/nu/experiments/nupath	36.989s

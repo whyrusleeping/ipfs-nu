@@ -1,7 +1,7 @@
 ---
 id: "0070"
 title: 'Upstream quic-go: CID issue/retire callback so Nu-path stops paying qlog construction cost'
-status: in_progress
+status: blocked
 priority: 3
 created: "2026-10-21"
 updated: "2026-10-22"
@@ -21,3 +21,4 @@ Acceptance: magicsock virtual-direct throughput within ~5% of uninstrumented raw
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Experiment done (d893d5f, 98a6106; merged d85fec8): experiments/quicgo-cid has an upstream-ready quic-go patch adding Config.ConnectionIDTracer (AddedConnectionID before send / RemovedConnectionID after retirement grace, exactly once; tests incl. 50 MB rotation integration), setup.sh, a magicsock copy using it, and draft issue/PR text. Benchmark (0015 method, pooled 10 runs): magicsock with the hook 703 MB/s vs uninstrumented raw 726 (−3.2%, within target) vs current qlog observer 568 (−21.8%). Switch plan in docs/networking.md D11. BLOCKED on humans: open the quic-go issue/PR per README (quic-go AI-POLICY requires disclosure and author understanding), then a stock release; then bump quic-go, port the observer, rerun the benchmark. Side observation for upstream (unconfirmed): possible hang in server.go handleInitialImpl when AddWithConnID fails.

@@ -20,6 +20,8 @@ type ConnectivityStatus struct {
 	IPv6        *IPv6Status        `json:"ipv6,omitempty"`
 }
 type RelayStatus struct {
+	Transport string    `json:"transport,omitempty"` // quic-v1 or wss; last selected transport
+	UDPError  string    `json:"udp_error,omitempty"` // failed attempt, not proof of blocking
 	PeerID    string    `json:"peer_id"`
 	Address   string    `json:"address"`
 	Role      string    `json:"role,omitempty"` // home, backup or empty (candidate)
@@ -31,10 +33,12 @@ type RelayStatus struct {
 }
 type PeerPathStatus struct {
 	PeerID        string    `json:"peer_id"`
-	Path          string    `json:"path"` // direct-quic, direct, relay, recovering, offline
+	Path          string    `json:"path"` // direct-quic, direct, relay, relay-wss (outer), recovering, offline
 	Relay         string    `json:"relay,omitempty"`
 	Direct        string    `json:"direct,omitempty"` // proven physical endpoint, never virtual
 	RelayWarm     bool      `json:"relay_warm"`
+	RelayMode     string    `json:"relay_mode,omitempty"`   // stream, datagram, or "stream: <upgrade error>" (0019)
+	RelayChoice   string    `json:"relay_choice,omitempty"` // pair-aware best relay and combined RTT, or error
 	LastConnected time.Time `json:"last_connected"`
 	LastError     string    `json:"last_error,omitempty"`
 	// Probe state of the Nu-path session (zero without one): candidates the peer

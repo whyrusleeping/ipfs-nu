@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/atproto"
@@ -170,6 +172,29 @@ func TestAtrepoArchiveDataset(t *testing.T) {
 		t.Fatalf("history read after deletion: %q %v", s, err)
 	}
 
+	// Blobs per policy: a second archive of the fixture's own account selects blobs; a
+	// record's small blob is fetched and held, an oversized one is skipped and counted,
+	// neither makes the version incomplete. A key rotation is re-resolved once.
+	f.Set(func(f *atfix.Fixture) { f.Pub.Status = "" })
+	small := pub.PutBlob([]byte("png bytes"))
+	pub.Put("app.bsky.feed.post", "3fff", map[string]any{"$type": "app.bsky.feed.post", "text": "with images", "createdAt": "2026-01-01T00:00:00Z",
+		"embed": map[string]any{"images": []any{atfix.BlobRef(small, "image/png", 9), atfix.BlobRef(pub.Oversized, "video/mp4", 9<<20)}}})
+	db, err := n.DatasetCreate(ctx, ScopeLocal, apiv0.DatasetCreateRequest{Name: "pub-blobs", Archive: true, SourceAt: "at://" + atfix.PubDID, Blobs: true})
+	if err != nil || db.Atrepo.BlobsFetched != 1 || db.Atrepo.BlobsOversized != 1 || db.Atrepo.BlobsFailed != 0 || len(db.Warnings) != 0 {
+		t.Fatalf("blobs: %+v %v %v", db.Atrepo, db.Warnings, err)
+	}
+	if _, ok, _ := n.Store.Has(small); !ok {
+		t.Fatal("small blob not held")
+	}
+	if vs, _ = n.DatasetVersions(ctx, ScopeLocal, "pub-blobs"); len(vs.Versions) != 1 || vs.Versions[0].Availability != apiv0.AvailComplete || vs.Versions[0].Bytes <= v1.Bytes {
+		t.Fatalf("blob version: %+v", vs.Versions)
+	}
+	pub.RotateKey()
+	post("3ggg", "after rotation")
+	if db, err = n.DatasetUpdate(ctx, ScopeLocal, "pub-blobs", apiv0.DatasetUpdateRequest{}); err != nil || db.Atrepo.Mode != "since" || db.Head.Rev != pub.Rev() {
+		t.Fatalf("key rotation: %+v %v", db.Atrepo, err)
+	}
+
 	// Explicit override: history may leave the cluster, and the flag is recorded.
 	d2, err := n.DatasetCreate(ctx, ScopeLocal, apiv0.DatasetCreateRequest{Name: "alice", Mirror: true, SourceAt: "at://" + atfix.DID, PublishHistory: true, NSIDs: []string{"app.bsky.feed.like"}})
 	if err != nil || d2.Atrepo == nil || !d2.Atrepo.PublishHistory || d2.Atrepo.Redistribution != RedistUnrestricted || d2.History != nil || d2.Head == nil {
@@ -187,5 +212,36 @@ func TestAtrepoArchiveDataset(t *testing.T) {
 	}
 	if _, err := n.DatasetCreate(ctx, ScopeLocal, apiv0.DatasetCreateRequest{Name: "bad", Archive: true, SourceAt: atfix.LikeURI}); !isCode(err, apiv0.CodeInvalidArgument) {
 		t.Fatalf("record source: %v", err)
+	}
+}
+
+// Opt-in live smoke (NU_LIVE=1): archive a small real account from its PDS, then run an
+// update, which must be a status check or a since-diff, never a second full export.
+func TestLiveAtrepoArchive(t *testing.T) {
+	if os.Getenv("NU_LIVE") == "" {
+		t.Skip("set NU_LIVE=1 to run against the live network")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	n := newLocal(t)
+	account := os.Getenv("NU_LIVE_ACCOUNT")
+	if account == "" {
+		account = "why.bsky.world"
+	}
+	d, err := n.DatasetCreate(ctx, ScopeLocal, apiv0.DatasetCreateRequest{Name: "live", Archive: true, SourceAt: "at://" + account})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Warnings) != 0 || d.Head == nil || d.Atrepo.Mode != "full" {
+		t.Fatalf("create: %+v %v", d.Atrepo, d.Warnings)
+	}
+	t.Logf("archived %s at rev %s (%s)", d.Atrepo.DID, d.Head.Rev, d.Atrepo.Handle)
+	if d, err = n.DatasetUpdate(ctx, ScopeLocal, "live", apiv0.DatasetUpdateRequest{}); err != nil {
+		t.Fatal(err)
+	} else if d.Atrepo.Mode == "full" || d.Atrepo.Error != "" {
+		t.Fatalf("update: %+v", d.Atrepo)
+	}
+	if l, err := n.Ls(ctx, "live"); err != nil || len(l.Entries) == 0 {
+		t.Fatalf("ls: %+v %v", l, err)
 	}
 }

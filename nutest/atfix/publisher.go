@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,10 @@ type Publisher struct {
 	BreakSince bool
 	// revs maps every committed rev to its commit (since-diffs).
 	revs map[string]cid.CID
+	// blobs are the account's blobs by CID; Oversized is a CID the PDS serves as
+	// MaxWholeObject+1 zero bytes.
+	blobs     map[cid.CID][]byte
+	Oversized cid.CID
 
 	pending  map[string]*authRequest // request_uri → request
 	codes    map[string]*authRequest // code → request
@@ -78,7 +83,9 @@ func newPublisher() *Publisher {
 	}
 	st := mst.MemStore{}
 	p := &Publisher{Key: key, Store: st, Repo: atrepo.New(st, PubDID), Nonce: "nonce-1",
-		pending: map[string]*authRequest{}, codes: map[string]*authRequest{}, access: map[string]*token{}, refresh: map[string]*token{}, revs: map[string]cid.CID{}}
+		pending: map[string]*authRequest{}, codes: map[string]*authRequest{}, access: map[string]*token{}, refresh: map[string]*token{}, revs: map[string]cid.CID{},
+		blobs: map[cid.CID][]byte{}}
+	p.Oversized = cid.New(cid.Raw, cid.Sum(cid.SHA256, []byte("oversized"))) // any raw CID; the body is never verified
 	p.Head, err = p.Repo.Commit(key, time.Now())
 	if err != nil {
 		panic(err)
@@ -94,6 +101,28 @@ func (p *Publisher) KeyMultibase() string {
 		panic(err)
 	}
 	return pub.Multibase()
+}
+
+// RotateKey replaces the signing key (the DID document advertises the new one); later
+// commits are signed with it.
+func (p *Publisher) RotateKey() {
+	key, err := atcrypto.GeneratePrivateKeyP256()
+	if err != nil {
+		panic(err)
+	}
+	p.Key = key
+}
+
+// PutBlob stores a blob the PDS serves with getBlob and returns its CID.
+func (p *Publisher) PutBlob(data []byte) cid.CID {
+	c := cid.New(cid.Raw, cid.Sum(cid.SHA256, data))
+	p.blobs[c] = bytes.Clone(data)
+	return c
+}
+
+// BlobRef is the record form of a blob reference.
+func BlobRef(c cid.CID, mime string, size int) map[string]any {
+	return map[string]any{"$type": "blob", "ref": map[string]any{"$link": c.String()}, "mimeType": mime, "size": size}
 }
 
 // Rotate changes the DPoP nonce, so the next client request must retry with it.
@@ -373,6 +402,21 @@ func (f *Fixture) servePub(w http.ResponseWriter, r *http.Request, method string
 		_ = atrepo.WriteCAR(&buf, p.Head, blocks)
 		w.Header().Set("Content-Type", "application/vnd.ipld.car")
 		_, _ = w.Write(buf.Bytes())
+	case "com.atproto.sync.getBlob":
+		c, err := cid.Parse(q.Get("cid"))
+		if err == nil && c == p.Oversized {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(cid.MaxWholeObject+1))
+			_, _ = w.Write(make([]byte, cid.MaxWholeObject+1))
+			return
+		}
+		data, ok := p.blobs[c]
+		if err != nil || !ok {
+			http.Error(w, `{"error":"BlobNotFound"}`, 404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
 	case "com.atproto.sync.getRepoStatus":
 		if p.Status == "deleted" {
 			http.Error(w, `{"error":"RepoNotFound"}`, 400)

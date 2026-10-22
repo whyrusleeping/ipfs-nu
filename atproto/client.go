@@ -342,7 +342,8 @@ func pdsError(id *Identity, method string, err error) error {
 
 func verifyError(id *Identity, what string, err error) error {
 	return apiv0.Errorf(apiv0.CodeFailed, "%s of %s from %s does not verify: %v", what, id.DID, id.PDS, err).
-		WithAction("the PDS served data that does not match the DID document's signing key or the repository structure; nothing was trusted")
+		WithAction("the PDS served data that does not match the DID document's signing key or the repository structure; nothing was trusted").
+		WithCause(err)
 }
 
 // Limits returns the effective limits.

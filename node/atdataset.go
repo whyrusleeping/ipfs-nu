@@ -235,8 +235,24 @@ func (n *Local) refreshAtrepo(ctx context.Context, c *cluster.Cluster, ds string
 // signature failure retries once with a freshly resolved identity (key rotation).
 func (n *Local) fetchAtrepo(ctx context.Context, cl *atproto.Client, id *atproto.Identity, c *cluster.Cluster, ds string, d *cluster.Dataset) (mode string, commit cid.CID, rev string, ops []atrepo.Op, err error) {
 	ps := &putStore{st: n.Store}
+	// rotated re-resolves the identity once after a signature failure (key rotation).
+	rotated := func(err error) bool {
+		if !errors.Is(err, atrepo.ErrSignature) {
+			return false
+		}
+		cl.Forget(id.DID)
+		id2, rerr := cl.Resolve(ctx, id.DID)
+		if rerr != nil {
+			return false
+		}
+		*id = *id2
+		return true
+	}
 	if held, _, heldRev, ok := n.heldAtrepo(c, ds); ok {
 		a, err := cl.GetRepoSince(ctx, id, heldRev, ps, held.Head.Data)
+		if err != nil && rotated(err) {
+			a, err = cl.GetRepoSince(ctx, id, heldRev, ps, held.Head.Data)
+		}
 		if ps.err != nil {
 			return "since", cid.CID{}, "", nil, apiErr(ps.err)
 		}
@@ -249,15 +265,11 @@ func (n *Local) fetchAtrepo(ctx context.Context, cl *atproto.Client, id *atproto
 		// Chain break, migration or an unknown rev: fall back to a full export.
 	}
 	snap, err := cl.GetRepo(ctx, id, ps, nil)
+	if err != nil && rotated(err) {
+		snap, err = cl.GetRepo(ctx, id, ps, nil)
+	}
 	if ps.err != nil {
 		return "full", cid.CID{}, "", nil, apiErr(ps.err)
-	}
-	if err != nil && errors.Is(err, atrepo.ErrSignature) && time.Since(id.Resolved) > time.Second {
-		cl.Forget(id.DID)
-		if id2, rerr := cl.Resolve(ctx, id.DID); rerr == nil {
-			*id = *id2
-			snap, err = cl.GetRepo(ctx, id, ps, nil)
-		}
 	}
 	if err != nil {
 		return "full", cid.CID{}, "", nil, err

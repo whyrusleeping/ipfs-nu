@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -42,6 +43,7 @@ type relayStatus struct {
 	Listen    []string `json:"listen"`    // bound addresses as /ip/udp/quic-v1/p2p
 	Advertise []string `json:"advertise"` // addresses handed to reserving peers
 	Admitted  int      `json:"admitted"`
+	WSSListen string   `json:"wss_listen,omitempty"`
 }
 
 var cmdRelay = &command{
@@ -60,6 +62,10 @@ var cmdRelay = &command{
 		circPerPeer := fs.Int("circuits-per-peer", 0, "circuits per peer (default 8)")
 		circPerIP := fs.Int("circuits-per-ip", 0, "circuits per observed IP (default 16)")
 		ttl := fs.Duration("reservation-ttl", 0, "reservation lifetime (default 1h)")
+		wssListen := fs.String("wss-listen", "", "additional TCP WSS listener host:port (e.g. 0.0.0.0:443); requires certificate and advertised WSS endpoint")
+		wssCert := fs.String("wss-cert", "", "WSS Web-PKI TLS certificate PEM path")
+		wssKey := fs.String("wss-key", "", "WSS TLS private key PEM path")
+		wssMax := fs.Int("wss-max-connections", 0, "WSS connection slots including TLS/HTTP handshakes (default 128)")
 		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
@@ -143,7 +149,27 @@ var cmdRelay = &command{
 			srv.Admitted = append(srv.Admitted, pid)
 		}
 
-		s, err := relay.New(relay.Config{Host: host.Config{Key: key, Listen: hostListen}, Server: srv})
+		if *wssListen == "" {
+			*wssListen = rc.WSSListen
+		}
+		if *wssCert == "" {
+			*wssCert = rc.WSSCert
+		}
+		if *wssKey == "" {
+			*wssKey = rc.WSSKey
+		}
+		var wssConfig *relay.WSSConfig
+		if *wssListen != "" || *wssCert != "" || *wssKey != "" || *wssMax != 0 || rc.WSSMaxConnections != 0 {
+			if *wssListen == "" || *wssCert == "" || *wssKey == "" {
+				return usagef("WSS requires --wss-listen, --wss-cert and --wss-key (or relay.wss_* config)")
+			}
+			cert, err := tls.LoadX509KeyPair(*wssCert, *wssKey)
+			if err != nil {
+				return apiv0.Errorf(apiv0.CodeInvalidArgument, "WSS certificate/key: %v", err)
+			}
+			wssConfig = &relay.WSSConfig{Listen: *wssListen, TLS: &tls.Config{Certificates: []tls.Certificate{cert}}, MaxConnections: pick(*wssMax, rc.WSSMaxConnections)}
+		}
+		s, err := relay.New(relay.Config{Host: host.Config{Key: key, Listen: hostListen}, Server: srv, WSS: wssConfig})
 		if err != nil {
 			return apiv0.Errorf(apiv0.CodeFailed, "cannot start the relay: %v", err).
 				WithAction("check that the listen port is free and bindable (UDP 443 may need privileges), and that limits are within range")
@@ -152,6 +178,9 @@ var cmdRelay = &command{
 		// 0016 hook: the dnsaddr/peer-routing server attaches to s.Host here, once it exists.
 
 		st := relayStatus{PeerID: id.Base36(), Admitted: len(srv.Admitted)}
+		if addr := s.WSSAddr(); addr != nil {
+			st.WSSListen = addr.String()
+		}
 		for _, a := range s.Host.Addrs() {
 			st.Listen = append(st.Listen, a.String()+"/p2p/"+id.String())
 		}
@@ -162,6 +191,9 @@ var cmdRelay = &command{
 			st.Advertise = st.Listen
 		}
 		if err := e.emit(st, func(w io.Writer) {
+			if st.WSSListen != "" {
+				fmt.Fprintf(w, "  WSS listen %s (TLS/Noise/yamux)\n", st.WSSListen)
+			}
 			fmt.Fprintf(w, "%s %s relay serving (identify, AutoNAT v2, circuit v2 HOP)\n  peer id    %s\n  listen     %s\n  advertise  %s\n  admitted   %d peers\npress Ctrl-C to stop\n",
 				nu.Name, nu.Version, st.PeerID, strings.Join(st.Listen, ", "), strings.Join(st.Advertise, ", "), st.Admitted)
 		}); err != nil {

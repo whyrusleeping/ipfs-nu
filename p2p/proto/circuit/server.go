@@ -162,11 +162,14 @@ func (s *Server) pruneLocked() {
 	}
 }
 func remoteIP(conn *host.Conn) (netip.Addr, bool) {
-	addr, ok := conn.RemoteAddr().(*net.UDPAddr)
-	if !ok {
+	switch addr := conn.RemoteAddr().(type) {
+	case *net.UDPAddr:
+		return addr.AddrPort().Addr().Unmap(), true
+	case *net.TCPAddr:
+		return addr.AddrPort().Addr().Unmap(), true
+	default:
 		return netip.Addr{}, false
 	}
-	return addr.AddrPort().Addr().Unmap(), true
 }
 func (s *Server) permitted(conn *host.Conn) bool {
 	ip, ok := remoteIP(conn)

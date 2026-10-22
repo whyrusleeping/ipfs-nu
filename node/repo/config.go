@@ -163,6 +163,12 @@ func ParseSize(s string) (int64, error) {
 // RelayConfig configures the standalone `nu relay` role (networking D10). Flags of the
 // same name override these. Limits of 0 use the circuit server defaults.
 type RelayConfig struct {
+	// Optional additional Web-PKI TLS WebSocket listener. Certificate/key are
+	// explicit filesystem paths; advertise must include its admitted endpoint.
+	WSSListen         string `toml:"wss_listen,omitempty"`
+	WSSCert           string `toml:"wss_cert,omitempty"`
+	WSSKey            string `toml:"wss_key,omitempty"`
+	WSSMaxConnections int    `toml:"wss_max_connections,omitzero"`
 	// Listen holds QUIC multiaddrs; default /ip4/0.0.0.0/udp/443/quic-v1.
 	Listen []string `toml:"listen,omitempty"`
 	// Advertise holds the public addresses handed to reserving peers (without /p2p);

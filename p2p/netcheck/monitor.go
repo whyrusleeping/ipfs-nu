@@ -14,9 +14,10 @@ type MonitorConfig struct {
 	Config
 	// Observers returns the current observers (e.g. Fetch from connected relays).
 	Observers func(context.Context) ([]Observer, error)
-	// Interval between periodic quick probes (30 min). The lifetime ladder runs on
-	// start, after network changes and at most every LifetimeInterval (6 h).
-	Interval, LifetimeInterval time.Duration
+	// Interval between periodic quick probes (30 min); RetryInterval after a run
+	// that had no observers or failed (1 min). The lifetime ladder runs on start,
+	// after network changes and at most every LifetimeInterval (6 h).
+	Interval, RetryInterval, LifetimeInterval time.Duration
 	// OnChange, if set, is called (serially) after each published report.
 	OnChange func(Report)
 }
@@ -41,6 +42,9 @@ func StartMonitor(ctx context.Context, cfg MonitorConfig) (*Monitor, error) {
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = 30 * time.Minute
+	}
+	if cfg.RetryInterval <= 0 {
+		cfg.RetryInterval = time.Minute
 	}
 	if cfg.LifetimeInterval <= 0 {
 		cfg.LifetimeInterval = 6 * time.Hour
@@ -100,6 +104,7 @@ func (m *Monitor) loop(ctx context.Context) {
 	pending := false
 	var runCancel context.CancelFunc
 	var runDone chan struct{}
+	var runErr error
 	for {
 		select {
 		case <-ctx.Done():
@@ -119,7 +124,11 @@ func (m *Monitor) loop(ctx context.Context) {
 		case <-runDone:
 			runCancel()
 			runCancel, runDone = nil, nil
-			timer.Reset(m.cfg.Interval)
+			if runErr != nil {
+				timer.Reset(m.cfg.RetryInterval)
+			} else {
+				timer.Reset(m.cfg.Interval)
+			}
 		}
 		if pending && runDone == nil {
 			var runCtx context.Context
@@ -127,30 +136,33 @@ func (m *Monitor) loop(ctx context.Context) {
 			runDone = make(chan struct{})
 			go func(c bool, done chan struct{}) {
 				defer close(done)
-				m.run(runCtx, c)
+				runErr = m.run(runCtx, c)
 			}(changed, runDone)
 			pending, changed = false, false
 		}
 	}
 }
 
-func (m *Monitor) run(ctx context.Context, changed bool) {
-	setErr := func(err error) {
+// run returns an error when the quick profile could not be produced.
+func (m *Monitor) run(ctx context.Context, changed bool) error {
+	setErr := func(err error) error {
 		if ctx.Err() == nil {
 			m.mu.Lock()
 			m.lastErr = err
 			m.mu.Unlock()
 		}
+		return err
 	}
 	obs, err := m.cfg.Observers(ctx)
+	if err == nil && len(obs) == 0 {
+		err = ErrNoObservers
+	}
 	if err != nil {
-		setErr(err)
-		return
+		return setErr(err)
 	}
 	r, err := Probe(ctx, m.cfg.Config, obs)
 	if err != nil {
-		setErr(err)
-		return
+		return setErr(err)
 	}
 	m.mu.Lock()
 	if changed {
@@ -164,18 +176,19 @@ func (m *Monitor) run(ctx context.Context, changed bool) {
 	}
 	m.publish(r, nil)
 	if r.Profile.UDP != UDPOK || !due {
-		return
+		return nil
 	}
 	l, err := MeasureLifetime(ctx, m.cfg.Config, obs)
 	if err != nil {
-		setErr(err)
-		return
+		setErr(err) // the quick profile stands; retry the ladder next run
+		return nil
 	}
 	r.SetLifetime(l)
 	m.mu.Lock()
 	m.lifetime, m.measured = &l, time.Now()
 	m.mu.Unlock()
 	m.publish(r, nil)
+	return nil
 }
 
 func (m *Monitor) publish(r Report, err error) {

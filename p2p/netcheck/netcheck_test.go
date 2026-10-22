@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -378,5 +379,43 @@ func TestAllocationClassifier(t *testing.T) {
 		if a != tc.want || d != tc.delta || j != tc.jitter {
 			t.Fatalf("%v: %s %d %d", tc.mapped, a, d, j)
 		}
+	}
+}
+
+func TestMonitor(t *testing.T) {
+	s := loopbackServer(t, ServerSet{Listen: EndpointSet{Primary: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), freePort(t))}})
+	reports := make(chan Report, 8)
+	m, err := StartMonitor(context.Background(), MonitorConfig{
+		Config:        Config{Timeout: 200 * time.Millisecond, Retransmit: 50 * time.Millisecond, LifetimeMin: 50 * time.Millisecond, LifetimeMax: 50 * time.Millisecond},
+		Observers:     func(context.Context) ([]Observer, error) { return Observers("one", s.Descriptor()), nil },
+		RetryInterval: 20 * time.Millisecond,
+		OnChange:      func(r Report) { reports <- r },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	waitLifetime := func() Report {
+		t.Helper()
+		for {
+			select {
+			case r := <-reports:
+				if r.Lifetime != nil {
+					return r
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("no report with lifetime")
+			}
+		}
+	}
+	if r := waitLifetime(); r.Profile.UDP != UDPOK || r.Profile.LifetimeBound != BoundAtLeast {
+		t.Fatalf("first run: %s", r.Profile)
+	}
+	if err := m.Hook()(context.Background(), netmon.Event{}); err != nil {
+		t.Fatal(err)
+	}
+	waitLifetime() // a network change re-measures the lifetime
+	if p, ok := m.Profile(); !ok || p.UDP != UDPOK {
+		t.Fatalf("profile %s %t", p, ok)
 	}
 }

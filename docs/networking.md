@@ -719,8 +719,14 @@ plus a control socket) and takes up to about 3 × the measured lifetime.
 `netcheck.Monitor` runs the quick profile on start, after each network-change hook
 (`Monitor.Hook`, register on the D12 pipeline; it only triggers and returns) and every 30
 minutes; the ladder runs on start, after network changes and at most every 6 h. A network
-change cancels an in-flight run and discards the old lifetime. Observers come from the
-owner (normally home/configured relays, plus public Nu peers that run observers).
+change cancels an in-flight run and discards the old lifetime; runs without observers
+retry after 1 minute. Observers come from the owner. `nu relay --netcheck <ip:port>
+[--netcheck-alt-port <port>] [--netcheck-alt-ip <ip>]` serves them (literal IPs, one set
+per family; not yet a `[relay]` config key). A public-mode daemon profiles against its
+connected configured relays that serve `/nu/netcheck/1`, registers `Monitor.Hook` at the
+`RestartProbing` stage, serves `/nu/natprofile/1` and exposes `Swarm.NATProfile()` for
+status/`nu doctor`; private/isolated mode starts none of this. Public Nu peers running
+observers and disco's use of remote profiles are not wired yet.
 
 **Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
 

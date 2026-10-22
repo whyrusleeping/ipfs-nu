@@ -27,6 +27,9 @@ type Config struct {
 	// consumers must compare
 	// Seq, bound their storage, and must not treat addresses as dial authorization.
 	OnPeerRecord func(wire.PeerRecord)
+	// PingReplyDelay adds fixed latency to every ping reply (lab relays simulating
+	// distance on loopback; production leaves it zero).
+	PingReplyDelay time.Duration
 }
 type PeerInfo struct {
 	Message   IdentifyMessage

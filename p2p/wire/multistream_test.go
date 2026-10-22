@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/whyrusleeping/nu/core/varint"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -56,4 +59,51 @@ func FuzzMultistreamReader(f *testing.F) {
 		_, _ = wire.ReadProtocol(bytes.NewReader(b), wire.MaxProtocolBytes)
 		_, _ = wire.ReadMessage(bytes.NewReader(b), 8192)
 	})
+}
+
+// A blocked Write must not hold the lock that Read/Confirm need: full-duplex
+// streams (echo under flow control) deadlocked before this regression test.
+func TestLazySelectFullDuplexNoDeadlock(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	ls, err := wire.NewLazySelect(client, "/echo/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := func(p string) []byte { return append(varint.Append(nil, uint64(len(p)+1)), append([]byte(p), '\n')...) }
+	go func() {
+		if h, err := wire.ReadProtocol(server, wire.MaxProtocolBytes); err != nil || h != wire.MultistreamHeader {
+			return
+		}
+		if p, err := wire.ReadProtocol(server, wire.MaxProtocolBytes); err != nil || p != "/echo/1" {
+			return
+		}
+		// Respond before draining the pipelined payload, like a peer whose
+		// receive window is exhausted while it still sends.
+		_, _ = server.Write(append(frame(wire.MultistreamHeader), frame("/echo/1")...))
+		_, _ = server.Write([]byte{7})
+		buf := make([]byte, 4)
+		_, _ = io.ReadFull(server, buf)
+	}()
+	done := make(chan error, 1)
+	go func() { _, err := ls.Write([]byte{1, 2, 3, 4}); done <- err }()
+	one := make([]byte, 1)
+	readDone := make(chan error, 1)
+	go func() { _, err := ls.Read(one); readDone <- err }()
+	timer := time.NewTimer(2 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal("write", err)
+			}
+		case err := <-readDone:
+			if err != nil || one[0] != 7 {
+				t.Fatal("read", err, one)
+			}
+		case <-timer.C:
+			t.Fatal("full-duplex LazySelect deadlocked")
+		}
+	}
 }

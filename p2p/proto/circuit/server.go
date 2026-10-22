@@ -49,6 +49,11 @@ type Server struct {
 	pending      chan struct{}
 	wg           sync.WaitGroup
 	closeOnce    sync.Once
+	// Nu datagram relay extension state (datagram_server.go), guarded by mu.
+	pairs      map[[2]wire.PeerID]int
+	legs       map[*relayLeg]struct{}
+	legsByPeer map[wire.PeerID]int
+	channels   map[*host.Conn]*channelAlloc
 }
 
 func NewServer(h *host.Host, key *wire.NodeKey, cfg ServerConfig) (*Server, error) {
@@ -138,6 +143,11 @@ func NewServer(h *host.Host, key *wire.NodeKey, cfg ServerConfig) (*Server, erro
 		cancel()
 		return nil, err
 	}
+	if err = h.Handle(DatagramHopProtocol, cfg.MaxCircuits, s.handleDatagram); err != nil {
+		cancel()
+		h.RemoveHandler(HopProtocol)
+		return nil, err
+	}
 	return s, nil
 }
 func (s *Server) begin() bool {
@@ -150,7 +160,14 @@ func (s *Server) begin() bool {
 	return true
 }
 func (s *Server) Close() error {
-	s.closeOnce.Do(func() { s.mu.Lock(); s.cancel(); s.mu.Unlock(); s.host.RemoveHandler(HopProtocol); s.wg.Wait() })
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.cancel()
+		s.mu.Unlock()
+		s.host.RemoveHandler(HopProtocol)
+		s.host.RemoveHandler(DatagramHopProtocol)
+		s.wg.Wait()
+	})
 	return nil
 }
 func (s *Server) pruneLocked() {
@@ -365,6 +382,8 @@ func (s *Server) connect(in *host.Stream, target wire.PeerID, releasePending fun
 	cancel()
 	_ = in.SetDeadline(time.Time{})
 	_ = out.SetDeadline(time.Time{})
+	s.pairOpened(source, target)
+	defer s.pairClosed(source, target)
 	bridge(s.ctx, in, out, limit)
 }
 

@@ -34,6 +34,7 @@ import (
 	"github.com/whyrusleeping/nu/p2p/magicsock"
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	p2pproto "github.com/whyrusleeping/nu/p2p/proto"
+	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
 	"github.com/whyrusleeping/nu/store"
@@ -86,6 +87,10 @@ type Config struct {
 	// NAT overrides the profile for status/doctor. Nil uses the built-in netcheck
 	// monitor, falling back to identify observations until a report is available.
 	NAT NATProfiler
+	// PeerRelayAllow turns this public node into a bounded circuit relay (with the
+	// datagram extension) for exactly these peers: an owner's devices or an
+	// allow-list. Empty disables peer relaying; private/isolated modes never relay.
+	PeerRelayAllow []wire.PeerID
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -105,6 +110,7 @@ type Swarm struct {
 	connectivity *connectivity
 	dht          *dht
 	metrics      *netMetrics
+	peerRelay    *circuit.Server // relay_optimizer.go; nil unless PeerRelayAllow
 }
 
 // Start binds the host and starts the services. The returned Swarm is independent of
@@ -193,6 +199,9 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err := s.startConnectivity(bg, socket); err != nil {
 		return nil, err
 	}
+	if err := s.startPeerRelay(cfg.Key); err != nil {
+		return nil, err
+	}
 	// One route may need independent UDP, WSS and inner-QUIC setup budgets.
 	s.sessions, err = host.NewSessions(s.host, host.SessionConfig{Lookup: s.lookup, Cache: s.cache, Dial: s.connectivity.dial, DialTimeout: 6 * time.Second, ConnectTimeout: 8 * time.Second, Private: cfg.Private, Peers: cfg.Peers})
 	if err != nil {
@@ -230,6 +239,9 @@ func (s *Swarm) Close() error {
 		}
 		if s.connectivity != nil {
 			s.connectivity.close()
+		}
+		if s.peerRelay != nil {
+			_ = s.peerRelay.Close()
 		}
 		if s.identify != nil {
 			_ = s.identify.Close()

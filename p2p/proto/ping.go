@@ -52,6 +52,9 @@ func (s *Service) pingHandler(stream *host.Stream) {
 			}
 			return
 		}
+		if s.config.PingReplyDelay > 0 {
+			time.Sleep(s.config.PingReplyDelay)
+		}
 		if _, err := stream.Write(payload[:]); err != nil {
 			stream.Reset()
 			return

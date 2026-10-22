@@ -102,6 +102,9 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 				row = previous
 			}
 		}
+		c.mu.Lock()
+		row.RelayMode, row.RelayChoice = p.datagram, p.relayChoice
+		c.mu.Unlock()
 		select {
 		case p.gate <- struct{}{}:
 			if p.relay != "" {

@@ -24,6 +24,7 @@ func (c *Conn) QUICConfigForPeer(addr net.Addr, base *quic.Config) *quic.Config 
 	cfg := base.Clone()
 	cfg.InitialPacketSize = PacketSize
 	cfg.DisablePathMTUDiscovery = true
+	cfg.EnableDatagrams = false // inner connections never carry RFC 9221; only outer relay legs do (0019)
 	old := base.Tracer
 	cfg.Tracer = func(ctx context.Context, client bool, initial quic.ConnectionID) qlogwriter.Trace {
 		c.mu.Lock()

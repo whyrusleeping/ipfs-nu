@@ -53,6 +53,10 @@ type pathPeer struct {
 	lastError     string
 	lastConnected time.Time
 	setupTime     time.Duration // last successful raw-circuit + inner TLS setup span
+	// 0019 relay optimization, guarded by connectivity.mu (relay_optimizer.go).
+	datagram    string // "", "stream", "datagram" or "stream: <last upgrade error>"
+	relayChoice string // last pair-aware choice or error
+	optimizing  bool
 }
 
 // sharedHost binds all sockets before Host starts, preserving its ownership-on-
@@ -121,7 +125,7 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	if err := c.initNetwork(); err != nil {
 		return err
 	}
-	c.client, err = circuit.NewClient(s.host, circuit.ClientConfig{})
+	c.client, err = circuit.NewClient(s.host, circuit.ClientConfig{AcceptDatagram: c.acceptDatagramPolicy})
 	if err != nil {
 		return err
 	}
@@ -132,7 +136,11 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	c.mu.Lock()
 	c.homes = homes
 	c.mu.Unlock()
+	if err := homerelay.ServeTable(s.host, homes.Table); err != nil {
+		return err
+	}
 	c.spawn(c.accept)
+	c.spawn(c.acceptDatagrams)
 	c.spawn(c.prune)
 	return c.runNetwork()
 }
@@ -324,6 +332,8 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 			if err == nil {
 				p.relay = rid
 				c.watch(id, p, p.leg)
+				leg := p.leg
+				c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
 			}
 		}
 		var conn *host.Conn
@@ -387,6 +397,11 @@ func (c *connectivity) inner(ctx context.Context, id wire.PeerID) (*host.Conn, e
 				defer cancel()
 				c.network.open(setup, conn)
 			})
+		}
+		if err == nil {
+			if p, perr := c.peer(id); perr == nil {
+				c.spawn(func() { c.optimizeRelays(id, p) })
+			}
 		}
 		return conn, err
 	}
@@ -458,6 +473,7 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	}
 	p.leg = leg
 	p.relay = circ.Relay
+	c.setDatagram(p, "stream") // the dialer upgrades; relay offers arrive via acceptDatagrams
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
 		p.lastError = err.Error()

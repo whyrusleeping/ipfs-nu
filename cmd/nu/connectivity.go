@@ -38,7 +38,11 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 			fmt.Fprintf(w, " %s", p.Direct)
 		}
 		if p.Relay != "" {
-			fmt.Fprintf(w, " via %s (warm=%t)", p.Relay, p.RelayWarm)
+			fmt.Fprintf(w, " via %s (warm=%t", p.Relay, p.RelayWarm)
+			if p.RelayMode != "" {
+				fmt.Fprintf(w, ", %s", p.RelayMode) // 0019: stream or datagram leg
+			}
+			fmt.Fprint(w, ")")
 		}
 		if p.LastError != "" {
 			fmt.Fprintf(w, "; %s", p.LastError)

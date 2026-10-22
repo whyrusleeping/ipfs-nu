@@ -132,19 +132,30 @@ func NewLazySelect(rw io.ReadWriter, p string) (*LazySelect, error) {
 	}
 	return &LazySelect{rw: rw, protocol: p}, nil
 }
+
+// Write never holds mu across the underlying (flow-controlled) write: a Read
+// on the same stream must be able to drain the peer while this side blocks,
+// otherwise full-duplex streams deadlock. Concurrent Writes are not supported.
 func (s *LazySelect) Write(b []byte) (int, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.err != nil {
-		return 0, s.err
+		err := s.err
+		s.mu.Unlock()
+		return 0, err
 	}
-	if !s.sent {
+	first := !s.sent
+	s.sent = true
+	s.mu.Unlock()
+	if first {
 		all := append(protocolFrame(MultistreamHeader), protocolFrame(s.protocol)...)
 		all = append(all, b...)
-		s.err = writeAll(s.rw, all)
-		s.sent = true
-		if s.err != nil {
-			return 0, s.err
+		if err := writeAll(s.rw, all); err != nil {
+			s.mu.Lock()
+			if s.err == nil {
+				s.err = err
+			}
+			s.mu.Unlock()
+			return 0, err
 		}
 		return len(b), nil
 	}

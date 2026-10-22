@@ -79,6 +79,16 @@ func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
 		}
 		out.ProbeAllowed[id] = append(out.ProbeAllowed[id], addr)
 	}
+	if len(in.PeerRelayAllow) > 64 {
+		return fmt.Errorf("swarm.peer_relay_allow: at most 64 peers")
+	}
+	for _, text := range in.PeerRelayAllow {
+		id, err := wire.ParsePeerID(text)
+		if err != nil {
+			return fmt.Errorf("swarm.peer_relay_allow: %w", err)
+		}
+		out.PeerRelayAllow = append(out.PeerRelayAllow, id)
+	}
 	if in.PortmapGateway != "" {
 		gateway, err := netip.ParseAddr(in.PortmapGateway)
 		if err != nil || gateway.IsUnspecified() || gateway.IsMulticast() {

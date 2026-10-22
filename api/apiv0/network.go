@@ -37,6 +37,8 @@ type PeerPathStatus struct {
 	Relay         string    `json:"relay,omitempty"`
 	Direct        string    `json:"direct,omitempty"` // proven physical endpoint, never virtual
 	RelayWarm     bool      `json:"relay_warm"`
+	RelayMode     string    `json:"relay_mode,omitempty"`   // stream, datagram, or "stream: <upgrade error>" (0019)
+	RelayChoice   string    `json:"relay_choice,omitempty"` // pair-aware best relay and combined RTT, or error
 	LastConnected time.Time `json:"last_connected"`
 	LastError     string    `json:"last_error,omitempty"`
 	// Probe state of the Nu-path session (zero without one): candidates the peer

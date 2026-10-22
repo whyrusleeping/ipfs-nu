@@ -1,7 +1,7 @@
 ---
 id: "0080"
 title: Remove the TCP/WSS + Noise + yamux stack; libp2p interop is QUIC only
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

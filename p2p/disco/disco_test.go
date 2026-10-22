@@ -115,6 +115,9 @@ func TestInnerUpgradeFallbackRecovery(t *testing.T) {
 	})
 	status, _ := a.disco.Status(b.host.ID())
 	t.Logf("relay -> direct in %v", status.TimeToDirect)
+	if status.HardAttempts != 0 || status.HardSent != 0 {
+		t.Fatal("unnegotiated v1 peer received hard-NAT traffic")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	stream, err := a.host.OpenStream(ctx, b.host.ID(), "/disco-test/1")

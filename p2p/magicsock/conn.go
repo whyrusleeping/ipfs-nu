@@ -36,7 +36,9 @@ type Peer struct {
 	addr     netip.AddrPort
 	direct   map[netip.AddrPort]bool
 	selected netip.AddrPort
-	relay    *Relay
+	// auxiliary is borrowed from the path owner, which reads/closes it.
+	auxiliary *net.UDPConn
+	relay     *Relay
 }
 type cidRoute struct {
 	peer  *Peer
@@ -219,6 +221,7 @@ func (c *Conn) UseDirect(id wire.PeerID, a netip.AddrPort) error {
 		return ErrNoPath
 	}
 	p.selected = a
+	p.auxiliary = nil
 	return nil
 }
 func (c *Conn) UseRelay(id wire.PeerID) error {

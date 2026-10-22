@@ -83,7 +83,7 @@ func (c *Conn) WriteMsgUDP(b, oob []byte, a *net.UDPAddr) (int, int, error) {
 		}
 		return n, nn, err
 	}
-	direct, relay := p.selected, p.relay
+	direct, relay, auxiliary := p.selected, p.relay, p.auxiliary
 	c.mu.Unlock()
 	filtered, segment, err := innerOOB(oob)
 	if err != nil {
@@ -96,6 +96,9 @@ func (c *Conn) WriteMsgUDP(b, oob []byte, a *net.UDPAddr) (int, int, error) {
 		return 0, 0, syscall.EMSGSIZE
 	}
 	if direct.IsValid() {
+		if auxiliary != nil {
+			return c.writeAuxiliary(auxiliary, b, direct, segment, len(oob))
+		}
 		n, _, err := c.udp.WriteMsgUDP(b, filtered, net.UDPAddrFromAddrPort(direct))
 		if err == nil {
 			c.directSent.Add(uint64((len(b) + segment - 1) / segment))

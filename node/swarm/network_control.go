@@ -60,7 +60,7 @@ func (c *connectivity) initNetwork() error {
 		}
 	}
 	var err error
-	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize, Observe: c.observe})
+	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize, Observe: c.observe, Hard: c.s.hardNATConfig()})
 	if err != nil {
 		return err
 	}

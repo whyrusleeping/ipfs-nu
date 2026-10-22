@@ -15,6 +15,10 @@ import (
 )
 
 func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
+	if in.HardNAT != "" && in.HardNAT != "auto" && in.HardNAT != "off" {
+		return fmt.Errorf("swarm.hard_nat: expected auto or off, got %q", in.HardNAT)
+	}
+	out.HardNAT = in.HardNAT
 	switch in.Mode {
 	case "", "public":
 	case "private":

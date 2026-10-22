@@ -86,6 +86,8 @@ type Config struct {
 	// NAT overrides the profile for status/doctor. Nil uses the built-in netcheck
 	// monitor, falling back to identify observations until a report is available.
 	NAT NATProfiler
+	// HardNAT is auto (default) or off; only consenting Nu path sessions use it.
+	HardNAT string
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -110,6 +112,9 @@ type Swarm struct {
 // Start binds the host and starts the services. The returned Swarm is independent of
 // ctx once started; ctx bounds Start itself.
 func Start(ctx context.Context, cfg Config) (*Swarm, error) {
+	if cfg.HardNAT != "" && cfg.HardNAT != "auto" && cfg.HardNAT != "off" {
+		return nil, errors.New("swarm.hard_nat: expected auto or off")
+	}
 	if cfg.Key == nil {
 		return nil, errors.New("swarm: Key is required")
 	}

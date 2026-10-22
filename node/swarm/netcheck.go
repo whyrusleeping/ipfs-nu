@@ -18,7 +18,7 @@ import (
 // exposed through NATProfile for status/doctor.
 func (c *connectivity) startNetcheck(pipeline *netmon.Pipeline) error {
 	n := c.network
-	cfg := netcheck.MonitorConfig{Observers: c.netcheckObservers}
+	cfg := netcheck.MonitorConfig{Observers: c.netcheckObservers, OnChange: func(netcheck.Report) { n.disco.Update() }}
 	if n.mapper != nil {
 		cfg.PortMap = func(context.Context) netcheck.PortMaps {
 			m, ok := n.mapper.Candidate()

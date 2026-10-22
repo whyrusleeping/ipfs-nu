@@ -8,6 +8,96 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Cooperative hard-NAT rendezvous (0021)
+
+Local Linux/rootless results, 2026-10-22, baseline `678714c` plus this implementation,
+Go 1.26.2 / stock quic-go v0.64.1. **This is an optimizer experiment, not field NAT
+success, an independent security review, or a first-share release gate.** The D11
+[extension contract](networking.md#cooperative-hard-nat-extension-0021) specifies
+capability negotiation, consent, replay/destination checks and all hard bounds.
+
+`p2p/disco/hard_natlab_linux_test.go` measures real UDP/netfilter conntrack mappings
+allocated **at run time**, rather than consulting natlab's preallocated binding list.
+Sequential APDM uses an nft `numgen inc` → `inet_service` map (1024 unique ports before
+wrap); random APDM uses native `snat ... :1024-65535 fully-random`. APDM filtering is
+conntrack-only/APDF. EIM uses port-preserving SNAT, learned active-port DNAT and either
+EIF or an explicit learned endpoint filter. Each router has one inside host, so EIM
+port collisions are absent. These are controlled software NATs, not consumer routers.
+A bare integer `numgen` NAT port expression was byte-swapped by this kernel/nft pair;
+the typed sequential map fixes that fixture issue. Netcheck **measures** each peer's
+mapping/filtering/allocation from two observer IPs before starting path discovery;
+the test rejects mismatched classifications rather than trusting the requested NAT
+label. The primary socket's reflexive address is observed before magicsock takes its
+sole reader. The traversal algorithm never sees NAT rules, bindings or conntrack.
+
+Sequential cases interleave a fresh unrelated mapping before alternating allocation
+samples (measured delta **+1, jitter 1**) and continue background allocation traffic
+at **5 packets/s** during negotiation/search. Prediction therefore tolerates actual
+allocator interference, not just a perfect unchanging reserved port. The framed relay
+leg is a stable Unix-stream bridge, as in the existing disco tests: this isolates path
+optimization and does not measure public circuit reservation/reconnect or WAN RTT.
+Every case, including failed rendezvous, transfers and byte-verifies **64 KiB** on the
+same authenticated inner QUIC connection; successful fanout uses a retained winning
+auxiliary socket. This is not a bulk throughput or in-progress 10 GB migration test.
+
+Final matrix: three fresh topologies/identities per row; entire run **218.218 s**.
+Timings are from opening the path session, including the three-second cheap-method
+wait and paced consent, not from the first hard probe.
+
+| Pair (both APDM sides use APDF) | Both direct | Time / outcome |
+|---|---:|---|
+| Sequential APDM ↔ EIM/EIF | **3/3** | 4.028–4.037 s, measured jitter + background allocations |
+| Sequential APDM ↔ EIM/APDF | **3/3** | 4.185–4.208 s, same interference |
+| Random APDM ↔ EIM/EIF | **3/3** | 4.122–4.140 s |
+| Random APDM ↔ EIM/APDF | **3/3** | 4.726–5.791 s |
+| Sequential APDM ↔ sequential APDM | **0/3** | Attempt expires around 12.03 s; verified relay transfer remains usable |
+| Sequential APDM ↔ random APDM | **0/3** | Same timeout/relay outcome; all auxiliary sockets released |
+| Random APDM ↔ random APDM | **0/3, intentionally not attempted** | Zero hard probes/sockets; remains relayed |
+| IPS-like egress disco drop | **0/3, expected** | Eight auxiliary send errors cancel at 4.23–5.14 s; peer cancels, backoff recorded, all 256 temporary sockets released |
+
+The APDM↔APDM negatives are not waived successes: this bounded strategy does not solve
+these dynamic APDF combinations. Each changed destination allocates a different source
+port, defeating the other's predicted-tuple filter. More coordinated allocator/racing
+work is needed; relay remains the intended reliable fallback. Low-TTL priming was not
+implemented. IPv6-only hard NATs, varying external IPs, long-idle mappings, constrained
+MTU paths, public address ownership/abuse resistance and physical routers remain unproven.
+
+A separate final **32-trial** random APDM ↔ EIM/APDF campaign passed **31/32** in
+**214.555 s**, successful direct paths in 4.403–7.522 s. One full 256-mapping /
+1024-port miss timed out at 12.039 s, released all sockets and stayed relayed.
+The observed success rate is **96.875%**, with 95% Wilson interval **84.3%–99.4%**:
+this sample does **not** establish the conditional ≥98% hypothesis. An earlier
+same-budget iteration passed 32/32 (89.3%–100% interval); do not cherry-pick that
+iteration or pool protocol versions into a claimed guarantee. The final campaign
+used at most 256 temporary sockets, released all but one winner immediately, and
+sent 67–260 hard packets on the random side and 78–1024 on the EIM side (including
+challenges/pongs). The failed attempt sent exactly 256/1024. Statistical estimates
+assume suitable independent
+allocations, overlap, no filtering/IPS interference and sufficient pinhole lifetime;
+MACs or birthday arithmetic do not guarantee those conditions.
+
+Reproduce (Linux, unshare/user namespaces, ip/nft/nsenter; no Docker or root needed):
+
+```sh
+GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=30m
+NU_HARD_CASE=random-eim-apdf NU_HARD_TRIALS=32 GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=10m
+```
+
+Local raw logs: `/tmp/nu-hard-matrix-final3.log` SHA-256
+`6ffa86fdb254e11fb9dad77f2c165967ce2cc399287073bfd90b7f5b26d9c301`;
+`/tmp/nu-hard-random-final3.log` SHA-256
+`1d8f1026e452af35d0412931a1853a1380d9800252dd95f29e4dfdcc57efebc0`.
+These are reproducible local artifacts, not committed fixtures or remote CI evidence.
+Fast tests cover absent consent, wrong IP/low port/MAC/replay/attempt/local-socket,
+packet/socket bounds, persistent peer cooldown, auxiliary CID/source admission,
+partial capability-handshake fallback and `off`/private-mode policy. Targeted race
+tests and the existing EIM disco/address-change lab pass. Gofmt, vet, staticcheck,
+`go test ./...` and depguard pass with `GOMAXPROCS=16 GOFLAGS=-p=1`. Several attempts
+at 4/8 processors intermittently failed collection's `TestItemPush` range-resumption
+assertion, including runs without this lab. An unchanged-baseline comparison and
+focused current-code runs also passed; no collection edits or test weakening were
+made. The final complete check chain passed (log `/tmp/nu-hard-precommit-final-retry.log`).
+
 ## First magic preview: automated NAT-lab exit (0029, 2026-10-22)
 
 **Automated data/interop checks pass. The original network-change failure is now

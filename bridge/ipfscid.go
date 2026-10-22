@@ -6,9 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"strings"
-
 	"github.com/mr-tron/base58"
+	"strings"
 )
 
 const (
@@ -22,6 +21,44 @@ type IPFSCID struct {
 	Digest               [32]byte
 }
 
+func ParseIPFSBytes(b []byte) (IPFSCID, error) {
+	if len(b) == 34 && b[0] == 0x12 && b[1] == 32 {
+		var c IPFSCID
+		c.Version = 0
+		c.Codec = codecDagPB
+		c.Hash = hashSHA256
+		copy(c.Digest[:], b[2:])
+		return c, nil
+	}
+	v, n := binary.Uvarint(b)
+	if n <= 0 || v != 1 {
+		return IPFSCID{}, errors.New("ipfs cid: invalid binary CID version")
+	}
+	b = b[n:]
+	codec, n := binary.Uvarint(b)
+	if n <= 0 {
+		return IPFSCID{}, errors.New("ipfs cid: invalid binary codec")
+	}
+	b = b[n:]
+	h, n := binary.Uvarint(b)
+	if n <= 0 || h != hashSHA256 {
+		return IPFSCID{}, errors.New("ipfs cid: only sha2-256 is supported")
+	}
+	b = b[n:]
+	z, n := binary.Uvarint(b)
+	if n <= 0 || z != 32 || len(b[n:]) != 32 {
+		return IPFSCID{}, errors.New("ipfs cid: invalid binary digest")
+	}
+	if codec != codecRaw && codec != codecDagPB {
+		return IPFSCID{}, errors.New("ipfs cid: unsupported codec")
+	}
+	var c IPFSCID
+	c.Version = v
+	c.Codec = codec
+	c.Hash = h
+	copy(c.Digest[:], b[n:])
+	return c, nil
+}
 func ParseIPFSCID(s string) (IPFSCID, error) {
 	var c IPFSCID
 	if strings.HasPrefix(s, "Qm") {
@@ -29,11 +66,7 @@ func ParseIPFSCID(s string) (IPFSCID, error) {
 		if e != nil || len(b) != 34 || b[0] != 0x12 || b[1] != 32 {
 			return c, errors.New("ipfs cid: invalid CIDv0")
 		}
-		c.Version = 0
-		c.Codec = codecDagPB
-		c.Hash = hashSHA256
-		copy(c.Digest[:], b[2:])
-		return c, nil
+		return ParseIPFSBytes(b)
 	}
 	if !strings.HasPrefix(s, "b") {
 		return c, errors.New("ipfs cid: expected CIDv0 or base32 CIDv1")
@@ -43,33 +76,24 @@ func ParseIPFSCID(s string) (IPFSCID, error) {
 	if e != nil {
 		return c, fmt.Errorf("ipfs cid: %w", e)
 	}
-	v, n := binary.Uvarint(b)
-	if n <= 0 || v != 1 {
-		return c, errors.New("ipfs cid: invalid version")
+	c, e = ParseIPFSBytes(b)
+	if e != nil {
+		return c, e
 	}
-	b = b[n:]
-	codec, n := binary.Uvarint(b)
-	if n <= 0 {
-		return c, errors.New("ipfs cid: invalid codec")
+	if c.Version != 1 {
+		return c, errors.New("ipfs cid: invalid CIDv1")
 	}
-	b = b[n:]
-	h, n := binary.Uvarint(b)
-	if n <= 0 || h != hashSHA256 {
-		return c, errors.New("ipfs cid: only sha2-256 is supported")
-	}
-	b = b[n:]
-	z, n := binary.Uvarint(b)
-	if n <= 0 || z != 32 || len(b[n:]) != 32 {
-		return c, errors.New("ipfs cid: invalid digest")
-	}
-	if codec != codecRaw && codec != codecDagPB {
-		return c, errors.New("ipfs cid: unsupported codec")
-	}
-	c.Version = v
-	c.Codec = codec
-	c.Hash = h
-	copy(c.Digest[:], b[n:])
 	return c, nil
+}
+func (c IPFSCID) Bytes() []byte {
+	if c.Version == 0 {
+		return append([]byte{0x12, 32}, c.Digest[:]...)
+	}
+	b := appendVarint(nil, c.Version)
+	b = appendVarint(b, c.Codec)
+	b = appendVarint(b, c.Hash)
+	b = appendVarint(b, 32)
+	return append(b, c.Digest[:]...)
 }
 func (c IPFSCID) Verify(b []byte) error {
 	if c.Hash != hashSHA256 {

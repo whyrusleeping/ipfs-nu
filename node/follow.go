@@ -12,6 +12,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/follow"
 	"github.com/whyrusleeping/nu/names"
 	"github.com/whyrusleeping/nu/node/target"
 	"github.com/whyrusleeping/nu/store"
@@ -161,6 +162,7 @@ func (n *Local) Follow(ctx context.Context, req apiv0.FollowRequest) (*apiv0.Fol
 	}
 	d, _ := c.View().Dataset(ds)
 	n.applyResolution(ctx, scope, c, ds, d, res, deleted)
+	n.names.wake()
 	return n.followInfo(ctx, scope, c, ds), nil
 }
 
@@ -378,6 +380,7 @@ func (n *Local) Unfollow(ctx context.Context, key string) (*apiv0.Follow, error)
 	n.names.mu.Lock()
 	delete(n.names.follows, ds)
 	n.names.mu.Unlock()
+	n.names.wake()
 	return f, nil
 }
 
@@ -420,6 +423,9 @@ func (n *Local) FollowRefresh(ctx context.Context, req apiv0.FollowRefreshReques
 
 // refreshFollows re-resolves every follow (startup, poll backstop, on demand).
 func (n *Local) refreshFollows(ctx context.Context) {
+	n.names.mu.Lock()
+	n.names.polled = time.Now()
+	n.names.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, scope := range []string{ScopeLocal, ScopeCluster} {
 		if scope == ScopeLocal && !cluster.Exists(n.clusterDir("local")) {
@@ -443,15 +449,57 @@ func (n *Local) refreshFollows(ctx context.Context) {
 	wg.Wait()
 }
 
+// followedDIDs lists the DIDs of every follow (the Jetstream filter).
+func (n *Local) followedDIDs(ctx context.Context) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range n.followList(ctx) {
+		if !seen[f.DID] {
+			seen[f.DID] = true
+			out = append(out, f.DID)
+		}
+	}
+	return out
+}
+
+// Jetstream is the optional hint source (config follow.jetstream); the daemon sets it
+// before FollowLoop. Events only trigger verified refreshes of followed names.
+func (n *Local) SetJetstream(j *follow.Jetstream) {
+	j.OnEvent = func(did, name, rev string, deleted bool) {
+		for _, f := range n.followList(context.Background()) {
+			if f.DID == did && f.Name == name {
+				n.FollowRefresh(context.Background(), apiv0.FollowRefreshRequest{Dataset: f.Dataset})
+			}
+		}
+	}
+	n.names.mu.Lock()
+	n.names.jetstream = j
+	n.names.mu.Unlock()
+}
+
 // FollowLoop polls follows every FollowPoll (jittered) after an initial refresh, until
-// ctx ends. The daemon runs it beside Maintain.
+// ctx ends, keeping the Jetstream filter (when configured) at the followed DIDs. The
+// daemon runs it beside Maintain.
 func (n *Local) FollowLoop(ctx context.Context) {
+	kick := make(chan struct{}, 1)
+	n.names.mu.Lock()
+	js := n.names.jetstream
+	n.names.kick = kick
+	n.names.mu.Unlock()
+	if js != nil {
+		go js.Run(ctx)
+	}
 	n.refreshFollows(ctx)
 	for {
+		if js != nil {
+			js.Subscribe(n.followedDIDs(ctx))
+		}
 		d := FollowPoll + time.Duration(float64(FollowPoll)*0.1*float64(time.Now().UnixNano()%7)/7)
 		select {
 		case <-ctx.Done():
 			return
+		case <-kick:
+			continue
 		case <-time.After(d):
 		}
 		n.refreshFollows(ctx)

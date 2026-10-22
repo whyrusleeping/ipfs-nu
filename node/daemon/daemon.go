@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/api"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/atproto"
+	"github.com/whyrusleeping/nu/follow"
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
@@ -201,7 +202,18 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		defer close(d.maintainDone)
 		n.Maintain(d.maintainCtx, log.Info)
 	}()
-	// Follows (0045): re-resolve on startup, then the poll backstop.
+	// Follows (0045): re-resolve on startup, then the poll backstop; optionally the
+	// Jetstream hint source restricted to the followed DIDs.
+	if fc := cfg.Follow; fc != nil {
+		if fc.Poll != "" {
+			if p, err := time.ParseDuration(fc.Poll); err == nil && p > 0 {
+				node.FollowPoll = p
+			}
+		}
+		if fc.Jetstream != "" {
+			n.SetJetstream(&follow.Jetstream{URL: fc.Jetstream})
+		}
+	}
 	d.followDone = make(chan struct{})
 	go func() {
 		defer close(d.followDone)

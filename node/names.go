@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/atproto"
 	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/follow"
 	"github.com/whyrusleeping/nu/names"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/node/target"
@@ -67,6 +68,23 @@ type namesState struct {
 	sessions *atproto.Sessions
 	// follows is per-dataset follow bookkeeping (refresh times, errors, endings).
 	follows map[string]*followState
+	// jetstream is the optional hint source; polled is the last full refresh.
+	jetstream *follow.Jetstream
+	polled    time.Time
+	// kick wakes FollowLoop after a follow/unfollow (filter update).
+	kick chan struct{}
+}
+
+func (ns *namesState) wake() {
+	ns.mu.Lock()
+	ch := ns.kick
+	ns.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (n *Local) resolver() (*names.Resolver, error) {

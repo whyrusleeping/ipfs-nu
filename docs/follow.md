@@ -287,10 +287,15 @@ lists the last target as an orphan pin; `nu unfollow` deletes the dataset record
 releases that follow's pins only. `max_size` is enforced against the record's size claim
 before a head is written (the follow pauses with `quota`). `publish --wait-seed <peer>`
 needs a cluster dataset following the name (created on demand with `--all`) and runs the
-W2 `held` wait on it. Not built: scoped (`--path`) and lazy follows (refused with
-`not_supported`), DID-wide follows, `/nu/name/1` peer push, Jetstream hints, the dataset
-swarm key, transfer budgets, and size verification during fetch (the claim is trusted for
-the quota check only).
+W2 `held` wait on it. Config `[follow] jetstream = "wss://…/subscribe"` (off by default) adds the Jetstream
+hint source: the daemon subscribes to exactly the followed DIDs and
+`io.ipfs.nu.name`, re-subscribes when the follow set changes, and each event for a
+followed name triggers the same verified PDS re-resolution (`node.TestFollowJetstreamHint`);
+nothing from the stream is stored. `[follow] poll` sets the backstop. Not built: scoped
+(`--path`) and lazy follows (refused with `not_supported`), DID-wide follows,
+`/nu/name/1` peer push, the random pre-PDS delay, the dataset swarm key, transfer
+budgets, and size verification during fetch (the claim is trusted for the quota check
+only).
 
 ## Details still to specify
 

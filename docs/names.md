@@ -141,8 +141,9 @@ claiming retained proofs survive account/key changes. See [operations](operation
 
 *Implemented (0045):* followers re-resolve on startup, on `nu follow refresh`, on
 every poll (`node.FollowPoll`, 1 h jittered) and, for the publisher's own daemon, at
-`publish` time. Peer push (`/nu/name/1`) and the Jetstream hint source are not built yet;
-when they are, they stay hints that trigger the same verified refresh.
+`publish` time. The Jetstream hint source is opt-in config (`[follow] jetstream`) restricted to the
+followed DIDs; peer push (`/nu/name/1`) is not built yet. Both are hints that trigger
+the same verified refresh.
 
 Jetstream subscriptions (`wantedDids`, `wantedCollections`) trigger a re-fetch of current
 state from the PDS **with proof**. The full signed firehose is an alternative. Notifications

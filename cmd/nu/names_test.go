@@ -59,7 +59,9 @@ func TestNamesCLI(t *testing.T) {
 	// Login: the CLI blocks until the browser authorizes.
 	var out, errb lockedBuffer
 	done := make(chan int, 1)
-	go func() { done <- run([]string{"--nu-path", r.Root(), "login", "--no-browser", atfix.PubHandle}, &out, &errb) }()
+	go func() {
+		done <- run([]string{"--nu-path", r.Root(), "login", "--no-browser", atfix.PubHandle}, &out, &errb)
+	}()
 	var url string
 	for i := 0; i < 200 && url == ""; i++ {
 		for _, line := range strings.Split(errb.String(), "\n") {

@@ -317,7 +317,9 @@ var cmdNode = &command{
 			if err != nil {
 				return err
 			}
-			return e.emit(r, func(w io.Writer) { fmt.Fprintf(w, "registered %s as %q (%s)\n  %s\n", r.Peer, r.Label, strings.Join(r.Roles, ","), r.URI) })
+			return e.emit(r, func(w io.Writer) {
+				fmt.Fprintf(w, "registered %s as %q (%s)\n  %s\n", r.Peer, r.Label, strings.Join(r.Roles, ","), r.URI)
+			})
 		},
 	}},
 }

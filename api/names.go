@@ -35,7 +35,7 @@ func (s *Server) namesHandlers() map[Route]handlerFunc {
 		{"POST", "/names"}:                     s.publish,
 		{"GET", "/names"}:                      s.names,
 		{"DELETE", "/names/{name}"}:            s.unpublish,
-		{"GET", "/resolve"}:              s.resolveName,
+		{"GET", "/resolve"}:                    s.resolveName,
 		{"POST", "/node/register"}:             s.nodeRegister,
 		{"GET", "/node/devices"}:               s.devices,
 		{"POST", "/follows"}:                   s.follow,

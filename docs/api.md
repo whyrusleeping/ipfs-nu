@@ -125,6 +125,33 @@ virtual routing keys. `network_change_error` reports failed recovery stages;
 prove an active transfer survived; Nu-path recovery is separately bounded by QUIC's
 idle timeout. Status/doctor render these same diagnostics.
 
+Doctor material (0024) rides on the same snapshot: `udp` (outbound `ok`/`blocked`/
+`unknown`, judged by whether any configured relay answers over UDP), `nat` (a compact
+RFC 4787 profile; `source` says how it was obtained, `observations` being the basic
+estimate from two observers' reflexive addresses), `port_mapping` (lease protocol,
+external endpoint, expiry or last error), `ipv6` (global addresses and whether the
+swarm listens on one), per-relay `role`/`reserved`/`held_since`, and per-peer probe
+counters (`candidates`, `validated`, `probes_*`, `time_to_direct_ms`), a plain-language
+`why` when the session is not direct, and a bounded oldest-first `history` of path
+events. `nu doctor` renders them as checks with actions.
+
+## Metrics
+
+`GET /metrics` on the API listener (outside the `/api/v0` prefix, same loopback Host
+rules) serves Prometheus text (`text/plain; version=0.0.4`). Names carry the `nu_`
+prefix and base units. Store: `nu_store_objects`, `nu_store_bytes`, `nu_store_pins`,
+`nu_store_limit_bytes`, `nu_store_free_bytes`, `nu_store_pressure`. Network:
+`nu_net_peers_connected`, `nu_net_reachability{state}`, `nu_net_paths{path}`,
+`nu_net_relay_reserved{relay,role}`, `nu_net_relay_reservation_uptime_seconds`,
+`nu_net_relay_rtt_seconds`, `nu_net_bytes_total{path=direct|relay|outer,direction}`
+(inner packets on a proven direct path, inner packets carried by a relay leg, and all
+other physical UDP including the relay carrier and wire-compatible QUIC),
+`nu_net_packets_dropped_total`, `nu_net_path_switches_total{to=direct|relay}`,
+`nu_net_probes_total{outcome=sent|received|rejected}`, histograms
+`nu_net_time_to_direct_seconds` and `nu_net_session_setup_seconds`; fetch:
+`nu_fetch_first_byte_seconds` (fetch start to first verified byte) and
+`nu_fetch_total{result}`. Collection aggregates stay at `/api/v0/cluster/metrics`.
+
 ## Routes (v0)
 
 ```text

@@ -751,6 +751,15 @@ beats its idle timeout and meets D11's packet budget; standard sessions, and exp
 connections, resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
 than importing the full module.
 
+Transient kernel send failures that accompany a link/route/address change
+(`ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EADDRNOTAVAIL`, …) are dropped and counted
+by the shared socket rather than surfaced: stock quic-go closes a connection on any
+non-size send error, which would turn a Wi-Fi→hotspot switch into a lost session.
+After the pipeline's address push, physical peers (relays) are re-identified so the
+reflexive candidate follows the new path, and a peer that receives a new candidate
+generation re-probes its selected direct path immediately instead of at the next
+heartbeat.
+
 `p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
 before returning. Events are bounded, coalesced invalidations: consumers re-read OS
 state rather than treating notifications as complete snapshots. Overflow requests a
@@ -914,9 +923,15 @@ No multicast-capable interface is a reported startup error, not silent enablemen
   and Nu↔rust-libp2p, with expected failures for unsupported QUIC-preview paths, including UDP blocking, and
   successful declared HTTPS-compatible Nu fallback paths at the production reach gate.
 - `nu doctor` reports UDP reachability, NAT profile, relay latency/reservations, mappings,
-  IPv6 and per-session path history.
+  IPv6 and per-session path history. The snapshot behind it is `network.connectivity`
+  in `GET /status` ([API](api.md#connectivity-status)); the NAT profile comes from the
+  swarm's `NATProfiler` hook, or, absent one, from the observation-based estimate
+  (two observers' reflexive addresses agreeing ⇒ endpoint-independent). Each session
+  carries a plain-language `why` for a relayed path and a bounded history (circuit
+  setup, candidates offered/admitted, direct selection, revocation, leg loss).
 - Metrics: direct/relayed bytes, time to first byte, time to direct, path switches and
-  reservation uptime. Performance targets: first byte ≤ relay RTT + handshake, successful
+  reservation uptime, served as Prometheus text at `GET /metrics` on the loopback API
+  listener ([API](api.md#metrics)). Performance targets: first byte ≤ relay RTT + handshake, successful
   Nu↔Nu connections wherever UDP reaches an admitted relay, and direct rates comparable to
   iroh/Tailscale under the same NAT matrix. Validate setup-cost assumptions in measurements.
 - Public defaults: operated/admitted relays/lookup, mDNS and port mapping enabled, DHT
@@ -929,6 +944,10 @@ No multicast-capable interface is a reported startup error, not silent enablemen
 The opt-in Linux harness is [`p2p/natlab`](../p2p/natlab/README.md), run with
 `go test -tags natlab ./p2p/natlab`. It isolates even root callers, uses rootless
 user+network namespaces when available, and runs only bounded v0 smoke scenarios.
+The `natlab` workflow runs the whole tagged suite (`p2p/natlab`, `p2p/portmap`,
+`p2p/netmon`, `p2p/disco`, `node/swarm` real daemons) on pull requests touching
+networking paths; it is the Phase 0b exit gate (0024), with results in
+[validation](validation.md#phase-0b-exit-nu-doctor-metrics-nat-lab-gate-0024-2026-10-22).
 Explicit endpoint fixtures model RFC mapping/filtering classes; ordinary Linux
 masquerade is not treated as proof of any mapping class. The harness README lists
 unvalidated/deferred topology and allocator cases; synthetic evidence is indexed

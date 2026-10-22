@@ -160,23 +160,35 @@ func (n *networkControl) open(ctx context.Context, conn *host.Conn) {
 	if !n.c.s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
 		return
 	}
+	_, active := n.disco.Status(conn.PeerID())
 	n.mu.Lock()
 	for old := range n.opened {
 		if old.Context().Err() != nil {
 			delete(n.opened, old)
 		}
 	}
-	if n.opened[conn] {
+	if pending, known := n.opened[conn]; active || known && pending {
 		n.mu.Unlock()
 		return
 	}
-	n.opened[conn] = true
+	n.opened[conn] = true // pending; false below means a completed control setup
 	n.mu.Unlock()
 	err := n.disco.Open(ctx, conn)
+	n.mu.Lock()
 	if err != nil {
-		n.mu.Lock()
 		delete(n.opened, conn)
-		n.mu.Unlock()
+	} else {
+		n.opened[conn] = false
+	}
+	n.mu.Unlock()
+}
+
+func (n *networkControl) ensureControl() {
+	for _, conn := range n.c.s.host.Connections() {
+		if n.c.s.ID() >= conn.PeerID() || !n.c.s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
+			continue
+		}
+		n.c.spawn(func() { ctx, cancel := context.WithTimeout(n.c.ctx, 5*time.Second); defer cancel(); n.open(ctx, conn) })
 	}
 }
 
@@ -220,7 +232,11 @@ func (c *connectivity) runNetwork() error {
 			}
 			return errors.Join(errs...)
 		},
-		n.disco.RestartProbing,
+		func(ctx context.Context, e netmon.Event) error {
+			err := n.disco.RestartProbing(ctx, e)
+			n.ensureControl()
+			return err
+		},
 	}
 	for stage, hook := range hooks {
 		if _, err := pipeline.Register(netmon.Stage(stage), hook); err != nil {

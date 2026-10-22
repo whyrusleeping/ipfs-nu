@@ -340,8 +340,8 @@ and `peers = ["/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>", ...]` for explicit priv
 members. Public is the default mode but there is **no default public relay fleet**;
 operators must configure available admitted relays. A link may introduce an exact
 known relay endpoint; a remote signed record cannot independently introduce one.
-Private/isolated mode disables relays, AutoNAT, disco and public lookup sources.
-Private mode also disables mDNS and authorizes only explicit peers. Private/isolated
+Private/isolated mode disables relays, AutoNAT, disco, mDNS and public lookup sources.
+Private mode additionally authorizes only explicit peers. Private/isolated
 cluster membership applies its dynamic gate and disables public connectivity both
 at startup and on runtime init/join; re-enabling requires a restart.
 
@@ -465,9 +465,10 @@ non-QUIC demux. There must not be a competing raw UDP reader.
 ### Path v1 control and probe security contract (0017)
 
 `/nu/path/1` is one long-lived bidirectional application stream on an already
-TLS-authenticated **inner virtual-address** connection. Only the qpath initiator opens
-it; reject duplicate streams for a peer, ordinary physical connections and non-admitted
-virtual peers. Losing this stream revokes its probe keys, pending challenges and direct
+TLS-authenticated **inner virtual-address** connection. The owner designates one
+initiator; `node/swarm` uses the lower inner TLS PeerID (also its inner-QUIC/recovery
+initiator), irrespective of which endpoint proposed the raw circuit. Reject duplicate
+streams for a peer, ordinary physical connections and non-admitted virtual peers. Losing this stream revokes its probe keys, pending challenges and direct
 paths; fall back to the relay. It is not a public UDP discovery service.
 
 All integers below are unsigned big-endian. Each control frame is `uint16 N` followed

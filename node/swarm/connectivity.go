@@ -49,6 +49,7 @@ type pathPeer struct {
 	relay         wire.PeerID // guarded by gate; diagnostics, not identity
 	lastError     string
 	lastConnected time.Time
+	setupTime     time.Duration // last successful raw-circuit + inner TLS setup span
 }
 
 // sharedHost binds all sockets before Host starts, preserving its ownership-on-
@@ -316,6 +317,8 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 			}
 		}
 		err = nil
+		started := time.Now()
+		preparing := p.leg == nil
 		attempt, stop := context.WithTimeout(ctx, 750*time.Millisecond)
 		if p.leg == nil {
 			if _, err = c.s.host.Dial(attempt, relay); err == nil {
@@ -336,6 +339,9 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 		} else {
 			p.lastError = ""
 			p.lastConnected = time.Now()
+			if preparing {
+				p.setupTime = time.Since(started)
+			}
 		}
 		p.unlock()
 		if err == nil {
@@ -372,7 +378,13 @@ func (c *connectivity) inner(ctx context.Context, id wire.PeerID) (*host.Conn, e
 		}
 		conn, err := c.s.host.Dial(ctx, addr)
 		if err == nil && c.network != nil {
-			c.network.open(ctx, conn)
+			// Control negotiation/probing is background work; the first data stream
+			// must not pay an extra disco round trip on the relay path.
+			c.spawn(func() {
+				setup, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+				defer cancel()
+				c.network.open(setup, conn)
+			})
 		}
 		return conn, err
 	}

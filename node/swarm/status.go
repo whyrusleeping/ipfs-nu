@@ -66,7 +66,12 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 	// Include ordinary wire-compatible peers and outer relay connections too.
 	paths := map[wire.PeerID]apiv0.PeerPathStatus{}
 	for _, conn := range s.host.Connections() {
-		paths[conn.PeerID()] = apiv0.PeerPathStatus{PeerID: conn.PeerID().Base36(), Path: "direct-quic", Direct: conn.RemoteAddr().String()}
+		row := apiv0.PeerPathStatus{PeerID: conn.PeerID().Base36(), Path: "recovering"}
+		if !s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
+			row.Path = "direct-quic"
+			row.Direct = conn.RemoteAddr().String()
+		}
+		paths[conn.PeerID()] = row
 	}
 	for id, p := range peers {
 		row := apiv0.PeerPathStatus{PeerID: id.Base36(), Path: "offline"}

@@ -13,7 +13,7 @@ import (
 )
 
 func TestSessionTransportColdRelayAndJoinedLoser(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
 	defer cancel()
 	a, _ := sessionHost(t, nil, "")
 	b, _ := sessionHost(t, nil, "")

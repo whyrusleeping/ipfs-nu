@@ -159,7 +159,7 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	} else {
 		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
 	}
-	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private, MDNS: lookup.MDNSConfig{
+	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private || cfg.Isolated, MDNS: lookup.MDNSConfig{
 		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces}}
 	s.lookup, err = lookup.New(bg, lcfg)
 	if err != nil && cfg.MDNS {

@@ -33,6 +33,9 @@ func (c *connectivity) prune() {
 				}
 			}
 			c.mu.Unlock()
+			if c.network != nil {
+				c.network.ensureControl()
+			}
 		}
 	}
 }

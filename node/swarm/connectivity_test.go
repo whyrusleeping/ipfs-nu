@@ -61,18 +61,17 @@ func TestSwarmCircuitAssembly(t *testing.T) {
 	ka, kb := swarmKey(t), swarmKey(t)
 	r := relayFor(t, ka.Public().PeerID(), kb.Public().PeerID())
 	a, b := testSwarm(t, ka, relayAddr(t, r)), testSwarm(t, kb, relayAddr(t, r))
-	if err := a.Connect(ctx, b.ID(), circuitHints(t, ctx, b, 1)); err != nil {
+	hints := circuitHints(t, ctx, b, 1)
+	if err := b.Host().Handle("/test/echo/1", 1, func(s *host.Stream) { io.Copy(s, s) }); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err := a.Connect(ctx, b.ID(), hints); err != nil {
 		t.Fatal(err)
 	}
 	conn, ok := a.Host().Connection(b.ID())
 	if !ok || !a.Host().IsLocalOnlyAddress(conn.RemoteAddr()) {
 		t.Fatal("not an authenticated inner connection")
-	}
-	if _, err := a.Ping(ctx, b.ID()); err != nil {
-		t.Fatal(err)
-	}
-	if err := b.Host().Handle("/test/echo/1", 1, func(s *host.Stream) { io.Copy(s, s) }); err != nil {
-		t.Fatal(err)
 	}
 	stream, err := a.Sessions().OpenStream(ctx, b.ID(), "/test/echo/1")
 	if err != nil {
@@ -86,6 +85,31 @@ func TestSwarmCircuitAssembly(t *testing.T) {
 	buf := make([]byte, 5)
 	if _, err = io.ReadFull(stream, buf); err != nil || string(buf) != "hello" {
 		t.Fatal(string(buf), err)
+	}
+	firstEcho := time.Since(started)
+	rtt, err := a.Ping(ctx, b.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := a.connectivity.peer(b.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.lock(ctx); err != nil {
+		t.Fatal(err)
+	}
+	setup := peer.setupTime
+	peer.unlock()
+	// Allow scheduler/test-instrumentation noise, not a route stagger or a
+	// foreground disco negotiation. The five-byte echo fits in one datagram.
+	if setup <= 0 || firstEcho > setup+rtt+50*time.Millisecond {
+		t.Fatalf("first byte delayed beyond setup + relay RTT: first=%v setup=%v rtt=%v", firstEcho, setup, rtt)
+	}
+	t.Logf("cold relay first echo=%v; measured circuit/inner handshake=%v; relay RTT=%v (50ms scheduler allowance)", firstEcho, setup, rtt)
+	for _, path := range a.ConnectivityStatus().Paths {
+		if path.PeerID == b.ID().Base36() && (path.Path != "relay" || path.Direct != "") {
+			t.Fatal("status published a virtual key as a physical path", path)
+		}
 	}
 	for _, addr := range a.Addrs() {
 		if a.Host().IsLocalOnlyMultiaddr(addr) {

@@ -8,6 +8,60 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Real daemon relay sessions and failover (0020, 2026-10-22)
+
+Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport
+and signed identify address seams. Baseline `ee06f0c` plus the daemon NAT-lab test
+and circuit share-link parser fix; stock quic-go v0.64.1, Go 1.26.0, rootless Linux
+user/network namespaces. These are bounded fixtures, **not field success rates**.
+
+Reproduce from the worktree root:
+
+```
+go test -race ./node/swarm ./p2p/host ./p2p/proto ./p2p/proto/circuit ./p2p/homerelay
+go test -tags natlab ./node/swarm -run '^TestDaemonNAT(ShareUpgradeAndRelayFailover|RelayMatrix)$' -v -count=1
+```
+
+The test builds the ordinary `nu` binary (no test-only transport hooks), starts two
+`nu daemon` processes in separate private namespaces behind different routers and
+two public `nu relay` processes, configures explicit full-service admission and
+exact per-peer probe destinations, and uses CLI `add --raw`, `share`, `get` and
+`status`. Share links contain both live circuit hints. A parser test rejects
+conflicting destination identities and stacked/unsupported circuit hints.
+
+| Daemon fixture | Result |
+|---|---|
+| EIM/APDF ↔ EIM/APDF; direct initially blocked | 19,500,000 bytes fetched via a real circuit share link; SHA-256 of extracted file matched |
+| Abrupt home failure during that get | SIGKILL of the provider's selected active home at 1,051,616 verified bytes (2.347 s); same caller/operation succeeded without retry/error via the other relay, 10.464 s total including failure detection/recovery |
+| EIM/APDF after removing the direct block and emitting route invalidations | Both real daemons reported authenticated direct paths with warm backup relay; 19.301 s in the recorded run (includes owner hooks/backoff), not an instantaneous-upgrade claim |
+| ADM/APDF ↔ ADM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 83 ms whole CLI operation |
+| APDM/APDF ↔ APDM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 82 ms whole CLI operation |
+| Native Linux conntrack NAT pair | Real-daemon relay get succeeded; 273,000 verified bytes, 86 ms whole CLI operation; no RFC NAT-class promise for the kernel allocator |
+| All forwarded UDP blocked; fresh recipient daemon/new CID | Get failed `unavailable`, with the explicit online/UDP-reachability action; it did not silently satisfy the request from previously held bytes |
+
+All four daemon mapping cases connected successfully. APDM is not advertised as
+direct-hole-punch success. Loopback assembly tests separately establish crossed
+attempt convergence, active-stream failover on the **same** inner QUIC connection,
+exact endpoint authorization/negative targets, private candidate non-disclosure,
+private/isolated shutdown and real D12 hook registration. An actual route event
+returns the physical-rebind limitation rather than a false successful rebind.
+
+A race-instrumented loopback assembly run measured the first five-byte application
+echo at 31.65 ms, circuit/inner-handshake setup at 23.71 ms, and the inner relay RTT
+at 2.38 ms. Its acceptance check bounds the first echo by setup + relay RTT + a
+50 ms scheduler/instrumentation allowance; this is a fast no-added-stagger check,
+not a production latency SLO or a zero-noise RTT equality assertion.
+
+The cold-route race test has a 750 ms deadline against a 1 s configured stagger:
+the relay starts immediately alongside direct setup; it cannot wait behind that
+stagger or a dead direct timeout. Disco control negotiation is background work,
+not an extra round trip before the first data stream. Whole-CLI/get-progress times
+above are **not wire TTFB measurements** (progress is throttled and Bao verification
+is chunked); no exact RTT-only numeric performance claim is inferred from them.
+No default public relay fleet, production abuse/admission rollout, physical UDP
+socket replacement, cross-family inner multipath, or public field NAT success
+rate is established by this evidence.
+
 ## Authenticated Nu path discovery (0017, 2026-10-21)
 
 Implementation: `p2p/disco`; [wire/security contract](networking.md#path-v1-control-and-probe-security-contract-0017)

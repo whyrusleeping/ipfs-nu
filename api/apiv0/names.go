@@ -1,6 +1,9 @@
 package apiv0
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Public names, login and following (0045; docs/names.md D4–D7, docs/follow.md).
 
@@ -153,6 +156,11 @@ type FollowRequest struct {
 	NoAnnounce bool   `json:"no_announce,omitempty"`
 	All        bool   `json:"all,omitempty"`
 	Replicas   int64  `json:"replicas,omitempty"`
+	// Select follows a collection by local rules (a list of rule objects, the same
+	// language as cluster collection rules; 0058): the catalog is held whole and only
+	// the items the rules choose are fetched. Following the same name again with Select
+	// replaces the rules.
+	Select json.RawMessage `json:"select,omitempty"`
 }
 
 // FollowRoot is one of a follow's three roots (docs/follow.md "Lifecycle"): observed
@@ -172,7 +180,7 @@ type Follow struct {
 	DID      string      `json:"did"`
 	Handle   string      `json:"handle,omitempty"`
 	Name     string      `json:"name"`
-	Mode     string      `json:"mode"` // full, scoped:<path> or lazy
+	Mode     string      `json:"mode"` // full, scoped:<path>, lazy or select
 	Observed *FollowRoot `json:"observed,omitempty"`
 	Syncing  *FollowRoot `json:"syncing,omitempty"`
 	Held     *FollowRoot `json:"held,omitempty"`
@@ -186,9 +194,31 @@ type Follow struct {
 	Ended   *FollowRoot  `json:"ended,omitempty"`
 	Orphans []string     `json:"orphans,omitempty"`
 	Content ContentState `json:"content"`
+	// Selection is a select follow's catalog and holdings summary (0058).
+	Selection *FollowSelection `json:"selection,omitempty"`
 	// Refreshed is when the name was last re-resolved; Error the last refresh error.
 	Refreshed time.Time `json:"refreshed,omitempty"`
 	Error     string    `json:"error,omitempty"`
+}
+
+// FollowSelection summarises a select follow (docs/collections.md "Following
+// collections"): the catalog head last synced and whether it is held whole, the facets
+// the publisher declared, the rule count, and the items by state: Selected is what the
+// rules choose now (held + fetching + paused), Paused the matches the budgets leave out
+// (Shortfall their bytes).
+type FollowSelection struct {
+	Catalog       string               `json:"catalog,omitempty"`
+	CatalogSynced bool                 `json:"catalog_synced"`
+	Facets        map[string]FacetDecl `json:"facets,omitempty"`
+	Rules         int                  `json:"rules"`
+	Items         int                  `json:"items"`
+	Selected      int                  `json:"selected"`
+	Held          int                  `json:"held"`
+	HeldBytes     uint64               `json:"held_bytes"`
+	Fetching      int                  `json:"fetching"`
+	Paused        int                  `json:"paused"`
+	Shortfall     uint64               `json:"shortfall,omitempty"`
+	Warnings      []string             `json:"warnings,omitempty"`
 }
 
 // FollowRefreshRequest re-resolves one follow (or every follow with Dataset "").

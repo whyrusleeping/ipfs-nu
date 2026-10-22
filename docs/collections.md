@@ -283,9 +283,53 @@ and local paths only.
 ### Following collections
 
 Public followers use the same rules, with `nu follow <name> --select rules.toml`. The follow
-pins the proof chain and the complete catalog plus the selected items; `--path` and
-`--max-size` still apply. Rescue rules need an index and are therefore cluster-only. Followers
+pins the complete catalog plus the selected items; `--max-size` applies as a budget over
+every rule's holdings. Rescue rules need an index and are therefore cluster-only. Followers
 report holdings to no cluster; opt-in public holdings reports are later work.
+
+Implemented (0058):
+
+- A select follow is a collection dataset (`collection: {}`, `source.follow.select`,
+  replicas 0) whose single writer is the followed name: the admin that resolves the
+  name writes each verified target as the head, and the collection manager of the
+  follow's scope (the local cluster's for `nu follow`, the networked cluster's for
+  `--cluster`) syncs that head's catalog exactly as it syncs a member's writer head
+  (`catalog/<ds>` and `catalog/<ds>/<signer>` pins under `nu-catalog`, the item stream,
+  facets index). The **facets come from the published header** (`collection.facets` of
+  the merged header above); the follow record declares none. The follower's own head
+  signature does not make it a writer: items are held by rules only.
+- Rules are the same language and node state (`rules` in the scope's collection
+  database); `nu follow <name> --select` on an already followed name replaces them (and
+  `--max-size`), and `nu cluster collection rules|status|items|where|hold|release <ds>`
+  work on the follow's dataset. Rules set before the first catalog sync are accepted
+  unchecked (the facets are not known yet) and checked afterwards; rules that do not fit
+  the published facets are ignored with a status warning. `rescue` and `files` are
+  refused; `--all`/`--replicas` do not combine with `--select`.
+- Evaluation is the cluster member's: added and changed items on every new head, the
+  edge of each `within` window, paused items, and everything after a rule change, with
+  the same budgets (per rule `max_bytes`; the follow's `max_size` over all holdings;
+  neither evicts a held item, new matches pause and `follow ls` reports the
+  shortfall), pins (`collection-select`, `collection-manual`) and release sweep. A rule
+  change or a newer publication re-evaluates from the catalog diff: held items the new
+  rules keep get no new holdings-log transition and are not fetched again.
+- Status: `follow ls` reports `mode: select`, **held** as the head whose catalog is held
+  whole (the view `/c/<ds>` and `nu ls <ds>` serve), **syncing** as a newer head whose
+  catalog is not, and `selection: {catalog, catalog_synced, facets, rules, items,
+  selected, held, held_bytes, fetching, paused, shortfall, warnings}`.
+- **Completeness marks for a partially selected view:** the held root is complete under
+  the `nu-catalog` profile only (every container, item entry and metadata record), and
+  each held item is complete under `nu-tree` by its own pin. Nothing marks the root
+  complete under `nu-tree`, so `pin add`, `share`, `public add` and `get` of the whole
+  view see it as incomplete and `get` fetches the missing items on demand (cached,
+  unpinned); `ls` lists any held directory without fetching what is below it; `cat` of
+  an unselected item's file is fetched on demand or fails `unavailable` without a
+  provider. Readiness (E2) for a select follow is `ready` once the catalog is held and
+  no selected item is fetching.
+- Unfollow drops the follow's collection state and releases its catalog and item pins
+  (`orphans` lists them); other pins stay.
+- Not built: `--path` with `--select` (refused as before), proof-chain pinning, per-item
+  fetch sources beyond the connected peers, transfer budgets, and public holdings
+  reports.
 
 ### Interfaces
 
@@ -480,9 +524,10 @@ These decisions are the preview contract of the push path; routes and types are 
   index storage and query cost at 10M items × tens of members: the preview scans the
   catalog for queries and status. Measured catalog bytes per item, index cost and
   re-evaluation cost are hardening evidence (0068).
-- Catalog growth and expiry defaults (no expiry by default). Completeness marks and atomic
-  switches for a held view that is complete for the catalog plus selected items (whole or
-  partial), shared with `--select` follows and D19 scopes.
+- Catalog growth and expiry defaults (no expiry by default). Atomic switches of a held
+  view between catalogs (a select follow moves its held root as soon as the new catalog
+  is held, before its newly selected items are) and partial-item completeness, shared
+  with D19 scopes.
 
 ## References
 

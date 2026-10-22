@@ -171,8 +171,8 @@ DELETE /api/v0/names/{name}?account=        → Publication (the deletion's rev)
 GET    /api/v0/resolve?target=&max_age=&fresh=1&offline=1   NameResolution {target, rev, source: pds|cache, age, held}
 POST   /api/v0/node/register {label?, seed?} → NodeRecord
 GET    /api/v0/node/devices?account=        DeviceList
-POST   /api/v0/follows      FollowRequest   → 201 Follow (mirror dataset with a name source)
-GET    /api/v0/follows                      [Follow] {observed, syncing, held, state, blockers, content}
+POST   /api/v0/follows      FollowRequest   → 201 Follow (mirror dataset with a name source; select? = rules → a select follow, 0058)
+GET    /api/v0/follows                      [Follow] {observed, syncing, held, state, blockers, content, selection?}
 DELETE /api/v0/follows/{dataset}            → Follow (state unfollowed, orphans = released pins)
 POST   /api/v0/follows:refresh{dataset?}   → [Follow]
 ```
@@ -211,8 +211,10 @@ loopback, so the daemon reads and writes the files itself. GET never changes sta
 - **`cat <cid[/path]>`** streams a file node's blob, a raw blob, or a file inside a tree;
   a directory is `invalid_argument`. **`ls`** lists a directory (tree header, a directory
   MST node, or a path to one) as `{name, cid, type: file|dir|symlink, size}` in name
-  order; for a file node or blob it returns that one entry. Content that is not held is
-  `not_found` with an action.
+  order; for a file node or blob it returns that one entry. A listing needs the
+  directory's structure, not the content below it (a select follow lists its whole
+  catalog while holding selected items only); `cat` needs the file. Content that is not
+  held is fetched when a source is known, else `not_found`/`unavailable` with an action.
 - **`pin add <cid>`** is an operation (stage `checking` walks the content, `pinning`
   records it); content that is not fully held fails with `not_found` until fetching
   arrives. **`pin rm`** removes every explicit pin of the CID; **`pin ls`** lists

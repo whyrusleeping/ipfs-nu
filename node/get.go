@@ -104,6 +104,13 @@ func (n *Local) get(o *op.Operation, root cid.CID, p string, h hints, req apiv0.
 // structure on the way to p, or anything under the resolved node is missing. stage and
 // progress may be nil.
 func (n *Local) ensure(ctx context.Context, root cid.CID, p string, h hints, stage func(string), progress func(done, total int64)) (*content.Node, error) {
+	return n.ensureWith(ctx, root, p, h, stage, progress, false)
+}
+
+// ensureWith is ensure; with listing set, a resolved directory needs only its own
+// structure (a listing), not the content below it, so a partially held tree (a select
+// follow's catalog) lists without fetching its items.
+func (n *Local) ensureWith(ctx context.Context, root cid.CID, p string, h hints, stage func(string), progress func(done, total int64), listing bool) (*content.Node, error) {
 	if stage == nil {
 		stage = func(string) {}
 	}
@@ -123,6 +130,9 @@ func (n *Local) ensure(ctx context.Context, root cid.CID, p string, h hints, sta
 	}
 	if err != nil {
 		return nil, err
+	}
+	if listing && nd.Kind == gateway.KindDir {
+		return nd, nil
 	}
 	// Structure resolved; make sure everything under the resolved node is here.
 	if err := n.requireComplete(ctx, nd.CID); err != nil {

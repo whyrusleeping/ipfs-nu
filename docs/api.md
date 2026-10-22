@@ -161,7 +161,7 @@ POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?, collection?, 
 GET    /api/v0/cluster/datasets/{name}     Dataset
 GET|POST /api/v0/datasets, GET /api/v0/datasets/{name}   the same, on the local cluster
 GET    /api/v0/cluster/collections/{name}                CollectionStatus
-GET    /api/v0/cluster/collections/{name}/items          ?since=|cursor=&limit=&prefix=&holder=&held=&unheld=&rarest=&match= → Page[CollectionItem]
+GET    /api/v0/cluster/collections/{name}/items          ?since=|cursor=&limit=&prefix=&holder=&held=&unheld=&rarest=&holders=&match= → Page[CollectionItem]
 GET    /api/v0/cluster/collections/{name}/items/{path…}  CollectionItem (holders, copies, conflicts)
 POST   /api/v0/cluster/collections/{name}/hold|release   {path} → CollectionItem
 GET    /api/v0/cluster/collections/{name}/rules          CollectionRules (with current impact)
@@ -490,7 +490,10 @@ replaces this node's rules (TOML `[[rule]]` tables or a JSON list of flat rule o
   `items` lists current items in path order (or rarest first) with ordinary paging.
 - **Copies** (`copies`, `unknown`) and `rarest`/`unheld` need the holdings index on the
   answering node (`cluster.index = true`, or any rescue rule); without it `rarest` and
-  `unheld` are `unavailable` and `copies` is omitted.
+  `unheld` are `unavailable` and `copies` is omitted. `holders=true` (`--holders`) adds
+  each listed item's `holders` as the single-item query reports them (0063).
+- **CollGS preview v1:** the subset a pilot producer and dashboard rely on is listed,
+  with its limits, in [collections.md](collections.md#collgs-preview-v1).
 - **Metrics:** `nu_collection_items`, `_bytes`, `_conflicts`, `_local_items{state}`,
   `_local_bytes`, `_shortfall_bytes`, `_holdings_log_seq`, and with the index
   `_unheld_items`, `_copies_items{copies}`, `_member_items{peer}`, all labelled

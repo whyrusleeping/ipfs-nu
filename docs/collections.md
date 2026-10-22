@@ -338,14 +338,21 @@ roots are in `testdata/vectors/nu-collection/vectors.json`.
   against the facets when set; a predicate that does not fit its facet's type is an error.
   `files` (partial items) is rejected until it is implemented.
 - **Holding precedence:** floor ownership, then a kept surplus copy, then a manual hold,
-  then items this node wrote (an item in its own writer head is always held: the writer
-  is the first source), then the first matching rule. A rescue rule's matches are held
+  then items this node wrote (an item whose merged entry is in this node's own writer
+  head is always held, as `writer`, whichever writer the merge credits: the writer is the
+  first source, and two receiving members of the same item are two copies), then the
+  first matching rule. A rescue rule's matches are held
   only by the rescue pass. Holdings are per path: a replaced entry at a path takes over
   the holding, and the previous entry is not kept as surplus.
 - **Catalog:** the `nu-catalog` walk profile is the nu-tree profile except that an entry
   with `meta` contributes only its metadata record, and plain files and symlinks outside
   items are not followed. Members pin each merged writer head and the merged header with
-  it and fetch catalogs with it (layer 1 only).
+  it and fetch catalogs with it (layer 1 only). A changed writer head is checked level by
+  level against the catalogs already held complete (that writer's previous head, the
+  merged catalog, the other writers' heads): objects they share are neither checked nor
+  fetched, and missing ones are fetched one object at a time, so a head change costs in
+  proportion to the change, not the catalog (0063). A level with more than 512 missing
+  objects (a joining member, a large backfill) fetches the whole catalog in one walk.
 - **Union merge:** leaves are items and plain files or symlinks outside items. Each leaf
   path is decided on its own: walking the writers in rank order (the dataset's `writers`
   in list order, then other authorized signers in DID order; revoked keys contribute
@@ -469,6 +476,139 @@ These decisions are the preview contract of the push path; routes and types are 
   named collections ([A8](operations.md#a-local-api), [api.md](api.md#producer-listener-and-push-tokens)).
   Per-producer rate limits are not implemented.
 
+## CollGS preview v1
+
+*Preview contract (0063).* This is what the [CollGS pilot](validation.md#pilot-candidates)
+producer and dashboard may rely on. It is `collgs-preview-1`: a later preview may add
+fields and parameters; anything that removes or changes the meaning of what is listed
+here gets a new preview version, announced in the release notes. Types are in
+`api/apiv0/collection.go` and `api/apiv0/push.go`; routes and the error envelope in
+[api.md](api.md#routes-v0).
+
+**Producer** (on a receiving member's producer listener with a push token,
+[api.md](api.md#producer-listener-and-push-tokens), or on its loopback API):
+
+```text
+POST   /api/v0/cluster/collections/{ds}/uploads              octet-stream → {cid, size}
+POST   /api/v0/cluster/collections/{ds}/items[?wait=written]  {path, meta, files, replace?} → CollectionPush
+POST   /api/v0/cluster/collections/{ds}/items:batch           NDJSON (≤ 10 000 lines) → NDJSON
+GET    /api/v0/cluster/collections/{ds}/items/{path…}         CollectionItem with push
+DELETE /api/v0/cluster/collections/{ds}/items/{path…}         CollectionPush (removed)
+GET    /api/v0/cluster/collections/{ds}/pushes?since=0|<cursor>  push log, each path at its last change
+```
+
+- Push each item to two receiving members; identical entries merge into one item with two
+  copies. That needs byte-identical files and metadata, so metadata carries no packaging
+  timestamp (the prototype's `packagedAt`) and files come from the same bytes or a
+  checksummed URL.
+- A producer that restarts resends everything after its own last confirmed item (or
+  everything): an identical push answers the accepted one with `duplicate: true`. A
+  different push at a path that has a written entry fails with `conflict` unless
+  `replace`. Item paths derive from the STAC id: `YYYY/MM/DD/<stac id>` of the sensing
+  date.
+- Producer outcomes: `GET …/items/{path}` (`push.state`: `accepted`, `fetching`,
+  `written`, `failed` with `error`) or the push log. `written` means "in this member's
+  writer head", not "copied elsewhere".
+
+**Dashboard** (the loopback API of a member running the holdings index,
+`cluster.index = true`):
+
+```text
+GET /api/v0/cluster/collections/{ds}                       status: items, bytes, conflicts, writers,
+                                                           index {unheld, members [{peer, fresh, items,
+                                                           bytes, seq, behind}], copies_histogram}
+GET …/items?rarest=true&holders=true&limit=1000[&cursor=]  rarest first: copies, unknown, holders
+GET …/items?holder=<peer>&holders=true                     a member's items
+GET …/items?match=<rule JSON>|prefix=<path>                facet and path filters
+GET …/items?since=0|<cursor>                               the item change stream
+GET …/items/{path…}                                        one item: holders, copies, conflicts, owners
+GET /api/v0/dag?target=<meta cid>                          an item's metadata record as JSON
+GET /api/v0/cluster/metrics                                Prometheus aggregates
+```
+
+- `copies` counts holders reporting the item `complete` with a heartbeat within three
+  intervals (90 s at the default 30 s); `unknown` counts complete holders with older
+  heartbeats. Counts converge within about two heartbeats of a change.
+- Pages hold at most 1000 items; a 2000-item overview is two pages (`next_cursor`).
+- `scripts/pilot/collgs-dash` serves the prototype dashboard's own JSON routes
+  (`/api/overview`, `/api/nodes`, `/api/node/<addr>`, `/api/dataset/<info_hash>`,
+  `/api/transfers`) from these, so its frontend runs unchanged. A dataset is an item and
+  its `info_hash` the hex SHA-256 digest of the item's entry CID; piece, rate, disk and
+  transfer fields are zero or empty.
+
+**Preview limits:**
+
+- Members are trusted: holdings reports, heartbeats and facets are members' assertions,
+  and any member can read everything. The producer listener is plain HTTP on a network
+  the operator declares trusted (`api.producer.trusted_network`), or behind a VPN or TLS
+  proxy.
+- `replicas: 0` only. Nothing guarantees any copy: an item is kept by its receiving
+  members (as writers), by members whose rules select it, and by rescue rules, best
+  effort. Status reports such a collection `policy_unsatisfiable`; floor placement
+  (`replicas > 0`) is not part of this preview.
+- No expiry by default, no partial items (`files` rules), no transfer view or rates, no
+  per-producer rate limits.
+- Measured on one machine (in-process members over loopback QUIC; details in
+  [validation](validation.md#collgs-pilot-preview-0063)): about 119 items/s accepted from
+  one producer pushing every item to two receiving members (8 in flight), 114 items/s
+  written into both heads, the merged catalog of 20k items on every member about 3 s
+  after the last write; catalog 934 B per item (CollGS-shaped metadata of about 830 B);
+  collections database about 1.9 KiB per item on an index member and 3.2 KiB on a
+  receiving member; a small head change costs a member about 40 ms at 20k items; the
+  rarest-first overview page about 0.1 s at 20k items. Multi-host, wide-area and full-size
+  scene figures are not measured yet.
+
+## CollGS pilot runbook
+
+The pilot runs Nu's daemon on every CollGS node (no torrent client), vmx's producer
+pushing items to two receiving members, and the dashboard reading one index member. This
+runbook is preview v1; `scripts/pilot/collgs-cluster.sh` does steps 1–6 over SSH (or on
+loopback with `--local`).
+
+1. **Install** on every host (Linux or macOS): `dist/install.sh --user nu_<version>.tar.gz`
+   (systemd user unit or launchd agent, state in `~/.nu`), or copy the `nu` binary.
+   Members must reach each other on UDP 4171 (direct, routed or VPN; no NAT between
+   them).
+2. **Configure** before starting the daemon: `nu config set swarm.mdns false` (no
+   multicast needed; members find each other through the invite's boot addresses, member
+   records and heartbeats), and if a host has several addresses,
+   `nu config set swarm.listen '["/ip4/<addr>/udp/4171/quic-v1"]'`. On the index member
+   (one or two always-on members, and every member with rescue rules):
+   `nu config set cluster.index true`. On receiving members:
+   `nu config set api.producer.listen 0.0.0.0:5172`,
+   `nu config set api.producer.hosts '["<name the producer uses>"]'`,
+   `nu config set api.producer.trusted_network true`. Then start the daemon
+   (`systemctl --user start nu` or `nu daemon`).
+3. **Found** the cluster on the first member: `nu cluster init collgs --mode private`.
+   It holds the root and an admin key; copy `cluster/net/keys` offline.
+4. **Invite and join** each other member: on it, read its PeerId (`nu status`); on the
+   first member, `nu cluster invite --peer <peerId>` prints a `nuc1…` token; on the new
+   member, `nu cluster join <token>`. `nu cluster status` lists every member as
+   `connected`.
+5. **Collection and writers:** on each receiving member `nu cluster key new` prints a
+   did:key. On the first member, with the facets file (`sensed`, `bbox`, `cloud`,
+   `platform`, as in [D22](#items-and-facets)):
+   `nu cluster dataset create s2 --collection --facets facets.toml --writer <did1> --writer <did2>`,
+   then `nu cluster key grant <did> writer --dataset s2` for each.
+6. **Producer tokens:** on each receiving member
+   `nu api token create producer --collection s2` prints a token for the producer.
+7. **Push** from the producer, per item and to both receiving members:
+   `nu --api <member>:5172 --token <token> cluster collection put s2 2026/10/21/<stac id> --meta meta.json --upload <id>_tci.tif`,
+   or the HTTP routes above (upload, then push with `files: {"<name>": {"upload": cid}}`;
+   URL files need `--ingest-hosts` on the collection).
+8. **Select:** each member that keeps a subset sets rules
+   (`nu cluster collection rules s2 --set rules.toml`, `--dry-run` first): regional
+   (`bbox`), `cloud`, rolling (`sensed = { within = "7d" }`) and rescue
+   (`rescue = { below = 2, max_bytes = "100GiB" }`) policies as in [Selection](#selection).
+9. **Dashboard:** on the index member, `go run ./scripts/pilot/collgs-dash -api 127.0.0.1:5171
+   -collection s2 -names <peer>=rolling-7d,… [-static <dashboard build>]`, reached over SSH
+   port forwarding; or query the routes above directly.
+10. **Check:** `nu cluster collection status s2` on any member shows one merged root, both
+    writers `(merged)`, no conflicts and, on the index member, the copy histogram;
+    `nu cluster collection items s2 --rarest --holders` lists the rarest items with their
+    holders; `scripts/pilot/collgs-cluster.sh smoke <hosts>` pushes test items under
+    `smoke/` and waits for two copies of each (remove them with `nu cluster collection rm`).
+
 ## Details still to specify
 
 - Per-producer rate limits and quotas; charging in-progress URL downloads to
@@ -477,9 +617,10 @@ These decisions are the preview contract of the push path; routes and types are 
 - Union-head history (which entries a writer appends for merged versions); collections
   run with `history` off.
 - A remote holdings index (rescue on a member that does not run the index itself), and
-  index storage and query cost at 10M items × tens of members: the preview scans the
-  catalog for queries and status. Measured catalog bytes per item, index cost and
-  re-evaluation cost are hardening evidence (0068).
+  index storage and query cost at 10M items × tens of members: listings still read every
+  item path (and facets for a match), copy counts read the whole index, and status counts
+  over the items table. Figures at 20k and 200k items are in
+  [validation](validation.md#collgs-pilot-preview-0063); 10M needs incremental counts.
 - Catalog growth and expiry defaults (no expiry by default). Completeness marks and atomic
   switches for a held view that is complete for the catalog plus selected items (whole or
   partial), shared with `--select` follows and D19 scopes.

@@ -739,7 +739,8 @@ roots, no live name resolution); RASL answers carry
 `Access-Control-Allow-Origin: *` on this listener only (P5); `nu share` adds the
 `https://` and `rasl://` links only while this process's listener serves the root (P2).
 The daemon refuses the listener on a member of a private or isolated cluster (P3, no
-reader authentication in this build), without TLS (cert/key files, or `behind_proxy` on
+reader authentication in this build; while the listener runs, `cluster init`/`join` of a
+private or isolated cluster is refused with `conflict` naming `public.listen`), without TLS (cert/key files, or `behind_proxy` on
 a loopback address), or with a `localhost`/IP-literal domain (P5). Concurrent requests
 are bounded in total and per client address (`503` + `Retry-After`).
 
@@ -838,6 +839,7 @@ required by the named task before it ships.
 | N42 | P2 | published small file whose bytes are a MASL file node naming an unpublished blob, requested as `<DRISL codec + file multihash>` on `/tree`, `/blob`, RASL and its site origin | 404; the store refuses the DRISL read of raw-stored bytes | `node.TestPublicCodecSwap`, `store.TestSmallBlobsAndBlocks` |
 | N43 | A8 | producer token push naming `files.<n>.path` (an existing secret such as `node.key`, with `nocopy`, or a missing path); naming another token's upload or any other held CID | 403, same answer for existing and missing paths; 404, nothing queued | `main.TestProducerPushCLI` |
 | N44 | P2/P4 | `/c/<dataset>…` and `/nu/<handle>/<name>…` on the public listener | 404 like any route that does not exist there, no `X-Nu-Root`, no lookup | `gateway.TestPublicListener` |
+| N45 | P3 | `cluster init`/`join` of a private or isolated cluster while the public listener runs | conflict, action names `public.listen`; no membership | `node.TestPublicListenerRefusesPrivateCluster` |
 
 ### Feature-entry gates
 

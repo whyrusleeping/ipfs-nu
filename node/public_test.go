@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
@@ -90,5 +91,25 @@ func TestPublicCodecSwap(t *testing.T) {
 	}
 	if _, err := n.content.Resolve(swapped, ""); !isCode(err, apiv0.CodeNotFound) {
 		t.Fatalf("loopback resolve of swapped CID: %v", err)
+	}
+}
+
+// N45 (0077 item 5): P3 holds at runtime too: while the public listener runs, the node
+// refuses to create (or join) a private or isolated cluster, naming public.listen.
+func TestPublicListenerRefusesPrivateCluster(t *testing.T) {
+	ctx := context.Background()
+	n := newLocal(t)
+	if _, err := n.EnablePublic(ctx, "seed.example"); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"private", "isolated"} {
+		_, err := n.ClusterInit(ctx, apiv0.ClusterInitRequest{Name: "lab", Mode: mode})
+		var ae *apiv0.Error
+		if !errors.As(err, &ae) || ae.Code != apiv0.CodeConflict || !strings.Contains(ae.Action, "public.listen") {
+			t.Fatalf("%s cluster init with the public listener: %v", mode, err)
+		}
+	}
+	if n.PrivateNetwork() {
+		t.Fatal("node became a private member")
 	}
 }

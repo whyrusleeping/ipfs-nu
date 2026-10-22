@@ -723,7 +723,9 @@ key = "/etc/nu/privkey.pem"
   through. ACME is not built in (wildcards need DNS-01).
 - **Refusals** (`invalid_argument`, action names the key): the node is a member of a
   private or isolated cluster (P3); no `cert`/`key` and no `behind_proxy`;
-  `behind_proxy` off loopback; invalid `domain`.
+  `behind_proxy` off loopback; invalid `domain`. While the listener runs, `cluster
+  init`/`cluster join` of a private or isolated cluster is `conflict` (action names
+  `public.listen`), so P3 cannot be bypassed after start.
 - **Limits.** `max_requests` and `per_ip` bound concurrency (`503`, `Retry-After: 2`);
   `ReadHeaderTimeout` 10 s, idle 60 s, 16 KiB of headers. Behind a proxy `per_ip` sees
   the proxy's address.

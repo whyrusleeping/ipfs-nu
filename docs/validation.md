@@ -2021,6 +2021,50 @@ foreground and says content is available only while a holder is online), repeat 
 B from a fresh `NU_PATH`, then Ctrl-C the share. Record: OS/arch of both machines, link type
 (Wi-Fi/Ethernet/routed), sizes, wall time of step 5 and anything confusing in the output.
 
+## LAN benchmarks: add, 1:1 and 2:1 get (2026-10-22)
+
+`scripts/lan-bench.sh` (build d93dcdb, static linux/amd64). Three alphac machines, each an
+Intel Core Ultra 9 285HX (24 threads), 60 GB RAM, Samsung 990 PRO NVMe, ext4 on LVM,
+Linux 7.0, one 10 GbE LAN with no NAT, and other workloads idle (load < 1). Sources:
+alphac-2 (and alphac-1 for 2:1). Recipient: alphac-3, **daemonless** with a fresh repo
+(`nu get <link> -o out`, the J1 journey). Sources run `nu daemon` with default config.
+Workloads: `big`, one 10 GiB pseudo-random file; `tree`, 10,000 × 100 KiB files in 100
+directories (1.05 GB). Both sources hold byte-identical data (same CIDs). Page caches were
+dropped on all hosts before every timed run. Three runs each; MB/s are decimal. Fetch time
+runs from the `fetching` stage to the `writing` stage; write-out is extraction to `-o`.
+Output digests matched the sources for every workload.
+
+Baselines: TCP (`nc`, one stream) alphac-2→alphac-3 at **1175 MB/s** (line rate); recipient
+disk write 4.3 GB/s (`dd conv=fdatasync`); source cold read 3.5–6.5 GB/s.
+
+| Measurement | Runs | Result |
+|---|---|---|
+| `add` big, copy | 9.9 / 10.0 / 7.6 s | **1.07–1.42 GB/s**; 3 s user + 4 s sys CPU; 23 MB RSS |
+| `add` big, `--nocopy` | 5.2 / 5.2 / 5.1 s | **2.1 GB/s**; 2.7 s user CPU |
+| `add` tree, copy | 117 / 122 / 122 s | **82–85 files/s** (8 MB/s); 4.7 s total CPU |
+| `add` tree, `--nocopy` | 65 / 70 / 66 s | 143–155 files/s (15 MB/s) |
+| `get` big 1:1 | fetch 33.4 / 32.8 / 30.8 s, write-out 3.2 s | **321–348 MB/s** (2.6–2.8 Gb/s) |
+| `get` big 2:1 | fetch 16.1 / 16.1 / 15.8 s, write-out 3.2–3.4 s | **666–677 MB/s**, 2.0× of 1:1; split 5.44 / 5.42 GiB |
+| `get` tree 1:1 | fetch 87 / 98 / 95 s, write-out 61–63 s | **10–11 MB/s** (~105 files/s fetch, ~160 files/s write-out) |
+| `get` tree 2:1 | fetch 94 / 96 / 93 s, write-out 62–66 s | 10–11 MB/s, no gain; split ~50/50 |
+
+Findings:
+
+1. **Small files are bound by per-file durability, not CPU or network.** `add` of the tree
+   uses 4.7 s of CPU in 120 s of wall time, about 12 ms per file. Each stored blob has its
+   data and outboard `fsync`ed and committed in its own transaction (`store.putBlob` →
+   `commitBlob`). `--nocopy` drops the data fsync and halves the time. Fetch (~9 ms/file)
+   and extraction (~6 ms/file) show the same pattern, and a second source does not help.
+   Consumer NVMe without power-loss protection makes each flush cost milliseconds.
+2. **Large files: one QUIC connection caps at about 330 MB/s**, about 28% of TCP line rate. This
+   matches the loopback plain-QUIC ceiling in [Download tuning](#download-tuning-0071-2026-10-2122)
+   (~330–380 MB/s), so the limit is per-connection quic-go processing rather than Nu's fetcher.
+   Raising `net.core.rmem_max`/`wmem_max` from 4 to 16 MiB (quic-go asks for 7 MiB) on all
+   hosts did not change it (321 MB/s; restored afterwards). Two sources scale almost
+   linearly (2.0×) with an even split, so multi-peer scheduling works.
+3. `add` of a large file runs at 1.1–1.4 GB/s with copy and 2.1 GB/s with `--nocopy`. That is
+   below disk speed but CPU-light (about 3 s of user CPU per 10 GiB); memory stays at ~23 MB RSS.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

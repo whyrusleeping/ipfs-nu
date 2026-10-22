@@ -1,10 +1,10 @@
 ---
 id: "0058"
 title: Follow collections with local selection rules (`nu follow --select`)
-status: todo
+status: in_progress
 priority: 3
 created: "2026-10-20"
-updated: "2026-10-20"
+updated: "2026-10-22"
 depends_on:
     - "0057"
     - "0045"

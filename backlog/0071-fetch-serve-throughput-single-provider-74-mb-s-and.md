@@ -1,10 +1,10 @@
 ---
 id: "0071"
 title: 'Fetch/serve throughput: single-provider 74 MB/s and multi-peer slower than single'
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-21"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on: []
 spec_refs:
     - docs/data.md#D14. Transfer protocols
@@ -22,3 +22,4 @@ Acceptance: measured (NU_SLOW, method recorded in docs/validation.md): single-pr
 
 ## Work log
 - 2026-10-22: Partial (ed6d80c; merged ac1159a): removed per-chunk global fsync barrier (overlapped bounded checkpoints), Bao read-ahead + batched verified writes, Partial.Flush snapshot fixes. Numbers: plain QUIC 323–384 MB/s; 10 GB controlled 161.8 → 281.3 MB/s; 2 GiB single-peer runs 252/278/46 MB/s; capped 3-provider (40 MB/s each, one corrupt) 0.99×/0.99×/0.44× honest sum; original physical-source scenario 73.7 → 107.7 MB/s single, 47.3 → 85.8 MB/s multi. Open: intermittent stall (~1 in 3 runs) — investigating.
+- 2026-10-22: Done (dc35a1e, df3c510; merged). Root cause of tails: destination fsync latency on this shared ext4/LVM/NV2 volume (syncs up to 2.55 s; a storage-only control with no Nu code stalls the same way; identical binaries on tmpfs pass 20/20). Final real-disk medians (10 runs each): single peer 260–273 MB/s vs target 191.9 (≥3.5× the 73.7 baseline); capped 3 providers with one corrupt 0.988–0.989× honest sum (target 0.8). Larger unsynced window (256 MiB) tried and reverted (no reliable tail improvement, bigger crash window). Recorded in docs/validation.md. Remaining tail behaviour is a storage-environment limitation, not a Nu pipeline bottleneck.

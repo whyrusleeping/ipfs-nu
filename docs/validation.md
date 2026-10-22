@@ -1655,6 +1655,109 @@ Verification before commit: gofmt, `git diff --check`, `go vet ./...`,
 watchdog concurrently with stream completion; its instrumentation-heavy rates
 are not included in the performance tables. No backlog edits or pushes.
 
+### 0071 conclusion: larger unsynced-budget trial rejected (2026-10-22)
+
+**The 256 MiB mitigation did not remove most disk-tail slowdowns and was
+reverted.** Keep the earlier verified-I/O batching/read-ahead and bounded
+checkpoint-overlap improvements, not a larger default crash-refetch window.
+Targets are met on the measured single-peer and capped-provider **medians** and
+on all ten runs of each tmpfs isolation case above. They are **not** consistently met on this shared
+physical root volume: destination sync/write latency remains the limiting tail.
+Tmpfs establishes the transport/scheduler result, not persistent-storage
+performance. This concludes the bounded 0071 tuning experiments without claiming
+a universal minimum download rate or concealing the negative disk results.
+
+Trial base: `c822641` after merging master, same Go 1.26.2 / Linux / EPYC machine
+and real root ext4/LVM/Kingston NV2 destination as the preceding investigation.
+No tmpfs, sysctl changes or storage relocation were used in this trial.
+Ten fresh 2 GiB downloads **per scenario** used the same independent provider
+caps, verification, final commit, block/mutex profiles and request watchdog.
+
+| Real-disk measurement | Minimum MB/s | Median MB/s | Maximum MB/s | Below target |
+|---|---:|---:|---:|---:|
+| Previous final set, existing bounded overlap, single | 123.54 | 272.62 | 296.39 | 1/10 |
+| **256 MiB candidate, single** | **56.29** | **260.05** | **309.40** | **3/10** |
+| Previous final set, existing bounded overlap, capped three/one corrupt | 44.52 | 79.10 | 79.26 | 2/10 |
+| **256 MiB candidate, capped three/one corrupt** | **48.52** | **79.01** | **79.29** | **2/10** |
+
+Candidate capped min/median/max fractions of the two honest providers' combined
+80 MB/s: **0.607 / 0.988 / 0.991**. All twenty downloads passed size/digest checks;
+all ten capped runs rejected the corrupt provider. The single-peer target is
+191.86 MB/s from the measured plain-QUIC ceiling; the capped target is 64 MB/s.
+The candidate missed **5/20** runs, compared with **9/40** across the preceding
+unmodified disk sets. These are unpaired shared-volume observations, not proof
+of a precise regression, but they do not support retaining the additional
+complexity and larger crash window as an effective mitigation.
+
+The rejected candidate was a genuine decoupled checkpointer, not merely a larger
+flush interval:
+
+- A dedicated goroutine continuously drained completed requests into checkpoints,
+  starting at the existing 16 MiB threshold (also under budget pressure and at
+  finish). All network workers could continue while it synced.
+- A configurable per-blob `MaxUnsyncedBytes` defaulted to **256 MiB**. Raw-byte
+  credit was reserved **before** a request started, including in-flight and
+  duplicate requests, not just chunks that had already finished downloading.
+- Only requests completed **before** a checkpoint started could have their credit
+  released when that checkpoint succeeded. Requests completing during sync stayed
+  charged until a subsequent checkpoint. This conservative accounting bounded
+  newly lost raw data by the budget, rather than the budget plus active requests.
+- The store's ordering was unchanged: write verified data/proofs, snapshot group
+  bits, sync files, then persist that snapshot in SQLite. Thus no group was
+  advertised durable merely because a request had finished. Cancellation and
+  checkpoint failures did not discard errors; final return still joined the
+  checkpointer and committed durably.
+- The queue held counters, not payloads. Bytes went through the existing bounded
+  protocol buffers into files/page cache. One-second `runtime/metrics` samples
+  observed maximum Go heap objects of **28.46 MB single / 29.87 MB capped**, not
+  a 256 MiB Go allocation. These are sampled Go-heap values, **not RSS or page
+  cache bounds**, and do not capture sub-sample peaks. The heap sample field is
+  retained in the optional benchmark watchdog for future measurements.
+
+Deterministic blocked-sync tests checked exact admission limits, snapshot credit
+(not releasing newer writes), cancellation, a budget smaller than the checkpoint
+threshold, final draining and sync-error propagation. They passed normally and
+with `-race`; the existing fetch/proto/store tests passed with the candidate.
+No new power-loss/SIGKILL campaign was run for this rejected implementation.
+
+The candidate's slow runs still produced **59 low-throughput dumps**: 58 included
+`fsync`, 24 included file `pwrite`, and 24 included budget admission waits (these
+categories overlap). Aggregate byte-budget waiting was **77.15 s**. In one capped
+run network chunk completion reached the full size around **41.27 s**, but the
+fetch returned only at **44.26 s** after durable completion. Increasing the
+window neither eliminated device write latency nor removed the final sync tail.
+No further budget increases or weakened completion semantics were adopted.
+
+Local evidence is retained under ignored `.hardening/budget256/`:
+`download.log`, `download.{block,mutex,test}`, `traces/`, and `candidate.patch`.
+The patch contains the rejected implementation, its two deterministic tests and
+its temporary `NU_DOWNLOAD_UNSYNCED_BYTES` benchmark override; it applies to the
+trial base for reproduction in a disposable checkout. It is **not shipped**.
+The measured command, while that patch was applied, was:
+
+```sh
+NU_SLOW=1 NU_DOWNLOAD_TRACE="$PWD/.hardening/budget256/traces" \
+  go test ./nutest -run '^$' -bench '^BenchmarkDownload$' \
+  -benchtime=1x -count=10 -timeout=30m \
+  -blockprofile=.hardening/budget256/download.block \
+  -mutexprofile=.hardening/budget256/download.mutex \
+  -o .hardening/budget256/download.test
+```
+
+After the trial, the candidate config, queue, integration, tests and benchmark
+override were removed; `fetch/`, `proto/`, `store/` and `nutest/download_test.go`
+were verified byte-identical to the merged base. The existing 16 MiB checkpoint
+cadence, bounded overlap and durability semantics remain in force. Only this
+conclusion and optional test-watchdog heap sampling are retained. No backlog
+status was edited; further physical-disk minimum-rate acceptance needs suitable
+persistent storage or remediation/characterization of this volume, rather than
+an unbounded download buffer.
+
+Final, reverted-tree verification passed: gofmt, `git diff --check`,
+`go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`.
+A 64 MiB tracing-enabled `-race` download run also passed; those instrumented
+rates are excluded from the table. No backlog edits or pushes.
+
 ## IPFS bridge (0042) — early fixture evidence
 
 The default bridge package tests are offline and fast (`go test ./bridge`): hand-built

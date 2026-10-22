@@ -24,7 +24,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +38,7 @@ import (
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/swarm"
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	_ "github.com/whyrusleeping/nu/nutest/tmpdir" // stores on tmpfs when available
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -52,14 +52,9 @@ import (
 // that want the same knob use Scale.
 var Timeout = Scale(20 * time.Second)
 
-// Scale multiplies d by NU_TEST_TIMEOUT_SCALE (default 1). Use it for every wall-clock
-// ceiling in a test so one knob stretches them all on a slow machine.
-func Scale(d time.Duration) time.Duration {
-	if f, err := strconv.ParseFloat(os.Getenv("NU_TEST_TIMEOUT_SCALE"), 64); err == nil && f > 0 {
-		return time.Duration(float64(d) * f)
-	}
-	return d
-}
+// Scale is timeouts.Scale: use it for every wall-clock ceiling in a test so one knob
+// stretches them all on a slow machine.
+func Scale(d time.Duration) time.Duration { return timeouts.Scale(d) }
 
 // Options configure a Network.
 type Options struct {

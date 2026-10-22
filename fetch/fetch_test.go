@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
 	"github.com/whyrusleeping/nu/fetch"
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
@@ -59,7 +60,7 @@ func connect(t *testing.T, a, b *host.Host) fetch.Peer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	if _, err := a.Dial(ctx, addr); err != nil {
 		t.Fatal(err)

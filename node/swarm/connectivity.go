@@ -38,11 +38,13 @@ type connectivity struct {
 }
 
 type pathPeer struct {
-	gate    chan struct{}
-	leg     *magicsock.Relay // guarded by gate; close/join before every replacement
-	routes  []wire.Multiaddr
-	seq     uint64
-	touched time.Time
+	gate      chan struct{}
+	leg       *magicsock.Relay // guarded by gate; close/join before every replacement
+	routes    []wire.Multiaddr
+	seq       uint64
+	touched   time.Time
+	relay     wire.PeerID // guarded by gate; diagnostics, not identity
+	lastError string
 }
 
 // sharedHost binds all sockets before Host starts, preserving its ownership-on-
@@ -125,6 +127,7 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	c.homes = homes
 	c.mu.Unlock()
 	c.spawn(c.accept)
+	c.spawn(c.prune)
 	return nil
 }
 
@@ -286,19 +289,25 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 			}
 		}
 		err = nil
+		attempt, stop := context.WithTimeout(ctx, 750*time.Millisecond)
 		if p.leg == nil {
-			if _, err = c.s.host.Dial(ctx, relay); err == nil {
-				var local wire.Multiaddr
-				local, p.leg, err = qpath.Dial(ctx, c.socket, c.client, rid, id)
+			if _, err = c.s.host.Dial(attempt, relay); err == nil {
+				_, p.leg, err = qpath.Dial(attempt, c.socket, c.client, rid, id)
 				if err == nil {
+					p.relay = rid
 					c.watch(id, p, p.leg)
-					_ = local
 				}
 			}
 		}
 		var conn *host.Conn
 		if err == nil && p.leg != nil {
-			conn, err = c.inner(ctx, id)
+			conn, err = c.inner(attempt, id)
+		}
+		stop()
+		if err != nil {
+			p.lastError = err.Error()
+		} else {
+			p.lastError = ""
 		}
 		p.unlock()
 		if err == nil {
@@ -402,6 +411,7 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 		return
 	}
 	p.leg = leg
+	p.relay = circ.Relay
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
 		leg.Close()
@@ -412,8 +422,47 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 		select {
 		case <-c.ctx.Done():
 			leg.Close()
+			return
 		case <-leg.Done():
 			leg.Close()
+		}
+		if err := p.lock(c.ctx); err != nil {
+			return
+		}
+		if p.leg != leg {
+			p.unlock()
+			return
+		}
+		p.leg = nil
+		p.unlock()
+		// Exactly one authenticated inner endpoint repairs packet paths. The other
+		// only accepts replacement circuits after the old leg has failed/joined.
+		if c.s.ID() > id {
+			return
+		}
+		for c.ctx.Err() == nil {
+			conn, ok := c.s.host.Connection(id)
+			if !ok || !c.s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
+				return
+			}
+			c.mu.Lock()
+			routes := append([]wire.Multiaddr(nil), p.routes...)
+			c.mu.Unlock()
+			for _, addr := range routes {
+				setup, cancel := context.WithTimeout(c.ctx, time.Second)
+				_, err := c.dial(setup, id, addr)
+				cancel()
+				if err == nil {
+					return
+				}
+			}
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-c.ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 		}
 	})
 }

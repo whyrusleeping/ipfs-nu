@@ -36,11 +36,14 @@ func (m *Manager) dataset(name string) (map[string]FacetSpec, error) {
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no collection %q in the cluster", name).
 			WithAction("list datasets with `nu cluster dataset ls`; collections are created with `nu cluster dataset create <name> --collection`")
 	}
-	return facetSpecs(d), nil
+	return m.specs(name, d), nil
 }
 
 // SetRules validates rules against the collection's facets and reports what each would
-// hold now; unless dryRun, it stores them, and selection re-evaluates every item.
+// hold now; unless dryRun, it stores them, and selection re-evaluates every item. A
+// followed collection refuses rescue rules, and its rules are checked against the
+// facets only once its catalog has been synced (they are ignored, with a status
+// warning, while they do not fit).
 func (m *Manager) SetRules(name string, rules []Rule, dryRun bool) (*apiv0.CollectionRules, error) {
 	specs, err := m.dataset(name)
 	if err != nil {
@@ -49,7 +52,17 @@ func (m *Manager) SetRules(name string, rules []Rule, dryRun bool) (*apiv0.Colle
 	if len(rules) > 256 {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "at most 256 rules")
 	}
-	if err := Compile(rules, specs); err != nil {
+	d, _ := m.cfg.Cluster.View().Dataset(name)
+	check := true
+	if IsFollow(d) {
+		if err := checkFollowRules(rules); err != nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err).WithAction("rescue needs a cluster; follow with plain selection rules")
+		}
+		if row, err := m.loadColl(name); err == nil && len(row.writers) == 0 {
+			check = false // no catalog synced yet: the facets are unknown
+		}
+	}
+	if err := Compile(rules, specs); check && err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
 	}
 	if rules == nil {
@@ -165,7 +178,11 @@ func (m *Manager) manual(name, path string, on bool) error {
 		rules = nil
 	}
 	d, _ := m.cfg.Cluster.View().Dataset(name)
-	released, err := m.evalItem(name, path, rules, m.now(), m.heldKeys(), m.floor(d))
+	keys := m.heldKeys()
+	if IsFollow(d) {
+		keys = nil
+	}
+	released, err := m.evalItem(name, path, rules, m.now(), keys, m.floor(d), followLimit(d))
 	if released {
 		m.scheduleGC()
 	}

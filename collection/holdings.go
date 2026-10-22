@@ -377,7 +377,7 @@ func (m *Manager) rescue(name string) error {
 			if err != nil {
 				return err
 			}
-			if err := m.hold(name, it, cur, want{SrcRescue, i}, rules); err != nil {
+			if err := m.hold(name, it, cur, want{SrcRescue, i}, rules, 0); err != nil {
 				return err
 			}
 			if h, _ := m.holding(name, it.path); h != nil && h.state == StatePaused {

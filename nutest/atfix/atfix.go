@@ -52,6 +52,8 @@ type Fixture struct {
 	Tamper bool
 	// Requests counts PDS requests by XRPC method.
 	Requests map[string]int
+	// Pub is the writable publisher account (PubDID / PubHandle) with its OAuth server.
+	Pub *Publisher
 }
 
 // VectorDir is the vendored CAR directory, located from this source file.
@@ -62,7 +64,7 @@ func VectorDir() string {
 
 // New starts the fixture; it stops with the test.
 func New(t testing.TB) *Fixture {
-	f := &Fixture{KeyMultibase: Key, PDS: "http://pds.test", Requests: map[string]int{}}
+	f := &Fixture{KeyMultibase: Key, PDS: "http://pds.test", Requests: map[string]int{}, Pub: newPublisher()}
 	var err error
 	if f.Repo, err = os.ReadFile(filepath.Join(VectorDir(), "ts-pds-rpozqnrysnmae4hegfralite.car")); err != nil {
 		t.Fatal(err)
@@ -87,28 +89,46 @@ func (f *Fixture) serve(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	switch r.Host {
 	case "plc.test":
-		if r.URL.Path != "/"+DID {
+		did, handle, key := DID, Handle, f.KeyMultibase
+		if r.URL.Path == "/"+PubDID {
+			did, handle, key = PubDID, PubHandle, f.Pub.KeyMultibase()
+		} else if r.URL.Path != "/"+DID {
 			http.Error(w, "DID not registered", 404)
 			return
 		}
 		doc := map[string]any{
-			"id":          DID,
-			"alsoKnownAs": []string{"at://" + Handle},
-			"verificationMethod": []map[string]string{{"id": DID + "#atproto", "type": "Multikey",
-				"controller": DID, "publicKeyMultibase": f.KeyMultibase}},
+			"id":          did,
+			"alsoKnownAs": []string{"at://" + handle},
+			"verificationMethod": []map[string]string{{"id": did + "#atproto", "type": "Multikey",
+				"controller": did, "publicKeyMultibase": key}},
 			"service": []map[string]string{{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": f.PDS}},
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(doc)
-	case Handle, "evil.test":
+	case Handle, "evil.test", PubHandle:
 		if r.URL.Path == "/.well-known/atproto-did" {
-			fmt.Fprintln(w, DID)
+			if r.Host == PubHandle {
+				fmt.Fprintln(w, PubDID)
+			} else {
+				fmt.Fprintln(w, DID)
+			}
 			return
 		}
 		http.NotFound(w, r)
 	case "pds.test":
+		if !strings.HasPrefix(r.URL.Path, "/xrpc/") {
+			if !f.serveOAuth(w, r) {
+				http.NotFound(w, r)
+			}
+			return
+		}
 		method := strings.TrimPrefix(r.URL.Path, "/xrpc/")
 		f.Requests[method]++
 		q := r.URL.Query()
+		if q.Get("did") == PubDID || q.Get("repo") == PubDID || (q.Get("did") == "" && q.Get("repo") == "" && strings.HasPrefix(method, "com.atproto.repo.")) {
+			f.servePub(w, r, method)
+			return
+		}
 		if q.Get("did") != DID {
 			http.Error(w, `{"error":"RepoNotFound"}`, 400)
 			return

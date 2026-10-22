@@ -23,6 +23,8 @@ type Client struct {
 	*Resolver
 	mu    sync.Mutex
 	hosts map[string]chan struct{} // per-PDS-host concurrency
+	// sessions serializes token use per logged-in DID (refresh tokens are single-use).
+	sessions map[string]*sync.Mutex
 }
 
 // New returns a client under cfg.
@@ -52,6 +54,20 @@ func (c *Client) acquire(ctx context.Context, pds string) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// DetailAbsentRev is the error detail carrying the commit rev at which a record was
+// proven absent (a verified deletion ends a follow, docs/follow.md).
+const DetailAbsentRev = "absent_rev"
+
+// AbsentRev returns the rev of a proven-absence error, or "".
+func AbsentRev(err error) string {
+	var ae *apiv0.Error
+	if errors.As(err, &ae) && ae.Details != nil {
+		rev, _ := ae.Details[DetailAbsentRev].(string)
+		return rev
+	}
+	return ""
 }
 
 // Record is a verified record fetch.
@@ -113,7 +129,8 @@ func (c *Client) getRecord(ctx context.Context, id *Identity, u URI) (*Record, e
 		return nil, verifyError(id, fmt.Sprintf("record %s", path), err)
 	}
 	if !p.CID.Defined() {
-		return nil, apiv0.Errorf(apiv0.CodeNotFound, "%s has no record %s (proven absent at rev %s)", id.DID, path, p.Commit.Rev)
+		return nil, apiv0.Errorf(apiv0.CodeNotFound, "%s has no record %s (proven absent at rev %s)", id.DID, path, p.Commit.Rev).
+			WithDetail(DetailAbsentRev, p.Commit.Rev)
 	}
 	blocks, err := carBlocks(body)
 	if err != nil {

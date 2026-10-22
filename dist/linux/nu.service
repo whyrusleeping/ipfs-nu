@@ -1,0 +1,39 @@
+# Nu system service (Linux servers). Installed by dist/install.sh --system as
+# /etc/systemd/system/nu.service. State lives in /var/lib/nu (NU_PATH), owned by the
+# unprivileged `nu` user, mode 0700. The CLI reaches the daemon through
+# /var/lib/nu/api, so run CLI commands as that user:
+#   sudo -u nu NU_PATH=/var/lib/nu nu status
+# The daemon reads `add` sources and writes `get -o` destinations itself, as `nu`: those
+# paths must be readable/writable by that user.
+[Unit]
+Description=Nu daemon (versioned dataset storage and p2p sharing)
+Documentation=https://github.com/whyrusleeping/nu/blob/master/docs/operations.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nu
+Group=nu
+Environment=NU_PATH=/var/lib/nu
+StateDirectory=nu
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/bin/nu daemon
+# SIGTERM is a clean shutdown: operations are cancelled, the store is closed.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -374,6 +374,145 @@ recover onto clean machines, and reconcile concurrent changes. Offer stable JSON
 exit categories, actionable status and alert conditions. Automatic repair unavailable is
 an alert, not a silent operating mode.
 
+### B. Backup, export and recovery
+
+Content and authority are backed up separately, by `nu repo export|import <dir>` and
+`nu repo backup|restore <file>` (with `nu repo unpin` for orphaned pins) (implementation: `node/recovery.go`, `cmd/nu/cmd_repo.go`).
+All four run on a **stopped** node under the repo lock, so the pin table, store and
+cluster state are one consistent snapshot; with a daemon answering they fail `conflict`.
+
+- **B1 Content bundle.** `repo export` writes a new or empty directory: `content.car`
+  (CARv1; roots = every pinned CID; every held object reachable from any pin under its walk
+  profile, each once, structure and raw blobs up to the 8 MiB whole-object limit),
+  `blobs/<cid>` for larger BLAKE3 blobs, and `manifest.json` written last (an export
+  without it was interrupted). The manifest (`format: nu-content-export`, `version: 1`)
+  lists the pin table (cid, mode, profile, source, name, objects, missing, bytes), the CAR
+  block count, the large blobs, an informational index of datasets and versions, and
+  `complete`: false when any pin's walk met an object that is not held (lazy follows,
+  pending fetches, invalidated `--nocopy` sources). The CLI lists those pins; an
+  incomplete export is never reported as complete. `--nocopy` sources are copied: the
+  bundle is an independent copy.
+- **B2 Import.** `repo import` verifies every CAR block and large blob against its CID,
+  refuses a CAR with fewer blocks than the manifest (truncation), walks every pin, and
+  fails before pinning anything when a pin complete at export is incomplete now. It then
+  restores the pin table verbatim (same sources and names), so retained versions,
+  explicit pins and cluster protections are protected again; pins that were incomplete at
+  export are restored and reported. Subsystems reconcile their own pins as after any
+  restart; a pin nothing owns any more stays visible in `nu pin ls` and is removed with
+  `nu repo unpin --source <s> [--name <n>] <cid>`.
+- **B3 Authority backup.** `repo backup` writes a new tar file, mode 0600, holding
+  `manifest.json` (`format: nu-authority-backup`, `version: 1`, SHA-256 of every file,
+  each cluster's ID, name, mode, root key, held keys and heads), `node.key`, `config.toml`,
+  `tokens/*.json`, the atproto login sessions `auth/*.json` (a session whose refresh token
+was rotated after the backup needs `nu login` again) and, per cluster (`local`, `net`), `state.json`, the private keys this
+  node holds (`keys/*.key`) and a CAR of every held state repository (`repos/*.car`). It
+  holds no content and nothing derived (peer cache, replica protection state, collection
+  indexes), which the node rebuilds from signed state and content.
+- **B4 Not encrypted.** Backups hold private keys in plaintext, protected only by file
+  mode and the medium. Encryption at rest is not provided in this build: keep the file
+  offline, or encrypt it with an external tool. The root key is in the backup of the
+  member that founded the cluster; keep at least one copy of it off every member.
+- **B5 Restore.** `repo restore` reads the whole archive (regular files only, allowlisted
+  paths, 256 MiB per entry), checks every hash, refuses a repo that already holds cluster
+  state or a different node key (`conflict`; restore into a fresh `$NU_PATH` *before*
+  importing content), writes the files 0600 in 0700 directories, loads the state CARs,
+  and verifies every held head against its did:key (commit signature, MST and records,
+  `cluster.VerifyHeads`) before pinning it. A head that does not verify fails the restore.
+  The restored node has its old PeerId, so other members accept it as the same member.
+- **B6 Clean-machine recovery.** Restore the authority backup, then either import a
+  complete bundle (one-node archives, or everything offline) or start the daemon and let
+  placement re-acquire retained versions from surviving members (networked clusters; the
+  admin key in the backup still writes). Both paths are tested (validation 0044).
+- **B7 `--nocopy` invalidation.** A `--nocopy` blob records its source's path, size and
+  mtime (ns). Each use compares them; a size or mtime change triggers a re-hash, and a
+  source that no longer matches, moved or vanished loses its row: the object is no longer
+  held, served, advertised or exported, and pins reaching it become incomplete until it
+  is re-added or fetched. An in-place edit that keeps size and mtime is not detected
+  locally until a reader verifies the bytes (peers always do; import verifies every
+  exported object). `--nocopy` sources are therefore never an archive copy.
+- **B8 Root loss or compromise (re-genesis).** The genesis root key is fixed and cannot be
+  rotated; no admin record replaces it. If it is lost while admin keys survive, the cluster
+  keeps operating (admins add and revoke admins and writers), but no key can override an
+  admin any more: a compromised admin can only be fought by LWW, which it can contest
+  indefinitely. If the root is compromised, its holder can write any record, and
+  root-signed key records beat every admin's, so the cluster's state cannot be trusted from
+  that point. In both cases, and when every root and admin key is lost, recovery is a new
+  cluster. A daemon belongs to one networked cluster and this build has no `leave`
+  command, so on each member: (1) stop the daemon and `nu repo backup` (the old state
+  repositories and the manifest's cluster ID and heads are the provenance record of the
+  old history); (2) move `$NU_PATH/cluster/net` out of `$NU_PATH` — the old cluster's pins
+  stay in the store, so its content is kept, visible in `nu pin ls`; (3) start the daemon;
+  on one trusted member `nu cluster init` a new genesis (new root and ID) and invite the
+  others, which join with fresh invites (old invites and keys mean nothing there);
+  (4) recreate the datasets and write each version worth keeping as a head, oldest first:
+  content is addressed by CID, so blobs members already hold are reused, not transferred;
+  (5) once the new cluster reports readiness, remove the old cluster's pins with
+  `nu repo unpin --source cluster --name <name> <cid>` (names `dataset/…`,
+  `state/<old id>/…`). Readers of the old cluster
+  must switch explicitly. Old version TIDs and authorship are not carried over as signed
+  history; the backed-up old state repositories remain the evidence for them.
+
+### U. Upgrades and compatibility
+
+- **U1 Versioned formats.** Every persistent format carries a version: the repo layout
+  (`$NU_PATH/version`), the store schema (`PRAGMA user_version` of `nu.db`), the collection
+  database (`cluster/net/collections.db`), the cluster state file (`state.json` `version`),
+  the content bundle and authority backup manifests, and DRISL records by `$type`/`v`.
+  `nu version` prints the versions this build writes.
+- **U2 Forward migrations at open.** Opening an older store migrates it forward in place,
+  automatically, on the first command or daemon start after an upgrade. Each migration step
+  and its version bump commit in one SQLite transaction.
+- **U3 Interrupted upgrade.** A crash, kill or power loss during migration leaves the
+  database at the last completed step; the next open resumes from there
+  (`store.TestInterruptedUpgrade` kills the process inside the last migration). No marker
+  file is needed while every step is a SQLite transaction; a future step that moves files
+  must record a marker in the database before and clear it after, and resume from it.
+- **U4 Newer formats are refused.** A repo layout, store schema, collection database,
+  state file or manifest newer than the build is refused untouched with `not_supported`
+  and the action to run the newer release.
+- **U5 Downgrades are not supported.** After a newer release migrated a store, an older
+  binary refuses it (U4); nothing is converted back. To return to an older release, restore
+  an authority backup and a content export taken *before* the upgrade into a fresh
+  `$NU_PATH` (B5, B2), or re-acquire from members. The installer's `--backup <dir>` writes
+  the authority backup before swapping binaries; take a content export first when no
+  other member holds the data.
+- **U6 Wire protocols** are versioned by protocol ID; an upgrade adds IDs, and a member
+  that does not speak a newer one keeps using the older. A cluster mixing releases works
+  while both speak the IDs in use; upgrade members one at a time.
+
+### I. Distribution and service lifecycle
+
+- **I1 Artifacts.** `scripts/release.sh` builds static `CGO_ENABLED=0` binaries for
+  linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64 with the version stamped in, and
+  packages reproducible tarballs `nu_<version>_<os>_<arch>.tar.gz` (binary, LICENSE,
+  NOTICE, `install.sh`, the service definitions) plus `SHA256SUMS`. The release workflow
+  (`.github/workflows/release.yml`, on `v*` tags) adds `darwin_universal` (lipo), smoke
+  tests the macOS binary natively, and drafts the GitHub release.
+- **I2 macOS signing and notarization** run in the workflow only when the repository has
+  the secrets, referenced by name: `MACOS_SIGN_P12_BASE64` (Developer ID Application
+  certificate and key, base64 .p12), `MACOS_SIGN_P12_PASSWORD`, `MACOS_SIGN_IDENTITY`
+  (e.g. `Developer ID Application: Name (TEAMID)`), and for notarization
+  `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD` (app-specific
+  password). Binaries are signed with the hardened runtime and a timestamp and submitted
+  with `notarytool --wait` (bare binaries cannot be stapled; Gatekeeper checks online).
+  Without the secrets the workflow warns and ships unsigned binaries. **A human must
+  provide** an Apple Developer Program membership, the Developer ID certificate and the
+  notary credentials, and add them as repository secrets.
+- **I3 Linux servers** run the system unit `dist/linux/nu.service`: user `nu`,
+  `NU_PATH=/var/lib/nu` (`StateDirectory`, mode 0700, `UMask=0077`), clean SIGTERM stop,
+  restart on failure, basic systemd hardening. CLI commands run as that user
+  (`sudo -u nu NU_PATH=/var/lib/nu nu status`). The daemon reads `add` sources and writes
+  `get -o` destinations itself, so those paths must be accessible to `nu`.
+- **I4 Workstations** run a per-user service with state in `~/.nu`: the systemd user unit
+  `dist/linux/nu-user.service` (`loginctl enable-linger` keeps it running logged out) or
+  the LaunchAgent `dist/macos/io.ipfs.nu.daemon.plist` (log in `~/Library/Logs/nu.log`).
+- **I5 Install and upgrade.** `install.sh [--user|--system|--no-service] [--prefix DIR]
+  [--backup DIR] <tarball>` verifies the tarball against `SHA256SUMS` beside it, checks the
+  binary runs, stops the service, optionally writes the pre-upgrade authority backup,
+  replaces the binary atomically, installs the service definition, starts it and waits
+  until the daemon answers (the new daemon migrates the store, U2). A daemon that does not
+  come up is reported with the log location and the downgrade hint (U5).
+
 ## API, gateway and public exposure
 
 The local API, the loopback gateway and any later public/member HTTPS serving share one
@@ -601,7 +740,7 @@ required by the named task before it ships.
 | N31 | X1 | `../x`, `/x`, `a/../../x`, `a\..\x`, NUL, `./x` | invalid_argument, nothing written | `extract.TestExtractSafety` |
 | N32 | X2 | symlink in destination (dir on the way, file being replaced) | aborts, nothing through the link | `extract.TestExtractSafety` |
 | N33 | X3 | symlink entry | skipped, reported | `extract.TestExtractSafety` |
-| N34 | X4 | `a.txt` and `A.txt` in one directory | both written on case-sensitive FS; second skipped naming `a.txt` on case-insensitive FS | `extract.TestExtractSafety` (Linux); macOS/APFS: browser plan B8 |
+| N34 | X4 | `a.txt` and `A.txt` in one directory | both written on case-sensitive FS; second skipped naming `a.txt` on case-insensitive FS (likewise NFC/NFD on normalization-insensitive FS) | `extract.TestExtractSafety`, `node.TestFilenameRoundTrip` (Linux here; APFS branch in the macOS CI job) |
 | N35 | X5 | mode `0777`, setuid in tree | `0755` only | `extract.TestExtractSafety` |
 | N36 | A8 | producer listener: push without a token, with another collection's token, with a revoked token | 403, nothing queued | `main.TestProducerPushCLI` |
 | N37 | A8/A2 | producer listener: `Host` not in `api.producer.hosts` | 403 | `main.TestProducerPushCLI` |

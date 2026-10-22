@@ -77,6 +77,10 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 		return nil, err
 	}
 	st, err := store.Open(r.Root(), store.Options{Limits: limits})
+	if errors.Is(err, store.ErrNewerSchema) {
+		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "the store in %s was upgraded by a newer %s: %v", r.Root(), nu.Name, err).
+			WithAction("run that newer release; downgrades are not supported (restore a backup and export taken before the upgrade instead)")
+	}
 	if err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the store in %s: %v", r.Root(), err).
 			WithAction("check that the directory is writable and not in use by an older or newer " + nu.Name)

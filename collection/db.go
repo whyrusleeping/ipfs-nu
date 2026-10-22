@@ -70,16 +70,24 @@ func openDB(path string) (*sql.DB, string, error) {
 	}
 	if v > len(schema) {
 		db.Close()
-		return nil, "", fmt.Errorf("collection: database schema %d is newer than this build", v)
+		return nil, "", fmt.Errorf("collection: database schema %d is newer than this build (%d); downgrades are not supported: run the newer release or restore a backup taken before the upgrade", v, len(schema))
 	}
+	// Each step and its version bump commit together, so an interrupted upgrade resumes.
 	for ; v < len(schema); v++ {
-		if _, err := db.Exec(schema[v]); err != nil {
+		tx, err := db.Begin()
+		if err == nil {
+			if _, err = tx.Exec(schema[v]); err == nil {
+				if _, err = tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err == nil {
+					err = tx.Commit()
+				}
+			}
+			if err != nil {
+				tx.Rollback()
+			}
+		}
+		if err != nil {
 			db.Close()
 			return nil, "", fmt.Errorf("collection: migrate to %d: %w", v+1, err)
-		}
-		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err != nil {
-			db.Close()
-			return nil, "", err
 		}
 	}
 	// The epoch names this database's holdings logs and item stream: a recreated database

@@ -224,15 +224,28 @@ func migrateHeld(tx *sql.Tx) error {
 // SchemaVersion is the schema version this binary writes.
 var SchemaVersion = len(migrations)
 
-func migrate(db *sql.DB) error {
+// ErrNewerSchema is returned by Open for a database written by a newer build. Nothing is
+// changed: downgrades are not supported (docs/operations.md "Upgrades and compatibility").
+var ErrNewerSchema = errors.New("store: database schema is newer than this build supports")
+
+// migrateHook, when set (tests), runs inside each migration's transaction before it
+// commits, with the version being reached.
+var migrateHook func(version int)
+
+// migrate applies the forward migrations, each in its own transaction together with the
+// user_version bump, so an interrupted upgrade leaves the database at the last completed
+// version and the next Open resumes from there.
+func migrate(db *sql.DB) error { return migrateTo(db, len(migrations)) }
+
+func migrateTo(db *sql.DB, target int) error {
 	var v int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return err
 	}
 	if v > len(migrations) {
-		return fmt.Errorf("store: database schema version %d is newer than this binary supports (%d); upgrade nu", v, len(migrations))
+		return fmt.Errorf("%w (database %d, this build %d)", ErrNewerSchema, v, len(migrations))
 	}
-	for ; v < len(migrations); v++ {
+	for ; v < target; v++ {
 		tx, err := db.Begin()
 		if err != nil {
 			return err
@@ -246,6 +259,9 @@ func migrate(db *sql.DB) error {
 				tx.Rollback()
 				return fmt.Errorf("store: migration %d: %w", v+1, err)
 			}
+		}
+		if migrateHook != nil {
+			migrateHook(v + 1)
 		}
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v+1)); err != nil {
 			tx.Rollback()

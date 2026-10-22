@@ -84,7 +84,7 @@ func Open(path string) (*Repo, bool, error) {
 	}
 	r := &Repo{root: path}
 	if Exists(path) {
-		return r, false, nil
+		return r, false, r.checkLayout()
 	}
 	if err := r.init(); err != nil {
 		return nil, false, err
@@ -107,6 +107,30 @@ func (r *Repo) init() error {
 	}
 	cfg := DefaultConfig()
 	return r.writeConfigStruct(cfg)
+}
+
+// ErrNewerLayout is returned by Open for a repo written by a newer build; nothing is
+// changed (downgrades are not supported).
+var ErrNewerLayout = errors.New("repo layout is newer than this build supports")
+
+// checkLayout refuses a layout version newer than LayoutVersion. A missing version file
+// (repos initialized before it existed) is version 1.
+func (r *Repo) checkLayout() error {
+	b, err := os.ReadFile(r.Path(VersionFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return fmt.Errorf("%s: %w", r.Path(VersionFile), err)
+	}
+	if v > LayoutVersion {
+		return fmt.Errorf("%s: %w (layout %d, this build %d)", r.root, ErrNewerLayout, v, LayoutVersion)
+	}
+	return nil
 }
 
 // Root is the repo directory.

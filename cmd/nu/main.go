@@ -237,6 +237,10 @@ func (e *env) openRepo() (*repo.Repo, error) {
 		}
 	}
 	r, created, err := repo.Open(path)
+	if errors.Is(err, repo.ErrNewerLayout) {
+		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "%v", err).
+			WithAction("run the newer " + nu.Name + " release that wrote it; downgrades are not supported")
+	}
 	if err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open %s: %v", path, err).
 			WithAction("check that the directory is writable, or point " + repo.EnvPath + " elsewhere")
@@ -424,6 +428,8 @@ var root = &command{
 		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdCar, cmdDataset, cmdCluster, cmdRelay, cmdVersion,
 		// 0043
 		cmdPublic,
+		// 0044
+		cmdRepo,
 		// 0045
 		cmdLogin, cmdLogout, cmdPublish, cmdResolve, cmdNames, cmdUnpublish, cmdNode, cmdDevices, cmdFollow, cmdUnfollow,
 	},

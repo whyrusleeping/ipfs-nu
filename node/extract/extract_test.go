@@ -75,6 +75,29 @@ func TestExtractSafety(t *testing.T) {
 			t.Fatalf("skip reason must name the colliding entry: %+v", sk)
 		}
 	}
+	// NFC and NFD spellings are distinct tree entries: both written where the filesystem
+	// keeps them apart (Linux), the second reported naming the first where it treats them
+	// as one name (APFS; this runs in the macOS CI job). The first keeps its own bytes.
+	nfc, nfd := "caf\u00e9", "cafe\u0301"
+	rep, err = Extract(ctx, dest, walkOf(file(nfc, "nfc", 0), file(nfd, "nfd", 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dest, nfc)); string(b) != "nfc" {
+		t.Fatalf("%q holds %q", nfc, b)
+	}
+	switch len(rep.Skipped) {
+	case 0:
+		if b, _ := os.ReadFile(filepath.Join(dest, nfd)); string(b) != "nfd" || rep.Files != 2 {
+			t.Fatalf("%q holds %q (%+v)", nfd, b, rep)
+		}
+	case 1:
+		if sk := rep.Skipped[0]; sk.Path != nfd || !strings.Contains(sk.Reason, nfc) {
+			t.Fatalf("normalization collision must name %q: %+v", nfc, sk)
+		}
+	default:
+		t.Fatalf("report: %+v", rep)
+	}
 
 	// Hostile paths never produce a write.
 	outside := filepath.Join(t.TempDir(), "victim")

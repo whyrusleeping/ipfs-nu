@@ -22,7 +22,12 @@ optional). Files are 0600, directories 0700.
 | `tokens/<name>.json` | push tokens of the producer listener (0600; `nu api token`; deleting the file revokes it) |
 | `public.cert`/`public.key` (config) | the public listener's PEM chain and key live wherever the operator keeps them, outside `$NU_PATH` |
 | `cluster/net/ingest/` | retained bytes of interrupted item URL downloads, with their validators |
-| `version` | layout version (`1`) |
+| `version` | layout version (`1`); a newer one is refused untouched ([U4](operations.md#u-upgrades-and-compatibility)) |
+
+Back up keys and signed state with `nu repo backup` and content with `nu repo export`
+([B1–B8](operations.md#b-backup-export-and-recovery)); copying the directory of a running
+daemon is not a consistent backup. Linux servers use `NU_PATH=/var/lib/nu`
+([I3](operations.md#i-distribution-and-service-lifecycle)).
 
 Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:8171"`,
 `swarm.listen = ["/ip4/0.0.0.0/udp/4171/quic-v1", "/ip6/::/udp/4171/quic-v1"]`,

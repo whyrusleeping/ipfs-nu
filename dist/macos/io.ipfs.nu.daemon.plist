@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Nu per-user LaunchAgent (macOS workstations). dist/install.sh substitutes @BIN@ and
+  @LOGS@ and installs it as ~/Library/LaunchAgents/io.ipfs.nu.daemon.plist, then
+  `launchctl bootstrap gui/$(id -u)` loads it. State lives in ~/.nu (the default NU_PATH).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.ipfs.nu.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@BIN@</string>
+		<string>daemon</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>StandardOutPath</key>
+	<string>@LOGS@/nu.log</string>
+	<key>StandardErrorPath</key>
+	<string>@LOGS@/nu.log</string>
+</dict>
+</plist>

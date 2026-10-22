@@ -93,6 +93,16 @@ over 1 MiB is not produced: the add fails and names the directory. Vectors are i
 - `dir`: `cid` is the directory's MST root; `size` is the sum of its entries' sizes.
 - `symlink`: `cid` is a raw blob of the target bytes, `size` their length. Symlinks are
   recorded, never followed.
+- **Platforms.** Names are read from the filesystem as stored and never normalized: macOS
+  APFS preserves the spelling a file was created with (HFS+ stored NFD), so the same
+  visible name created on Linux and on macOS can be two different entries. Extraction
+  writes names byte-exact; where the destination folds case or Unicode spellings (APFS,
+  NTFS, casefolded ext4) the second spelling is skipped and reported naming the entry it
+  maps onto ([X4](operations.md#x-extraction-nu-get--o)); nothing is merged or renamed.
+  Symlinks are recorded on import and reported, not created, on extraction (X3);
+  ownership, other permission bits, times, xattrs, ACLs, resource forks and Finder
+  metadata are not recorded, so they are not transformations. Tests:
+  `node.TestFilenameRoundTrip`, `extract.TestExtractSafety`.
 - The importer sets no `mime` (type guessing is machine-dependent). In the header, `files`
   counts file entries in the whole tree and `bytes` is the root directory's `size`.
 - nu-tree walk and CAR pre-order: header → root; directory node → left subtree, then per
@@ -396,9 +406,9 @@ content model.
   Pins needed by held views, retained archives or unconfirmed handoffs survive disk pressure;
   GC reclaims only unpinned content. `--nocopy` is not an independent archive copy: source
   mutation/deletion must invalidate availability until reverified or reacquired.
-- Linux/macOS import/extraction needs explicit filename, Unicode, case, symlink and metadata
-  semantics. Reject traversal/unsafe extraction and report unsupported transformations.
-  Stable content export and clean-machine restore are production requirements.
+- Linux/macOS import/extraction semantics are in [Entries](#d3-directory-trees) (Platforms) and
+  [X1–X6](operations.md#x-extraction-nu-get--o); content export and clean-machine restore
+  in [B1–B8](operations.md#b-backup-export-and-recovery).
 
 ### Accounting and budgets
 
@@ -468,12 +478,11 @@ A1–A8; the transfer rules are in [operations](operations.md#capacity-and-trans
 ## Details still to specify
 
 The design above selects the format and protocol families, not yet every wire byte. Remaining
-precision work includes extraction rules (filenames, case, symlinks on export) and the
-`atrepo` profile of `/nu/tree/1`. Name kinds now distinguish `tree|file|blob`; canonical
+precision work includes the `atrepo` profile of `/nu/tree/1`. Name kinds now distinguish `tree|file|blob`; canonical
 vectors and wrapper/stream behavior still require implementation validation. Accounting is
 specified (A1–A8, [T1–T4](operations.md#capacity-and-transfer-budgets)); transfer budgets
-are enforced when their first consumer (follow) lands. Crash-consistent pin/held switches
-and export compatibility remain to specify. Benchmarks must validate
+are enforced when their first consumer (follow) lands. Crash-consistent pin/held switches remain
+to specify; content export and upgrades are [B1–B8 and U1–U6](operations.md#b-backup-export-and-recovery). Benchmarks must validate
 fanout/node-size behavior and actual archive update/storage costs.
 
 ## References

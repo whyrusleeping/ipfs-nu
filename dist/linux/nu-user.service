@@ -1,0 +1,20 @@
+# Nu per-user service (Linux workstations). Installed by dist/install.sh --user as
+# ~/.config/systemd/user/nu.service; state in ~/.nu (the default NU_PATH), so the CLI
+# finds the daemon without any configuration. Enable lingering
+# (`loginctl enable-linger $USER`) to keep it running while logged out.
+[Unit]
+Description=Nu daemon (per-user)
+Documentation=https://github.com/whyrusleeping/nu/blob/master/docs/operations.md
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/nu daemon
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

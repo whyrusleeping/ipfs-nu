@@ -137,7 +137,8 @@ nu cluster init|invite|join|status   # multi-machine: same dataset verbs as `nu 
 nu cluster dataset create|add|edit|update|status|versions|diff|label|rollback <ds>
 nu cluster collection items|rules|where <ds>        # item metadata, local selection, copies per item
 nu cluster collection put <ds> <path> --meta m.json … # producer pushes an item (upload, path or URL)
-nu cluster export|import             # verified content bundles; keys backed up separately
+nu repo export|import <dir>          # verified content bundle of every pin (stopped node)
+nu repo backup|restore <file>        # keys + signed cluster state, separate from content
 
 nu relay                            # circuit relay + dnsaddr/peer-routing server
 ```
@@ -269,6 +270,8 @@ rasl/                   rasl:// URLs and the hinted-host HTTPS source (fetch.Sou
 relay/                  circuit HOP + dnsaddr/routing server
 bridge/                 later IPFS import: Bitswap, UnixFS; enabled in standard Linux/macOS
                         production distribution, optional/build-tagged for minimal embedders
+dist/ scripts/           service definitions (systemd, launchd), install/upgrade and release
+                        scripts
 experiments/            separate Go module for spikes; may use go-libp2p/Kubo, never imported
 ```
 
@@ -342,8 +345,10 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
 - **Connectivity:** [network verification](docs/networking.md#details-still-to-verify), stock
   path recovery/MTU/congestion, HTTPS-compatible fallback and independent security review.
 - **Migration:** supported UnixFS/DAG profile, installation adapters and provenance manifest.
-- **Lifecycle/portability:** DID-wide following, quotas for future names, macOS metadata,
-  filename/symlink safety, export stability, upgrades and key/state recovery procedures.
+- **Lifecycle/portability:** DID-wide following, quotas for future names, macOS metadata
+  (xattrs/resource forks are not recorded), signed macOS packaging and native macOS
+  crash/sleep evidence; filename handling, export, upgrades and key/state recovery are
+  [specified](docs/operations.md#b-backup-export-and-recovery).
 - **Deferred:** PDS file serving remains deferred/disfavored; upstream QUIC multipath may be
   reconsidered without requiring a quic-go fork.
 

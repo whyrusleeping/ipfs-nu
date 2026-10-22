@@ -262,8 +262,8 @@ version/<name>.<tid> → { root: "<cid>", kind, parent?: "<tid>", author: "<did>
   encoding of the record without those keys (unknown fields included). Keys that may write
   the dataset's head (admins and listed writers) may write and annotate its versions.
   Annotating another author's version copies its identity fields into the annotator's own
-  record. Merge per TID: the *canonical* record is the author's own (`author` = signer),
-  else the earliest (`hlc`, then signer DID) record; records whose identity differs are
+  record. Merge per TID: the *canonical* record is the earliest (`hlc`, signer) record
+  signed by its own `author`, else the earliest record; records whose identity differs are
   **conflicts**, shown with the version and never merged into it; among the agreeing
   records and the tombstones the greatest (`hlc`, signer) supplies the annotations, and a
   winning tombstone compacts the version's metadata. Labels match `[a-z][a-z0-9._-]{0,63}`
@@ -272,6 +272,12 @@ version/<name>.<tid> → { root: "<cid>", kind, parent?: "<tid>", author: "<did>
   lookup rather than resolved silently.
 - Preserve concurrent versions subject to retention, even when only one head wins;
   history remains administratively prunable, not a compliance log.
+- **Provenance.** A local version's provenance is its `author` did:key and the signed state
+  commit carrying the record; a did:key cannot rotate, so the record proof (commit, MST
+  path, record) stays verifiable after the key is revoked, and the key's authority at the
+  time is the root/admin `key` record chain. External sources add `observed` (name, 0045;
+  atproto commit, 0054) and `imported` (0042) provenance; their historical identity
+  evidence (DID document/key at observation time) is specified with those tasks.
 - Entries are about 300 bytes and sync with the state repository's MST diffs. Pruned
   versions keep metadata until an explicit compaction tombstones them (`history.compact_after`
   is not automatic yet). History is neither permanently complete nor a compliance/append-only

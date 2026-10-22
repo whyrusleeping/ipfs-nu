@@ -260,6 +260,10 @@ func TestArchiveRetentionAvailability(t *testing.T) {
 	if !errors.As(err, &ae) || ae.Code != apiv0.CodeUnavailable || ae.Details["availability"] != apiv0.AvailPruned {
 		t.Fatalf("pruned version read: %v", err)
 	}
+	// A time selecting the pruned version reports it, never a neighbour.
+	if _, err := catString(t, n, "logs@"+v1.Time.Format(time.RFC3339Nano)+"/log.txt"); !errors.As(err, &ae) || ae.Details["version"] != v1.TID {
+		t.Fatalf("time selection of a pruned version: %v", err)
+	}
 	if _, err := n.DatasetRollback(ctx, ScopeLocal, "logs", apiv0.RollbackRequest{Version: v1.TID}); !isCode(err, apiv0.CodeUnavailable) {
 		t.Fatalf("rollback to pruned content: %v", err)
 	}

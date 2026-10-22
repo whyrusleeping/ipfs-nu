@@ -1,10 +1,10 @@
 ---
 id: "0034"
 title: 'Pilot workloads and product validation: first magic plus smaller archive/mirror teams'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-29"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on: []
 spec_refs:
     - docs/product.md#Audience and jobs

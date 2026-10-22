@@ -1,7 +1,7 @@
 ---
 id: "0075"
 title: Recover promptly when one peer's daemon restarts (stale inner QUIC session on the survivor)
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

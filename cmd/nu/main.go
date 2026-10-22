@@ -425,5 +425,7 @@ var root = &command{
 		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdCar, cmdDataset, cmdCluster, cmdRelay, cmdVersion,
 		// 0043
 		cmdPublic,
+		// 0044
+		cmdRepo,
 	},
 }

@@ -290,7 +290,8 @@ func cidFromPrefix(p, data []byte) (IPFSCID, error) {
 	if n <= 0 || n != len(p) || sz != 32 || h != hashSHA256 {
 		return IPFSCID{}, errors.New("bitswap: unsupported CID prefix")
 	}
-	if v != 1 || (codec != codecDagPB && codec != codecRaw) {
+	// Kubo sends CIDv0 blocks with the prefix [0, dag-pb, sha2-256, 32].
+	if (v != 1 || (codec != codecDagPB && codec != codecRaw)) && (v != 0 || codec != codecDagPB) {
 		return IPFSCID{}, errors.New("bitswap: unsupported CID prefix")
 	}
 	return IPFSCID{Version: v, Codec: codec, Hash: h, Digest: sha256Digest(data)}, nil

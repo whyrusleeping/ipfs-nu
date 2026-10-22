@@ -30,6 +30,7 @@ type connectivity struct {
 	socket  *magicsock.Conn
 	client  *circuit.Client
 	homes   *homerelay.Manager
+	network *networkControl
 	mu      sync.Mutex
 	closed  bool
 	peers   map[wire.PeerID]*pathPeer
@@ -116,6 +117,9 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	if s.cfg.Private || s.cfg.Isolated {
 		return nil
 	}
+	if err := c.initNetwork(); err != nil {
+		return err
+	}
 	c.client, err = circuit.NewClient(s.host, circuit.ClientConfig{})
 	if err != nil {
 		return err
@@ -129,7 +133,7 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	c.mu.Unlock()
 	c.spawn(c.accept)
 	c.spawn(c.prune)
-	return nil
+	return c.runNetwork()
 }
 
 func (c *connectivity) spawn(fn func()) bool {
@@ -147,6 +151,9 @@ func (c *connectivity) close() {
 	c.closed = true
 	c.cancel()
 	c.mu.Unlock()
+	if c.network != nil {
+		c.network.close()
+	}
 	if c.homes != nil {
 		c.homes.Close()
 	}
@@ -154,6 +161,11 @@ func (c *connectivity) close() {
 		c.client.Close()
 	}
 	c.wg.Wait()
+	if c.network != nil && c.network.mapper != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = c.network.mapper.Release(ctx)
+		cancel()
+	}
 }
 func (c *connectivity) peer(id wire.PeerID) (*pathPeer, error) {
 	c.mu.Lock()
@@ -193,6 +205,11 @@ func (c *connectivity) admitHints(id wire.PeerID, addrs []wire.Multiaddr) error 
 	defer c.mu.Unlock()
 	for _, a := range addrs {
 		if !host.IsCircuitAddress(a) {
+			if c.network != nil {
+				if addr, ok := literalEndpoint(a); ok {
+					c.network.allow(id, addr)
+				}
+			}
 			continue
 		}
 		a, err := lookup.NormalizeAddress(id, a)
@@ -347,7 +364,11 @@ func (c *connectivity) inner(ctx context.Context, id wire.PeerID) (*host.Conn, e
 		if err != nil {
 			return nil, err
 		}
-		return c.s.host.Dial(ctx, addr)
+		conn, err := c.s.host.Dial(ctx, addr)
+		if err == nil && c.network != nil {
+			c.network.open(ctx, conn)
+		}
+		return conn, err
 	}
 	timer := time.NewTicker(5 * time.Millisecond)
 	defer timer.Stop()

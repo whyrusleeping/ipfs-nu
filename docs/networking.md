@@ -373,6 +373,11 @@ reflexive observations never grant probe permission. Without suitable grants pee
 remain relayed: safe relay sharing does not depend on hole punching. No ranges,
 prediction, DNS target resolution or blanket-true authorization are installed.
 
+`dht = "auto" | "client" | "off"` (default `auto`) selects Amino participation, and
+`lookup_domain = "<peer domain>"` / `routing_url = "https://…"` add a dnsaddr and a
+routing/v1 peer-address source; see [D8](#d8-wire-profile-and-compatibility) for the
+daemon wiring. None of the three applies in private/isolated mode.
+
 `portmap_gateway = "<literal IP>"` optionally enables PCP/NAT-PMP/UPnP leases at
 that operator-selected gateway for the shared socket's port. Mappings remain tentative
 candidates; no automatic gateway discovery is claimed. Two independent observer IPs

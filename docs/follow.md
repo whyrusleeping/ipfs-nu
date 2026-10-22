@@ -269,6 +269,29 @@ multiple publishers of the same dataset; only cluster collections merge several 
 heads ([D22](collections.md#union-heads)). Identical content still shares blobs, and
 therefore providers, across datasets.
 
+## Implemented (0045)
+
+A follow is `nu [cluster] dataset` record `{source: {name: "at://<did>/io.ipfs.nu.name/<n>",
+follow?: {max_size?, no_announce?}}, policy}` (mirror preset; `--all` for the seed
+layout). `nu follow <handle-or-did>/<name>` resolves the name once (binding the DID),
+writes the dataset and its first head immediately; heads carry
+`observed: {rev, commit}` from the proof and are replaced only by a strictly newer rev
+(version ordering above). Admin daemons re-resolve on startup, on `nu follow refresh`,
+on every `node.FollowPoll` (1 h, jittered) and on the publisher's own `publish`; storage
+members follow the admins' heads. `nu follow ls` reports per follow: `observed` (name
+cache, with age), `syncing` (head not yet complete locally), `held` (the placement
+manager's last fully held target, which `/c/<dataset>` and `/nu/<handle>/<name>?held=1`
+serve), `state` (`observed`, `syncing`, `held`, `lagging`, `paused`, `error`, `ended`),
+blockers and the dataset's E2–E7 content state. A verified deletion sets `ended` and
+lists the last target as an orphan pin; `nu unfollow` deletes the dataset record and
+releases that follow's pins only. `max_size` is enforced against the record's size claim
+before a head is written (the follow pauses with `quota`). `publish --wait-seed <peer>`
+needs a cluster dataset following the name (created on demand with `--all`) and runs the
+W2 `held` wait on it. Not built: scoped (`--path`) and lazy follows (refused with
+`not_supported`), DID-wide follows, `/nu/name/1` peer push, Jetstream hints, the dataset
+swarm key, transfer budgets, and size verification during fetch (the claim is trusted for
+the quota check only).
+
 ## Details still to specify
 
 - Enforcing the transfer budget ([T4](operations.md#capacity-and-transfer-budgets)) and the

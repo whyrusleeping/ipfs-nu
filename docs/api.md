@@ -146,6 +146,10 @@ DELETE /api/v0/follows/{dataset}            → Follow (state unfollowed, orphan
 POST   /api/v0/follows:refresh{dataset?}   → [Follow]
 ```
 
+The gateway also serves `/nu/<handle-or-did>/<name>[/path]` (0045): a 302 to the immutable
+`/tree/<cid>/…` of the verified target (`X-Nu-Root`, `X-Nu-Source: pds|cache`); `?held=1`
+selects a local follow's held snapshot (`X-Nu-Source: held`), which may be older.
+
 `add` also takes `{url, meta?}` (URL import) and `meta` for local paths; the result then
 carries `source` (provenance), `meta` and `entry`.
 

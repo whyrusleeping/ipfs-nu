@@ -21,7 +21,60 @@ Nu uses atproto for identity and signed mutable names, not as a file-serving net
 - Content commands (`add`, `get`, `cat`, `pin`, `share`) require no identity.
 
 The namespace is `io.ipfs.nu`, from **nu.ipfs.io**. The shorthand `nu.name` / `nu.node` below
-refers to those collections. Use `indigo` for atproto identity, crypto, OAuth and repo proofs.
+refers to those collections. Use `indigo` for atproto identity, crypto and repo proofs; the
+OAuth client is Nu's own small implementation (below) so that every request runs under
+`httpsrc`'s policy and the test fixtures.
+
+### Login and discovery security (0045; moved here from 0035)
+
+`nu login <handle-or-did>` is the atproto OAuth profile for a **public client**: PAR, PKCE
+`S256`, DPoP `ES256`, no client secret. The daemon (or the daemonless command) runs the
+whole flow; the CLI only opens the browser and waits for the operation.
+
+- **Discovery chain, every step through `httpsrc`.** Handle → DID (DNS TXT, then
+  `/.well-known/atproto-did`), DID document (plc.directory or did:web), the PDS from the
+  document, `<pds>/.well-known/oauth-protected-resource` → exactly one
+  `authorization_servers` origin, `<as>/.well-known/oauth-authorization-server`. Each URL is
+  checked before the dial (https, no credentials, no address zones, no private, loopback,
+  link-local, special-use or IPv4-mapped destinations; resolved addresses are checked and
+  dialed as literals, mixed answers fail closed), bodies are bounded (64 KiB), redirects
+  are refused on auth and XRPC requests, responses must be exactly 200 `application/json`.
+  The identity used for login is re-resolved when older than a minute (the profile asks
+  for short cache lifetimes in auth flows).
+- **Malicious endpoint validation.** The resource metadata's authorization server must be
+  an origin (https, no path/query/fragment/default port). The server metadata must have
+  `issuer` equal to that origin and `authorization_endpoint`, `token_endpoint`,
+  `pushed_authorization_request_endpoint` (and `revocation_endpoint` if present) as https
+  URLs, support `code`, `authorization_code` + `refresh_token`, `S256`, the `atproto`
+  scope, DPoP `ES256`, `token_endpoint_auth_method` `none`, and set
+  `authorization_response_iss_parameter_supported`, `require_pushed_authorization_requests`
+  and `client_id_metadata_document_supported` to true; `require_request_uri_registration`
+  must not be false. Anything else is refused before any request to it.
+- **Binding.** The flow is bound to the DID resolved at its start (`login_hint` carries
+  what the user typed). The callback must carry the flow's `state` and the bound
+  `iss`; the token response must have `sub` equal to that DID, `token_type` `DPoP`,
+  a refresh token and a `scope` containing `atproto`, or the session is rejected. Each
+  DPoP proof has a fresh `jti`, `htm`, `htu`, `iat`, the server's current `nonce` and, on
+  resource requests, `ath`; `use_dpop_nonce` answers are retried once with the new nonce,
+  an expired access token is refreshed once. Refresh tokens are single-use, so token use
+  is serialized per DID inside the daemon.
+- **Client identity.** The default `client_id` is the profile's localhost development
+  form, `http://localhost?redirect_uri=http://127.0.0.1/callback&scope=…`, which binds a
+  loopback redirect on any port and needs no hosted metadata document; the callback
+  listens on `127.0.0.1:<ephemeral>/callback` for one login (10 min). A hosted
+  `client_id` can replace it in `atproto.Config.OAuth` once nu.ipfs.io publishes a
+  client metadata document (open product question: hosted metadata needs a custom-scheme
+  or https redirect, not loopback).
+- **Scope.** Nu requests `atproto repo:io.ipfs.nu.name repo:io.ipfs.nu.node` and nothing
+  else; a PDS refusing a write outside them is reported as `forbidden`. The
+  `io.ipfs.nu.authPublish` permission set replaces the granular scopes once its lexicon
+  is published under nu.ipfs.io.
+- **Token storage.** Sessions (tokens, DPoP key, nonces) are JSON files, mode 0600, in
+  `$NU_PATH/auth/` (mode 0700), one per DID, written atomically. They never appear in the
+  API (`/auth/accounts` lists DID, handle, PDS, scopes and times), in bundles or exports.
+  `nu logout` revokes the refresh token at the server when it has a revocation endpoint
+  and deletes the file either way.
+- Named publication requires a login; content commands and name resolution never do.
 
 ## D5. Records
 
@@ -63,6 +116,13 @@ same code ([D21](dasl.md#using-atproto-data)). Package `atproto` implements them
 endpoint from a DID document is checked like any URL), identities cached for 10 minutes
 with the age exposed on each answer, and one re-resolution after a signature failure.
 
+*Implemented (0045):* `names.Resolver` caches verified answers for 5 minutes per
+`<did>/<name>` and per `<handle>/<name>`, so a hit makes no name-plane request at all;
+every answer carries `source` (`pds` or `cache`), `age` and `identity_age`. `nu resolve
+--fresh` forces a PDS fetch, `--offline` answers only from the cache (any age, labeled),
+`--max-age` bounds the accepted age. A publisher's own `publish` fetches its proof once
+and primes the cache. Deletions are cached as proven absences (the rev is reported).
+
 The current PDS is the source for current repository state. Proofs establish authenticity,
 not freshness. Cached answers may be stale, including during outages; this is acceptable.
 A cache hit needs no name-plane requests. Cold resolution takes roughly 3–4 HTTPS round
@@ -78,6 +138,11 @@ identity/signing-key provenance, not only the current DID document; specify this
 claiming retained proofs survive account/key changes. See [operations](operations.md).
 
 ## D7. Updates and following
+
+*Implemented (0045):* followers re-resolve on startup, on `nu follow refresh`, on
+every poll (`node.FollowPoll`, 1 h jittered) and, for the publisher's own daemon, at
+`publish` time. Peer push (`/nu/name/1`) and the Jetstream hint source are not built yet;
+when they are, they stay hints that trigger the same verified refresh.
 
 Jetstream subscriptions (`wantedDids`, `wantedCollections`) trigger a re-fetch of current
 state from the PDS **with proof**. The full signed firehose is an alternative. Notifications

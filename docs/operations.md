@@ -191,6 +191,15 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **0045 (names and seeds)**: E2 full/scoped/lazy report semantics for follows, W1–W5,
   `publish` and seed wait as separate results, R2 and R19; no claim that publication,
   proof receipt or metadata acknowledgment is readiness.
+  Implemented with these readings: a seed is a storage member of the publisher's
+  cluster, and the seed-wait dataset is created with `replicas: all`, so the seed's
+  `owned` report covers every blob and stands for W4's `full` (the wait result shows
+  the mode; a non-`all` policy makes `owned` mean the seed's share only); only `full`
+  follows exist, so E2's scoped/lazy readings are not yet exercised; a non-member seed
+  has no authenticated status channel to the publisher, so `--wait-seed` on a
+  non-member fails fast as W3 `failed` (`nutest.TestPublishSeedWait` covers R2 via a
+  budget-limited seed, W1 via a partitioned wait that is never retargeted, W4/W5 and
+  R19 via a fresh node fetching from the seed after the publisher stopped).
 - **0046 (placement and readiness)**: E1–E8, E10, W1–W3, W6, S5, S7 and `release.auto`
   defaulting to false; R1, R3–R8, R15, R17; `ContentState` carries the W3 fields; one-node
   `k=1` status (R9) with 0047.

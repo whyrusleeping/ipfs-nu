@@ -8,6 +8,30 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Fetch on first provider, placement retry backoff, refused-dial verdict (0076, 2026-10-22)
+
+Follow-ups from 0074, each with one fast test and the suite still at ~17 s wall (three
+full runs green at load 14–17):
+
+- `fetch`: `Providers.Find` streams in the background; the walk starts on the first
+  candidate (hint, connected peer or source) and later candidates join as they arrive.
+  `fetch.TestFetchStartsBeforeSlowSourcesFinish`: a hinted fetch beside a stalled source
+  completes in ~0.2 s (30 s, the context ceiling, before) and cancels the source; a peer
+  named late by a source is used when the hinted one has nothing. The blob stage now
+  attempts every blob and joins the errors instead of cancelling siblings on the first
+  unserved one.
+- `replica`: failed placement fetches retry after `Config.Backoff` (default: the
+  interval) doubling to 16× per consecutive failure, reset on success, a new target or a
+  cluster state change. `replica.TestFailedFetchBackoff`: with a 10 ms interval and 20 ms
+  backoff, a fetch failing at once runs 4 attempts and ~36 reconcile passes in 300 ms
+  (the old code re-ran the pass on every failure, ~35/s with a 100 ms interval and a
+  state-file rewrite each time).
+- `p2p/host`: `Host.Dial` waits for the responder's first post-handshake packet or its
+  close before registering the connection. `host.TestRefusedDialNeverLooksConnected`:
+  10 refused dials in a row report an error within 5 ms each (the old code returned a
+  connection on attempt 0); an accepted dial is unchanged. `cluster.TestPrivateCluster`
+  asserts the refusal again.
+
 ## Test suite speed and robustness under load (0074, 2026-10-22)
 
 Method: `scripts/testtimes.sh` (`go test -json -count=1 ./...` with per-package and

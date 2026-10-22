@@ -619,10 +619,14 @@ destination.**
 - **A2** `Host` must be `localhost`, `127.0.0.1`, `[::1]` or another loopback literal with
   this listener's port, else `403 forbidden`. A public name rebound to 127.0.0.1 still
   carries the public name and is refused.
-- **A3** `GET`/`HEAD` never change state. Every state change is `POST`/`DELETE`.
-- **A4** For any method other than `GET`/`HEAD`: an `Origin` header must equal
+- **A3** `GET`/`HEAD` never change daemon configuration; every state change is
+  `POST`/`DELETE`. Some reads still fetch, resolve and store content (`/cat`, `/ls`,
+  `/resolve`), so A4 applies to them too.
+- **A4** For every method, `GET`/`HEAD` included (0077): an `Origin` header must equal
   `http://<Host>`; a `Sec-Fetch-Site` header must be `same-origin` or `none`; `OPTIONS`
-  is always `403`. The gateway's origins are foreign to the API and are refused too.
+  is always `403`. The gateway's origins are foreign to the API and are refused too. A
+  cross-site `<img>`, navigation or `fetch` of an API URL is therefore `403` before any
+  handler runs; the CLI and other non-browser clients send neither header.
 - **A5** Request bodies are read only with `Content-Type: application/json`
   (`400 invalid_argument` otherwise). HTML forms cannot send that type and a script that
   sets it triggers a preflight, which A4 refuses, so browsers that send neither `Origin`
@@ -797,7 +801,7 @@ required by the named task before it ships.
 | N5 | A4 | `OPTIONS` preflight | 403, no CORS headers | `api.TestLoopbackProtections` |
 | N6 | A5 | POST `/pins`, `/dag` as `text/plain`, form or multipart, or no type | 400 | `api.TestLoopbackProtections` |
 | N7 | A6 | any response | no `Access-Control-*`, `nosniff`, `no-store`, no `Set-Cookie` | `api.TestLoopbackProtections` |
-| N8 | A3 | GET with foreign `Origin` | 200, unreadable by the page (no CORS) | `api.TestLoopbackProtections` |
+| N8 | A3/A4 | GET/HEAD with foreign `Origin` (incl. the gateway's, `null`) or `Sec-Fetch-Site: cross-site`/`same-site` | 403 before the handler (no fetch, no resolve); same-origin, `none` and header-less GETs are served | `api.TestLoopbackProtections` |
 | N9 | A1 | daemon with `api.listen = 0.0.0.0:…` or `gateway.listen = [::]:…` | refuses to start, action names loopback | `daemon.TestDaemon` |
 | N10 | G1 | gateway `Host` not loopback/`<cid>.localhost`, or `evil.localhost`, or wrong port | 403 | `gateway.TestGatewayOrigins` |
 | N11 | G3/G4 | `/tree/<cid>/index.html` on bare origin | octet-stream attachment + `Link` alternate | `gateway.TestGatewayOrigins` |

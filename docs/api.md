@@ -611,10 +611,11 @@ none. Only the loopback API may push local paths or reuse arbitrary held blobs.
 
 Mechanics of rules A1–A7 of the [security contract](operations.md#a-local-api). The API
 accepts only requests whose `Host` is a loopback name or address (`localhost`,
-`127.0.0.1`, `[::1]`) with this listener's port (DNS-rebinding defense). Requests other
-than GET/HEAD are rejected with `forbidden` when they carry an `Origin` that is not the
-API's own `http://<host>` or a `Sec-Fetch-Site` other than `same-origin`/`none`; the
-gateway's origin is therefore rejected too. `OPTIONS` is refused and no `Access-Control-*`
+`127.0.0.1`, `[::1]`) with this listener's port (DNS-rebinding defense). Requests of any
+method (GET/HEAD included, since `/cat`, `/ls` and `/resolve` fetch and store) are
+rejected with `forbidden` when they carry an `Origin` that is not the API's own
+`http://<host>` or a `Sec-Fetch-Site` other than `same-origin`/`none`; the gateway's
+origin is therefore rejected too. `OPTIONS` is refused and no `Access-Control-*`
 header is ever sent, so a browser page cannot read responses or change state. Request
 bodies are read only as `Content-Type: application/json` (`invalid_argument` otherwise),
 which HTML forms cannot send and scripts cannot send without the refused preflight.

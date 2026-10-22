@@ -521,29 +521,52 @@ func (s *Service) Join(ctx context.Context, t *Token) error {
 			}
 		}
 	}
-	var errs []error
-	for _, b := range t.Boot {
-		var maddrs []wire.Multiaddr
-		for _, a := range b.Addrs {
-			if m, err := wire.ParseMultiaddr(a, 1024); err == nil {
-				maddrs = append(maddrs, m)
+	// Each round tries every boot peer with its own deadline (a dial stalled by load or
+	// a lost handshake does not use up ctx), and rounds repeat until ctx ends unless every
+	// peer answered with a refusal. Admission is idempotent for a joiner already admitted.
+	attempt, backoff := 3*time.Second, 100*time.Millisecond
+	for {
+		var errs []error
+		refused := true
+		for _, b := range t.Boot {
+			actx, cancel := context.WithTimeout(ctx, attempt)
+			err := s.joinVia(actx, b, &request{Op: OpJoin, Cluster: s.c.ID, Invite: t.InviteID, Proof: proof, Addrs: addrs})
+			cancel()
+			if err == nil {
+				s.exchange(b.Peer)
+				return nil
 			}
-		}
-		if s.cfg.Connect != nil {
-			if err := s.cfg.Connect(ctx, b.Peer, maddrs); err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", b.Peer, err))
-				continue
-			}
-		}
-		_, err := call(ctx, s.h, b.Peer, &request{Op: OpJoin, Cluster: s.c.ID, Invite: t.InviteID, Proof: proof, Addrs: addrs}, nil)
-		if err != nil {
+			var se *StatusError
+			refused = refused && errors.As(err, &se)
 			errs = append(errs, fmt.Errorf("%s: %w", b.Peer, err))
-			continue
 		}
-		s.exchange(b.Peer)
-		return nil
+		if refused || ctx.Err() != nil {
+			return errors.Join(errs...)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(append(errs, ctx.Err())...)
+		case <-time.After(backoff):
+		}
+		attempt, backoff = min(2*attempt, 20*time.Second), min(2*backoff, 2*time.Second)
 	}
-	return errors.Join(errs...)
+}
+
+// joinVia connects to boot peer b and sends the join request.
+func (s *Service) joinVia(ctx context.Context, b Boot, req *request) error {
+	var maddrs []wire.Multiaddr
+	for _, a := range b.Addrs {
+		if m, err := wire.ParseMultiaddr(a, 1024); err == nil {
+			maddrs = append(maddrs, m)
+		}
+	}
+	if s.cfg.Connect != nil {
+		if err := s.cfg.Connect(ctx, b.Peer, maddrs); err != nil {
+			return err
+		}
+	}
+	_, err := call(ctx, s.h, b.Peer, req, nil)
+	return err
 }
 
 // WaitSynced waits until this node sees itself as a member (the first sync after

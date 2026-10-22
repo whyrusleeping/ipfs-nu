@@ -26,6 +26,7 @@ func TestCARSourceVerifiesAndLoadsIPFSBlocks(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	defer src.Close()
 	if len(src.Roots) != 1 || src.Roots[0] != id {
 		t.Fatalf("roots: %+v", src.Roots)
 	}

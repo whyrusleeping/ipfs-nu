@@ -41,6 +41,32 @@ func TestIPFSImportRecoveryKeepsOperationID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, err := n.Store.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dry, err := n.ImportIPFS(context.Background(), apiv0.IPFSImportRequest{Root: root.String(), CAR: car, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dryFinal, err := n.WaitOperation(context.Background(), dry.ID, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan apiv0.IPFSImportResult
+	if err = json.Unmarshal(dryFinal.Result, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !plan.DryRun || plan.Files != 1 || plan.Bytes != uint64(len(data)) || plan.EstimatedPhysicalBytes < uint64(len(data)) {
+		t.Fatalf("preflight plan: %+v", plan)
+	}
+	after, err := n.Store.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Objects != after.Objects || before.Pins != after.Pins {
+		t.Fatal("dry-run changed the store")
+	}
 	operation, err := n.Ops.StartWithID("durablefixture01", "import-ipfs", root.String())
 	if err != nil {
 		t.Fatal(err)

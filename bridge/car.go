@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 const (
@@ -15,9 +16,15 @@ const (
 )
 
 // CARSource is a read-only, whole-block verified CARv1 source.
+type carBlockRef struct {
+	offset int64
+	size   int64
+}
 type CARSource struct {
 	Roots  []IPFSCID
-	blocks map[IPFSCID][]byte
+	blocks map[IPFSCID]carBlockRef
+	file   *os.File
+	path   string
 }
 
 func NewCARSource(r io.Reader) (*CARSource, error) {
@@ -42,7 +49,7 @@ func NewCARSource(r io.Reader) (*CARSource, error) {
 	if !ok || len(rootsAny) == 0 {
 		return nil, errors.New("bridge: CAR header has no roots")
 	}
-	c := &CARSource{blocks: map[IPFSCID][]byte{}}
+	c := &CARSource{blocks: map[IPFSCID]carBlockRef{}}
 	for _, v := range rootsAny {
 		b, ok := v.([]byte)
 		if !ok {
@@ -57,6 +64,18 @@ func NewCARSource(r io.Reader) (*CARSource, error) {
 		}
 		c.Roots = append(c.Roots, id)
 	}
+	file, e := os.CreateTemp("", "nu-ipfs-car-*")
+	if e != nil {
+		return nil, e
+	}
+	c.file, c.path = file, file.Name()
+	complete := false
+	defer func() {
+		if !complete {
+			_ = c.file.Close()
+			_ = os.Remove(c.path)
+		}
+	}()
 	for {
 		ln, e := binary.ReadUvarint(br)
 		if e == io.EOF {
@@ -80,14 +99,25 @@ func NewCARSource(r io.Reader) (*CARSource, error) {
 		if e != nil {
 			return nil, e
 		}
-		data := append([]byte(nil), sec[l:]...)
+		data := sec[l:]
 		if e = id.Verify(data); e != nil {
 			return nil, fmt.Errorf("bridge: CAR block %s: %w", id.String(), e)
 		}
 		if _, dup := c.blocks[id]; !dup {
-			c.blocks[id] = data
+			offset, e := c.file.Seek(0, io.SeekEnd)
+			if e != nil {
+				return nil, e
+			}
+			if _, e = c.file.Write(data); e != nil {
+				return nil, e
+			}
+			c.blocks[id] = carBlockRef{offset: offset, size: int64(len(data))}
 		}
 	}
+	if err := c.file.Sync(); err != nil {
+		return nil, err
+	}
+	complete = true
 	return c, nil
 }
 func (c *CARSource) Blocks() int { return len(c.blocks) }
@@ -95,11 +125,28 @@ func (c *CARSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
 	if e := ctx.Err(); e != nil {
 		return nil, e
 	}
-	b, ok := c.blocks[id]
+	ref, ok := c.blocks[id]
 	if !ok {
 		return nil, fmt.Errorf("bridge: CAR does not contain %s", id.String())
 	}
-	return append([]byte(nil), b...), nil
+	b := make([]byte, ref.size)
+	if _, e := c.file.ReadAt(b, ref.offset); e != nil {
+		return nil, e
+	}
+	if e := id.Verify(b); e != nil {
+		return nil, e
+	}
+	return b, nil
+}
+
+// Close deletes the temporary disk-backed index; the original CAR is never modified.
+func (c *CARSource) Close() error {
+	if c.file == nil {
+		return nil
+	}
+	err := c.file.Close()
+	c.file = nil
+	return errors.Join(err, os.Remove(c.path))
 }
 func ipfsCIDLength(b []byte) (int, error) {
 	if len(b) >= 34 && b[0] == 0x12 && b[1] == 32 {

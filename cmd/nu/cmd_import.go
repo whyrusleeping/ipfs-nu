@@ -47,6 +47,10 @@ var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] <ip
 		return err
 	}
 	return finishOperation(e, ctx, n, operation, false, func(w io.Writer, r apiv0.IPFSImportResult) {
+		if r.DryRun {
+			fmt.Fprintf(w, "verified IPFS %s; planned Nu root %s; %d files, %d bytes; estimated blob storage %d bytes; headroom %d bytes\n", r.IPFSRoot, r.Root, r.Files, r.Bytes, r.EstimatedPhysicalBytes, r.StoreHeadroom)
+			return
+		}
 		fmt.Fprintf(w, "imported IPFS %s as %s\nmanifest %s\n", r.IPFSRoot, r.Root, r.Manifest)
 	})
 }}

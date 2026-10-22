@@ -27,6 +27,21 @@ func TestDecodePBNode(t *testing.T) {
 		t.Fatalf("unexpected: %+v", n)
 	}
 }
+func TestUnixFSModeAndMtimeFields(t *testing.T) {
+	modeData := []byte{0x08, 0x02, 0x38, 0xed, 0x03}
+	d, err := DecodeUnixFSData(modeData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.HasMode || d.Mode != 0o755 {
+		t.Fatalf("mode not preserved: %+v", d)
+	}
+	mtimeData := []byte{0x08, 0x02, 0x42, 0x04, 0x08, 0x01, 0x10, 0x02}
+	if _, err := DecodeUnixFSData(mtimeData); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func FuzzDecodePBNode(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x0a, 0x01, 0x00})

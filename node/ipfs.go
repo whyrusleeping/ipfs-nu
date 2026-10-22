@@ -13,6 +13,8 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/bridge"
+	"github.com/whyrusleeping/nu/core/mst"
+	"github.com/whyrusleeping/nu/core/tree"
 	"github.com/whyrusleeping/nu/kad"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/p2p/host"
@@ -90,6 +92,7 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, err
 		if err != nil {
 			return nil, err
 		}
+		defer car.Close()
 		found := false
 		for _, r := range car.Roots {
 			if r == root {
@@ -102,7 +105,16 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, err
 		}
 		src = car
 		if job.Request.DryRun {
-			return map[string]any{"root": root.String(), "car": job.Request.CAR, "blocks": car.Blocks(), "verified": true, "dry_run": true}, nil
+			plan, err := bridge.Import(o.Context(), root, car, tree.HashSink{}, mst.MemStore{}, bridge.ImportOptions{ImporterVersion: "nu-" + nu.Version, Source: "car"})
+			if err != nil {
+				return nil, err
+			}
+			stats, err := n.Store.Stats()
+			if err != nil {
+				return nil, err
+			}
+			fits := stats.Headroom < 0 || int64(plan.EstimatedPhysicalBytes) <= stats.Headroom
+			return map[string]any{"ipfs_root": root.String(), "root": plan.Root, "manifest": plan.Manifest, "files": plan.Files, "bytes": plan.Bytes, "dry_run": true, "blocks": car.Blocks(), "estimated_blob_physical_bytes": plan.EstimatedPhysicalBytes, "store_headroom": stats.Headroom, "blob_estimate_fits_headroom": fits, "metadata_transformations": []string{"timestamps, ownership, xattrs and MIME are not preserved"}}, nil
 		}
 	} else {
 		stage("discovering-bitswap-providers")

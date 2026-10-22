@@ -34,6 +34,9 @@ type UnixFSData struct {
 	HasFilesize      bool
 	Blocksizes       []uint64
 	HashType, Fanout uint64
+	Mode             uint32
+	HasMode          bool
+	HasMtime         bool
 }
 
 const maxPBField = 16 << 20
@@ -172,6 +175,26 @@ func DecodeUnixFSData(b []byte) (UnixFSData, error) {
 			}
 			seen[f] = true
 			d.Fanout, _ = binary.Uvarint(v)
+		case 7:
+			if w != 0 || seen[f] {
+				return d, errors.New("unixfs: invalid mode")
+			}
+			seen[f] = true
+			mode, _ := binary.Uvarint(v)
+			if mode > uint64(^uint32(0)) {
+				return d, errors.New("unixfs: mode out of range")
+			}
+			d.Mode = uint32(mode)
+			d.HasMode = true
+		case 8:
+			if w != 2 || seen[f] {
+				return d, errors.New("unixfs: invalid mtime")
+			}
+			seen[f] = true
+			if err := validateUnixFSTime(v); err != nil {
+				return d, err
+			}
+			d.HasMtime = true
 		default:
 			return d, fmt.Errorf("unixfs: unknown field %d", f)
 		}
@@ -184,6 +207,36 @@ func DecodeUnixFSData(b []byte) (UnixFSData, error) {
 	}
 	return d, nil
 }
+func validateUnixFSTime(b []byte) error {
+	seenSeconds, seenNanos := false, false
+	for len(b) > 0 {
+		f, w, v, rest, err := field(b)
+		if err != nil {
+			return err
+		}
+		b = rest
+		switch f {
+		case 1:
+			if w != 0 || seenSeconds {
+				return errors.New("unixfs: invalid mtime seconds")
+			}
+			seenSeconds = true
+		case 2:
+			if w != 0 || seenNanos {
+				return errors.New("unixfs: invalid mtime fractional nanoseconds")
+			}
+			seenNanos = true
+			n, _ := binary.Uvarint(v)
+			if n >= 1_000_000_000 {
+				return errors.New("unixfs: invalid mtime fractional nanoseconds")
+			}
+		default:
+			return fmt.Errorf("unixfs: unknown mtime field %d", f)
+		}
+	}
+	return nil
+}
+
 func field(b []byte) (int, int, []byte, []byte, error) {
 	key, n := binary.Uvarint(b)
 	if n <= 0 || key>>3 == 0 {

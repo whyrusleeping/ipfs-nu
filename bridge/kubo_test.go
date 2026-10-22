@@ -55,6 +55,7 @@ ipfs get "$(cat root-v0)" -o get-v0 >/dev/null
 			if e != nil {
 				t.Fatal(e)
 			}
+			defer src.Close()
 			rootText, e := os.ReadFile(filepath.Join(dir, "root-"+ver))
 			if e != nil {
 				t.Fatal(e)

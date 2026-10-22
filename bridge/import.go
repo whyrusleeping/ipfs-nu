@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spaolacci/murmur3"
+	"github.com/whyrusleeping/nu/core/blob"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/mst"
@@ -32,29 +33,32 @@ type ImportOptions struct {
 	OnBlock                 func(int, IPFSCID)
 }
 type FileMapping struct {
-	Path   string   `drisl:"path"`
-	Source []string `drisl:"source"`
-	Blob   cid.CID  `drisl:"blob"`
-	Kind   string   `drisl:"kind"`
+	Path   string   `drisl:"path" json:"path"`
+	Source []string `drisl:"source" json:"source"`
+	Blob   cid.CID  `drisl:"blob" json:"blob"`
+	Size   uint64   `drisl:"size" json:"size"`
+	Mode   uint32   `drisl:"mode,omitempty" json:"mode,omitempty"`
+	Kind   string   `drisl:"kind" json:"kind"`
 }
 type ImportResult struct {
-	IPFSRoot string        `drisl:"ipfs_root" json:"ipfs_root"`
-	Root     cid.CID       `drisl:"nu_root" json:"root"`
-	Manifest cid.CID       `drisl:"manifest" json:"manifest"`
-	Files    uint64        `drisl:"files" json:"files"`
-	Bytes    uint64        `drisl:"bytes" json:"bytes"`
-	Mappings []FileMapping `drisl:"files_map" json:"mappings,omitempty"`
+	IPFSRoot               string        `drisl:"ipfs_root" json:"ipfs_root"`
+	Root                   cid.CID       `drisl:"nu_root" json:"root"`
+	Manifest               cid.CID       `drisl:"manifest" json:"manifest"`
+	Files                  uint64        `drisl:"files" json:"files"`
+	Bytes                  uint64        `drisl:"bytes" json:"bytes"`
+	EstimatedPhysicalBytes uint64        `json:"estimated_physical_bytes"`
+	Mappings               []FileMapping `drisl:"files_map" json:"mappings,omitempty"`
 }
 type importer struct {
-	ctx          context.Context
-	src          BlockSource
-	blobs        BlobSink
-	nodes        mst.Store
-	opts         ImportOptions
-	seen         map[IPFSCID]bool
-	blocks       int
-	mappings     []FileMapping
-	files, total uint64
+	ctx      context.Context
+	src      BlockSource
+	blobs    BlobSink
+	nodes    mst.Store
+	opts     ImportOptions
+	seen     map[IPFSCID]bool
+	blocks   int
+	mappings []FileMapping
+	files    uint64
 }
 
 // Import verifies and converts one UnixFS root into Nu's D3 tree and stores a canonical,
@@ -92,7 +96,7 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 	} else if e.Kind == tree.KindFile {
 		// A standalone UnixFS file becomes the standard Nu file node (D3a), not an
 		// artificial one-entry directory with a fabricated filename.
-		file := tree.FileNode{Src: e.CID, Nu: tree.FileMeta{Size: e.Size}}
+		file := tree.FileNode{Src: e.CID, Nu: tree.FileMeta{Size: e.Size, Mode: e.Mode}}
 		nuRoot, data, err = drisl.Sum(file)
 		if err != nil {
 			return ImportResult{}, err
@@ -103,8 +107,15 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 	} else {
 		return ImportResult{}, errors.New("bridge: a standalone UnixFS symlink has no directory entry name; import its containing directory")
 	}
-	result := ImportResult{IPFSRoot: root.String(), Root: nuRoot, Files: i.files, Bytes: i.total, Mappings: i.mappings}
-	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": nuRoot, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": i.total, "mappings": i.mappings}
+	result := ImportResult{IPFSRoot: root.String(), Root: nuRoot, Files: i.files, Mappings: i.mappings}
+	for _, mapping := range i.mappings {
+		result.Bytes += mapping.Size
+		result.EstimatedPhysicalBytes += mapping.Size
+		if blob.HasOutboard(mapping.Size) {
+			result.EstimatedPhysicalBytes += blob.OutboardSize(mapping.Size)
+		}
+	}
+	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": nuRoot, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": result.Bytes, "mappings": i.mappings, "metadata_transformations": []string{"only the executable bit is retained; timestamps, ownership, xattrs and MIME are omitted"}}
 	mc, mb, err := drisl.Sum(manifest)
 	if err != nil {
 		return ImportResult{}, err
@@ -165,7 +176,7 @@ func (i *importer) node(c IPFSCID, p string, depth int) (tree.Entry, error) {
 		if e != nil {
 			return tree.Entry{}, e
 		}
-		i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{c.String()}, Blob: blob, Kind: tree.KindSymlink})
+		i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{c.String()}, Blob: blob, Size: uint64(len(u.Data)), Kind: tree.KindSymlink})
 		return tree.Entry{Kind: tree.KindSymlink, CID: blob, Size: uint64(len(u.Data))}, nil
 	case UnixFSDirectory, UnixFSHAMTShard:
 		entries := pb.Links
@@ -213,8 +224,7 @@ func (i *importer) rawFile(c IPFSCID, p string, b []byte) (tree.Entry, error) {
 		return tree.Entry{}, e
 	}
 	i.files++
-	i.total += uint64(len(b))
-	i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{c.String()}, Blob: blob, Kind: tree.KindFile})
+	i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{c.String()}, Blob: blob, Size: uint64(len(b)), Kind: tree.KindFile})
 	return tree.Entry{Kind: tree.KindFile, CID: blob, Size: uint64(len(b))}, nil
 }
 func (i *importer) file(root IPFSCID, p string, u UnixFSData, links []Link) (tree.Entry, error) {
@@ -277,9 +287,12 @@ func (i *importer) file(root IPFSCID, p string, u UnixFSData, links []Link) (tre
 		return tree.Entry{}, e
 	}
 	i.files++
-	i.total += uint64(n)
-	i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{root.String()}, Blob: blob, Kind: tree.KindFile})
-	return tree.Entry{Kind: tree.KindFile, CID: blob, Size: uint64(n)}, nil
+	mode := uint32(0)
+	if u.Mode&0o100 != 0 {
+		mode = tree.ModeExec
+	}
+	i.mappings = append(i.mappings, FileMapping{Path: p, Source: []string{root.String()}, Blob: blob, Size: uint64(n), Mode: mode, Kind: tree.KindFile})
+	return tree.Entry{Kind: tree.KindFile, CID: blob, Size: uint64(n), Mode: mode}, nil
 }
 
 type countWriter struct {

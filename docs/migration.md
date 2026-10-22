@@ -150,12 +150,15 @@ automatically stops Kubo, removes pins, deletes blocks or transfers identity/clu
 
 CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino; `nu import ipfs --car file
 <cid>` imports a local CARv1. The local API's `POST /import/ipfs` accepts the same request
-and returns a durable operation ID. `--dry-run` verifies/inventories CAR inputs; it is not
-available for a network source. A Kubo repo is inventoried with `ipfs pin ls --type
-recursive --enc`; each selected root is exported using `ipfs dag export <root> > root.car`
-and imported as a separate operation. Nu does not directly open the Kubo repo or automate
-pinset enumeration in this version. Operation request/stage/result survive daemon restarts;
-interrupted CAR jobs replay from the CAR and reuse deterministic store objects. Production
+and returns a durable operation ID. `--dry-run` fully verifies and traverses a CAR, reports supported conversions, the planned Nu
+root/manifest, file/logical-byte totals, source-block count, metadata transformations, a
+blob/outboard physical-byte estimate and current store headroom; it is not available for a
+network source. The physical estimate excludes database/DRISL overhead and may overcount
+shared blobs. A Kubo repo is inventoried with `ipfs pin ls --type recursive --enc`; each
+selected root is exported using `ipfs dag export <root> > root.car` and imported as a separate
+operation. Nu does not directly open the Kubo repo or automate pinset enumeration in this
+version. Operation request/stage/result survive daemon restarts; interrupted CAR jobs replay
+from the CAR and reuse deterministic store objects. Production
 Linux/macOS builds include the bridge; minimal builds expose an explicit unavailable-feature
 result.
 

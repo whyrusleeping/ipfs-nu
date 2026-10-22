@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"net/http"
 	"strconv"
 
@@ -31,7 +32,8 @@ var clusterRoutes = []Route{
 func init() { Routes = append(Routes, clusterRoutes...) }
 
 func (s *Server) clusterHandlers() map[Route]handlerFunc {
-	return map[Route]handlerFunc{
+	h := s.historyHandlers()
+	maps.Copy(h, map[Route]handlerFunc{
 		{"GET", "/cluster"}:                       s.clusterStatus,
 		{"POST", "/cluster/init"}:                 s.clusterInit,
 		{"POST", "/cluster/invites"}:              s.clusterInvite,
@@ -47,7 +49,8 @@ func (s *Server) clusterHandlers() map[Route]handlerFunc {
 		{"GET", "/cluster/datasets/{name}/wait"}:  s.datasetWait(node.ScopeCluster),
 		{"POST", "/datasets/{name}/head"}:         s.datasetUpdate(node.ScopeLocal),
 		{"GET", "/datasets/{name}/wait"}:          s.datasetWait(node.ScopeLocal),
-	}
+	})
+	return h
 }
 
 func (s *Server) cluster() (node.ClusterNode, error) {

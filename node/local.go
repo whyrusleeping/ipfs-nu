@@ -79,8 +79,10 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 			WithAction("check that the directory is writable and not in use by an older or newer " + nu.Name)
 	}
 	c := content.New(st)
-	return &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
-		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}, nil
+	n := &Local{Repo: r, Ops: op.NewManager(), Store: st, Content: c.Gateway(), Key: key, Fetcher: NoFetcher{},
+		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}
+	c.SetDatasets(n.ResolveDataset)
+	return n, nil
 }
 
 // LoadKey loads the node key from $NU_PATH/node.key, creating it (0600) on first use.
@@ -215,7 +217,7 @@ func (n *Local) start(kind, target string, work func(o *op.Operation) (any, erro
 
 // resolve parses a CID or link target (with optional path) and resolves it in the store.
 func (n *Local) resolve(t string) (*content.Node, cid.CID, string, error) {
-	pt, root, err := parseTarget(t)
+	pt, root, err := n.parseTarget(context.Background(), t)
 	if err != nil {
 		return nil, cid.CID{}, "", err
 	}
@@ -226,7 +228,7 @@ func (n *Local) resolve(t string) (*content.Node, cid.CID, string, error) {
 // resolveOrFetch is resolve for readers (cat, ls): content that is not held is fetched
 // first, with the link's hints, and must be complete under the resolved node.
 func (n *Local) resolveOrFetch(ctx context.Context, t string) (*content.Node, cid.CID, string, error) {
-	pt, root, err := parseTarget(t)
+	pt, root, err := n.parseTarget(ctx, t)
 	if err != nil {
 		return nil, cid.CID{}, "", err
 	}
@@ -234,13 +236,17 @@ func (n *Local) resolveOrFetch(ctx context.Context, t string) (*content.Node, ci
 	return nd, root, pt.Path, err
 }
 
-func parseTarget(t string) (target.Target, cid.CID, error) {
+func (n *Local) parseTarget(ctx context.Context, t string) (target.Target, cid.CID, error) {
 	pt, err := target.Parse(t)
 	if err != nil {
 		return pt, cid.CID{}, err
 	}
 	if err := pt.Supported(); err != nil {
 		return pt, cid.CID{}, err
+	}
+	if pt.Kind == target.KindDataset {
+		root, err := n.resolveDataset(ctx, pt)
+		return pt, root, err
 	}
 	if pt.Kind == target.KindAtproto {
 		return pt, cid.CID{}, apiv0.Errorf(apiv0.CodeInvalidArgument, "%s is an atproto target, not content by CID", pt.Raw).
@@ -402,7 +408,7 @@ func (n *Local) DagGet(ctx context.Context, t string) (json.RawMessage, error) {
 		return nil, err
 	}
 	if pt.Kind == target.KindAtproto {
-		_, _, err := parseTarget(t) // the at:// explanation
+		_, _, err := n.parseTarget(ctx, t) // the at:// explanation
 		return nil, err
 	}
 	c, err := parseCID(pt.CID)

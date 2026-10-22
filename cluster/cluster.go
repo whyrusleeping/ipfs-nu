@@ -452,6 +452,7 @@ func (d *Dataset) setHLC(h string) { d.HLC = h }
 func (h *Head) setHLC(s string)    { h.HLC = s }
 func (c *Config) setHLC(h string)  { c.HLC = h }
 func (d *Drop) setHLC(h string)    { d.HLC = h }
+func (v *Version) setHLC(h string) { v.HLC = h }
 
 // Written is the outcome of a local write.
 type Written struct {
@@ -469,7 +470,9 @@ func mayWrite(v *View, did, role, coll, rkey string) bool {
 	case RoleAdmin:
 		return coll != NSGenesis && !(coll == NSKey && rkey == v.Root)
 	case RoleWriter:
-		if coll != NSHead && coll != NSHistory {
+		if coll == NSVersion {
+			rkey, _, _ = SplitVersionKey(rkey)
+		} else if coll != NSHead && coll != NSHistory {
 			return false
 		}
 		d, ok := v.Dataset(rkey)
@@ -481,6 +484,15 @@ func mayWrite(v *View, did, role, coll, rkey string) bool {
 // Write commits ops to the repository of a held key allowed to write all of them,
 // preferring an admin key over the root key.
 func (c *Cluster) Write(ops ...Op) (*Written, error) {
+	did, err := c.Signer(ops...)
+	if err != nil {
+		return nil, err
+	}
+	return c.writeAs(did, ops)
+}
+
+// Signer returns the held key Write would sign ops with (ErrNoKey if none may).
+func (c *Cluster) Signer(ops ...Op) (string, error) {
 	c.mu.Lock()
 	v := c.view
 	var cands []string
@@ -506,10 +518,10 @@ func (c *Cluster) Write(ops ...Op) (*Written, error) {
 			}
 		}
 		if ok {
-			return c.writeAs(did, ops)
+			return did, nil
 		}
 	}
-	return nil, ErrNoKey
+	return "", ErrNoKey
 }
 
 // WriteAs commits ops signed by a specific held key without checking authorization
@@ -736,6 +748,10 @@ func (c *Cluster) HoldsKey(role string) bool {
 
 // Now is the cluster's clock.
 func (c *Cluster) Now() time.Time { return c.opts.now() }
+
+// NextTID issues a fresh HLC from the cluster's clock, as a version TID: greater than
+// every value issued or observed, and smaller than the hlc of the write that follows.
+func (c *Cluster) NextTID() string { return c.clock.Next().String() }
 
 // NewKey generates and stores a new P-256 authority key on this node and returns its
 // did:key; an admin then grants it a role with a key record.

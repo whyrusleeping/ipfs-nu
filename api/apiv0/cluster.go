@@ -77,6 +77,8 @@ type ContentState struct {
 	Extra       []Confirmation `json:"extra"`
 	EvidenceAge int64          `json:"evidence_age_ms"`
 	Unmet       []string       `json:"unmet"`
+	// Live is the live-set identity an archive-wide evaluation is bound to (E1).
+	Live string `json:"live,omitempty"`
 	// LastReady is the last time this node saw Target ready (E8: kept beside a later
 	// unknown or degraded result).
 	LastReady *LastReady `json:"last_ready,omitempty"`
@@ -267,6 +269,13 @@ type DatasetCreateRequest struct {
 	Expire     string               `json:"expire,omitempty"`
 	// Ingest is a collection's push policy (docs/collections.md "Ingest").
 	Ingest *DatasetIngest `json:"ingest,omitempty"`
+	// Presets (0047): Archive enables History (default schedule unless given), Mirror
+	// follows current state; SourcePath is a writer-local absolute directory that an
+	// update without a target re-adds.
+	Archive    bool           `json:"archive,omitempty"`
+	Mirror     bool           `json:"mirror,omitempty"`
+	History    *HistoryPolicy `json:"history,omitempty"`
+	SourcePath string         `json:"source_path,omitempty"`
 }
 
 // DatasetIngest is a collection's push policy: Hosts are the exact host names receiving
@@ -308,6 +317,13 @@ type Dataset struct {
 	Heads      []DatasetHead      `json:"heads,omitempty"` // per-signer heads (union-head input)
 	Metadata   MetadataState      `json:"metadata"`
 	Content    ContentState       `json:"content"`
+	// History and SourcePath are set for archives and path-sourced datasets; Archive is
+	// archive-wide readiness over the live set (E8); Version is the version a head write
+	// or rollback appended.
+	History    *HistoryPolicy `json:"history,omitempty"`
+	SourcePath string         `json:"source_path,omitempty"`
+	Archive    *ContentState  `json:"archive,omitempty"`
+	Version    *VersionInfo   `json:"version,omitempty"`
 }
 
 // DatasetHead is a head record by one signer.

@@ -43,16 +43,24 @@ type Report struct {
 	Owned    Counts  `drisl:"owned"`
 	State    string  `drisl:"state"`
 	Seq      int64   `drisl:"seq"`
+	// Incomplete lists the live versions (TIDs) whose structure or owned blobs the member
+	// lacks, for a dataset with history (at most MaxIncomplete).
+	Incomplete []string `drisl:"incomplete,omitempty"`
 }
+
+// MaxIncomplete bounds Report.Incomplete.
+const MaxIncomplete = 256
+
+// LiveComplete reports whether the report says the live set is complete.
+func (r Report) LiveComplete() bool { return r.Complete && len(r.Incomplete) == 0 }
 
 // same reports whether two reports say the same thing (ignoring seq).
 func (r Report) same(o Report) bool {
-	r.Seq, o.Seq = 0, 0
 	if (r.Missing == nil) != (o.Missing == nil) || (r.Missing != nil && *r.Missing != *o.Missing) {
 		return false
 	}
-	r.Missing, o.Missing = nil, nil
-	return r == o
+	return slices.Equal(r.Incomplete, o.Incomplete) && r.Name == o.Name && r.Target == o.Target && r.Live == o.Live &&
+		r.Mode == o.Mode && r.Policy == o.Policy && r.Epoch == o.Epoch && r.Complete == o.Complete && r.Owned == o.Owned && r.State == o.State
 }
 
 // ReportDelta is the reports part of a heartbeat: the reports whose seq is above Base,
@@ -100,7 +108,10 @@ const (
 // ReadyInput is what the E5–E8 evaluation needs; it is a pure function of it.
 type ReadyInput struct {
 	Target, Mode, Policy, Epoch string
-	Feasibility                 Feasibility
+	// Live, when set, evaluates archive-wide readiness (E8): reports must also be bound to
+	// this live set and say it is complete.
+	Live        string
+	Feasibility Feasibility
 	// Owners is the owner set of Target in Epoch; OwnersKnown is false when this node
 	// cannot compute it (it lacks the target's structure).
 	Owners      []wire.PeerID
@@ -168,11 +179,11 @@ func Ready(in ReadyInput) ReadyResult {
 			reason = ReasonAbsent
 		case age > fresh:
 			reason = ReasonStale
-		case r.Target != in.Target:
+		case r.Target != in.Target || (in.Live != "" && r.Live != in.Live):
 			reason = ReasonAbsent
 		case r.Epoch != in.Epoch || r.Policy != in.Policy || r.Mode != in.Mode:
 			reason = ReasonEpoch
-		case !r.Complete:
+		case !r.Complete || (in.Live != "" && !r.LiveComplete()):
 			reason = ReasonIncomplete
 		}
 		if reason == "" {
@@ -189,7 +200,8 @@ func Ready(in ReadyInput) ReadyResult {
 	for id, ev := range in.Evidence {
 		r := ev.Report
 		age := in.Now.Sub(ev.Received)
-		if owner[id] || age > fresh || !r.Complete || r.Target != in.Target || (in.Members != nil && !in.Members(id)) {
+		if owner[id] || age > fresh || !r.Complete || r.Target != in.Target || (in.Members != nil && !in.Members(id)) ||
+			(in.Live != "" && (r.Live != in.Live || !r.LiveComplete())) {
 			continue
 		}
 		res.Extra = append(res.Extra, Confirmation{Peer: id, Seq: r.Seq, Age: max(age, 0)})

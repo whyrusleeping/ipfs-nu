@@ -64,7 +64,7 @@ const cidTextLen = 1 + (cid.Size*8+4)/5
 
 var (
 	datasetRE = regexp.MustCompile(`^[a-z0-9-]+$`)
-	versionRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	versionRE = regexp.MustCompile(`^[A-Za-z0-9._:+-]+$`)
 )
 
 // Parse parses s. Errors are *apiv0.Error with code invalid_argument and list the forms.
@@ -110,6 +110,12 @@ func Parse(s string) (Target, error) {
 	if len(first) == cidTextLen && first[0] == 'b' {
 		return t, invalid("%q is not a DASL CID (raw or DRISL, SHA-256 or BLAKE3)", first)
 	}
+	// A version selector may contain dots and colons (times, labels): <dataset>@… is a
+	// dataset whenever the part before @ is a dataset name.
+	if ds, version, ok := strings.Cut(first, "@"); ok && datasetRE.MatchString(ds) && versionRE.MatchString(version) {
+		t.Kind, t.Dataset, t.Version, t.Path = KindDataset, ds, version, rest
+		return t, nil
+	}
 	if strings.Contains(first, ".") || strings.HasPrefix(first, "did:") {
 		name, path, _ := strings.Cut(rest, "/")
 		if name == "" {
@@ -135,17 +141,14 @@ func IsCID(s string) bool {
 
 // Supported returns nil when this build can act on the target, else a not_supported error
 // saying what to do. CID targets, CID share links, rasl:// and at:// targets are
-// supported; names and datasets are not yet.
+// supported, and dataset targets (resolved by the node); names are not yet.
 func (t Target) Supported() error {
 	switch t.Kind {
-	case KindCID, KindLink, KindAtproto, KindRASL:
+	case KindCID, KindLink, KindAtproto, KindRASL, KindDataset:
 		return nil
 	case KindName:
 		return &apiv0.Error{Code: apiv0.CodeNotSupported, Message: "public names (" + t.Authority + "/" + t.Name + ") are not supported yet",
 			Action: "names arrive after v0; ask the publisher for the CID and use that"}
-	case KindDataset:
-		return &apiv0.Error{Code: apiv0.CodeNotSupported, Message: "datasets (" + t.Dataset + ") are not supported yet",
-			Action: "datasets arrive after v0; use a CID for now"}
 	}
 	return invalid("%q is not a valid target", t.Raw)
 }

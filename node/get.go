@@ -32,13 +32,16 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 	if err := pt.Supported(); err != nil {
 		return nil, err
 	}
-	if pt.Kind == target.KindAtproto {
-		_, _, err := parseTarget(req.Target) // the at:// explanation
-		return nil, err
-	}
-	root, err := parseCID(pt.CID)
+	_, root, err := n.parseTarget(ctx, req.Target) // also the at:// explanation
 	if err != nil {
 		return nil, err
+	}
+	opTarget := pt.Raw
+	if pt.Kind == target.KindDataset { // bind the operation to the resolved root (W1, E1)
+		opTarget = root.String()
+		if pt.Path != "" {
+			opTarget += "/" + pt.Path
+		}
 	}
 	h := targetHints(pt)
 	switch {
@@ -48,7 +51,7 @@ func (n *Local) Get(ctx context.Context, req apiv0.GetRequest) (*apiv0.Operation
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "get needs an absolute output path").
 			WithAction("the daemon writes the path itself, so it must not depend on the caller's working directory")
 	}
-	return n.start("get", pt.Raw, func(o *op.Operation) (any, error) {
+	return n.start("get", opTarget, func(o *op.Operation) (any, error) {
 		return n.get(o, root, pt.Path, h, req)
 	}), nil
 }

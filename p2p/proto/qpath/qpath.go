@@ -110,22 +110,22 @@ func LocalAddress(peer wire.PeerID, addr netip.AddrPort) (wire.Multiaddr, error)
 // target). The stream leg stays attached as the fallback. On any failure the
 // stream leg is untouched and the error explains why (ErrDatagramUnsupported
 // covers unsupported relays/peers, insufficient budget and refused admission).
-func UpgradeDatagram(ctx context.Context, client *circuit.Client, leg *magicsock.Relay, relay, peer wire.PeerID) error {
+func UpgradeDatagram(ctx context.Context, client *circuit.Client, leg *magicsock.Relay, relay, peer wire.PeerID) (*circuit.DatagramLeg, error) {
 	if client == nil || leg == nil {
-		return magicsock.ErrPeer
+		return nil, magicsock.ErrPeer
 	}
 	if leg.HasPacketLeg() {
-		return magicsock.ErrLegExists
+		return nil, magicsock.ErrLegExists
 	}
 	dl, err := client.UpgradeDatagram(ctx, relay, peer)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := leg.AttachPacketLeg(dl); err != nil {
 		dl.Close()
-		return err
+		return nil, err
 	}
-	return nil
+	return dl, nil
 }
 
 // AttachDatagram binds a relay-offered datagram leg (circuit.Client.AcceptDatagram)

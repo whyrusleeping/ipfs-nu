@@ -8,6 +8,7 @@ import (
 
 	"github.com/whyrusleeping/nu/p2p/homerelay"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/relay"
@@ -22,8 +23,13 @@ func swarmKey(t *testing.T) *wire.NodeKey {
 	return k
 }
 func relayFor(t *testing.T, ids ...wire.PeerID) *relay.Server {
+	return relayWithDelay(t, 0, ids...)
+}
+
+// relayWithDelay simulates distance on loopback through ping reply latency.
+func relayWithDelay(t *testing.T, delay time.Duration, ids ...wire.PeerID) *relay.Server {
 	t.Helper()
-	r, err := relay.New(relay.Config{Host: host.Config{Key: swarmKey(t), Listen: []string{"127.0.0.1:0"}}, Server: circuit.ServerConfig{Admitted: ids}})
+	r, err := relay.New(relay.Config{Host: host.Config{Key: swarmKey(t), Listen: []string{"127.0.0.1:0"}}, Server: circuit.ServerConfig{Admitted: ids}, Core: proto.Config{PingReplyDelay: delay}})
 	if err != nil {
 		t.Fatal(err)
 	}

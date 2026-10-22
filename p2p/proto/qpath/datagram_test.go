@@ -44,8 +44,9 @@ func TestDatagramRelayUpgradeAndFallback(t *testing.T) {
 	s := x.stream(t, ctx)
 	roundtrip(t, s, 2)
 	before, _ := x.a.Connection(x.b.ID())
-	check(t, qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID()))
-	if err := qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID()); !errors.Is(err, magicsock.ErrLegExists) {
+	_, err := qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID())
+	check(t, err)
+	if _, err := qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID()); !errors.Is(err, magicsock.ErrLegExists) {
 		t.Fatal("second upgrade accepted:", err)
 	}
 	waitFor(t, "B did not attach the offered leg", func() bool { set, _ := x.mb.Paths(x.a.ID()); return set.Datagram })
@@ -70,7 +71,8 @@ func TestDatagramRelayUpgradeAndFallback(t *testing.T) {
 		t.Fatal("stream fallback unused after datagram teardown")
 	}
 	// Re-upgrade works after fallback (owner retry).
-	check(t, qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID()))
+	_, err = qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID())
+	check(t, err)
 	roundtrip(t, s, 2)
 	if again, _ := x.a.Connection(x.b.ID()); again != before {
 		t.Fatal("inner connection replaced")
@@ -88,7 +90,7 @@ func TestDatagramRelayBudgetRefused(t *testing.T) {
 	x.acceptDatagram(t, ctx)
 	s := x.stream(t, ctx)
 	roundtrip(t, s, 2)
-	err := qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID())
+	_, err := qpath.UpgradeDatagram(ctx, x.ac, x.relayA, x.r.ID(), x.b.ID())
 	if !errors.Is(err, circuit.ErrDatagramUnsupported) || !errors.Is(err, circuit.ConnectionFailed) {
 		t.Fatal("small-budget relay did not refuse:", err)
 	}

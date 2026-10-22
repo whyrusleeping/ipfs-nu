@@ -212,6 +212,9 @@ type SwarmConfig struct {
 	// A grant also permits private candidate disclosure to that peer.
 	ProbeAllow     []string `toml:"probe_allow,omitempty"`
 	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
+	// PeerRelayAllow makes this public node a bounded circuit relay for exactly
+	// these PeerIDs (an owner's devices or an allow-list); empty disables it.
+	PeerRelayAllow []string `toml:"peer_relay_allow,omitempty"`
 	// DHT: auto (default; Amino client when a non-loopback address is bound, server
 	// once AutoNAT confirms public reachability), client (always a client, never a
 	// server) or off. Private/isolated modes never run it.

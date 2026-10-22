@@ -56,6 +56,10 @@ type Options struct {
 	API bool
 	// Fetch tunes every node's fetcher (smaller chunks make mid-transfer faults easy).
 	Fetch fetch.Config
+	// Swarm, if set, customizes each node's swarm config before it starts (every node
+	// of New exists, with its ID and port, when the first one starts: a DHT test can
+	// bootstrap nodes from one another).
+	Swarm func(*Node, *swarm.Config)
 }
 
 // Network is a set of nodes in one process. Nodes are stopped at test cleanup.
@@ -90,8 +94,13 @@ func New(t testing.TB, n int, opts ...Options) *Network {
 			nd.Stop()
 		}
 	})
-	for range n {
-		nw.NewNode(o.API)
+	for i := range n {
+		nd := nw.newNode(i)
+		nd.api = o.API
+		nw.Nodes = append(nw.Nodes, nd)
+	}
+	for _, nd := range nw.Nodes {
+		nd.Start()
 	}
 	return nw
 }
@@ -236,6 +245,23 @@ func (nd *Node) Addrs() []wire.Multiaddr {
 // Provider is this node as a link hint.
 func (nd *Node) Provider() link.Provider { return link.Provider{Peer: nd.ID, Addrs: nd.Addrs()} }
 
+// Network is the network this node belongs to.
+func (nd *Node) Network() *Network { return nd.nw }
+
+// AddFile adds a file with the given request fields (Path and Pin are filled in) and
+// returns the result.
+func (nd *Node) AddFile(data []byte, req apiv0.AddRequest) apiv0.AddResult {
+	nd.nw.T.Helper()
+	p := filepath.Join(nd.nw.T.TempDir(), "file")
+	if err := os.WriteFile(p, data, 0o644); err != nil {
+		nd.nw.T.Fatal(err)
+	}
+	req.Path, req.Pin = p, true
+	var res apiv0.AddResult
+	nd.run(func(ctx context.Context) (*apiv0.Operation, error) { return nd.Local.Add(ctx, req) }, &res)
+	return res
+}
+
 // Running reports whether the node is started.
 func (nd *Node) Running() bool { return nd.Local != nil }
 
@@ -252,6 +278,9 @@ func (nd *Node) Start() {
 		c.Fetch = nd.nw.Opts.Fetch
 		c.AllowPeer = nd.allow
 		c.Logger = slog.New(slog.DiscardHandler)
+		if nd.nw.Opts.Swarm != nil {
+			nd.nw.Opts.Swarm(nd, c)
+		}
 	}
 	if nd.api {
 		d, err := daemon.Start(context.Background(), daemon.Options{Repo: nd.Repo, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0",

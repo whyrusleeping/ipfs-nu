@@ -292,6 +292,7 @@ var cmdStatus = &command{
 				}
 				fmt.Fprintf(w, "addresses:  %s\n", addrs)
 				printConnectivity(w, ls.Network.Connectivity)
+				printDHT(w, ls.Network.DHT)
 				if ls.Network.Serving {
 					fmt.Fprintf(w, "network:    serving, %d peers connected\n", ls.Network.Peers)
 					for _, p := range ls.Network.Connected {
@@ -464,6 +465,7 @@ func networkChecks(ctx context.Context, cfg *repo.Config, network *apiv0.Network
 	}
 	if network != nil {
 		checks = append(checks, connectivityChecks(network.Connectivity)...)
+		checks = append(checks, dhtChecks(network.DHT)...)
 	}
 	if peer == "" {
 		return checks
@@ -480,7 +482,7 @@ func networkChecks(ctx context.Context, cfg *repo.Config, network *apiv0.Network
 		return checks
 	}
 	listen := []string{"/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"}
-	sw, err := swarm.Start(ctx, swarm.Config{Key: key, Listen: listen, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	sw, err := swarm.Start(ctx, swarm.Config{Key: key, Listen: listen, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), DHT: swarm.DHTConfig{Mode: "off"}})
 	if err != nil {
 		add("peer", "fail", "cannot open a UDP socket: "+err.Error(), "UDP sockets are needed for QUIC; check local firewall rules")
 		return checks

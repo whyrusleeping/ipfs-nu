@@ -76,6 +76,8 @@ type Config struct {
 	ProbeAllowed map[wire.PeerID][]netip.AddrPort
 	// PortMapping opts in to leases at an explicitly selected gateway.
 	PortMapping *portmap.Config
+	// DHT configures Amino participation and the public lookup sources (dht.go).
+	DHT DHTConfig
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -93,6 +95,7 @@ type Swarm struct {
 	once         sync.Once
 	closeErr     error
 	connectivity *connectivity
+	dht          *dht
 }
 
 // Start binds the host and starts the services. The returned Swarm is independent of
@@ -157,7 +160,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if cfg.Private || cfg.Isolated {
 		sources = nil
 	} else {
-		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
+		public, err := s.publicSources(cfg)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(append(sources, lookup.SourceFunc(s.signedAddresses)), public...)
 	}
 	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private || cfg.Isolated, MDNS: lookup.MDNSConfig{
 		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces}}
@@ -185,8 +192,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 		fc := cfg.Fetch
 		fc.Store = cfg.Store
-		fc.Providers = connected{s}
+		fc.Providers = fetch.Multi{connected{s}, dhtProviders{s}}
 		s.fetcher = fetch.New(fc)
+	}
+	if err := s.startDHT(bg); err != nil {
+		return nil, err
 	}
 	ok = true
 	log.Info("swarm started", "peer", s.host.ID().Base36(), "addrs", s.host.Addrs())
@@ -198,6 +208,9 @@ func (s *Swarm) Close() error {
 	s.once.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
+		}
+		if s.dht != nil {
+			s.dht.close()
 		}
 		if s.sessions != nil {
 			_ = s.sessions.Close()
@@ -333,9 +346,9 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	if hintErr != nil {
 		s.log.Debug("some link hints are unusable", "err", hintErr)
 	}
-	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil {
+	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no one to fetch %s from: the link names no reachable provider and no peer is connected", root).
-			WithAction("use a share link with its provider (`peer=`/`addr=`), or be on the same network as a node that holds the content")
+			WithAction("use a share link with its provider (`peer=`/`addr=`), be on the same network as a node that holds the content, or bind a non-loopback swarm.listen so the DHT can be used")
 	}
 	opts := fetch.Options{Peers: peers}
 	if src != nil {
@@ -569,7 +582,8 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}
+	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile),
+		DHT: DHTConfig{Mode: cfg.Swarm.DHT, LookupDomain: cfg.Swarm.LookupDomain, RoutingURL: cfg.Swarm.RoutingURL, NoAnnounce: r.NoAnnounced}}
 	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
 		return Config{}, err
 	}

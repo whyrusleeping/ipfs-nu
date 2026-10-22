@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 )
@@ -31,6 +32,46 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 	if c.NetworkChangeError != "" {
 		fmt.Fprintf(w, "network change: %s\n", c.NetworkChangeError)
 	}
+}
+func printDHT(w io.Writer, d *apiv0.DHTStatus) {
+	if d == nil {
+		return
+	}
+	fmt.Fprintf(w, "dht:        %s", d.Mode)
+	if d.Mode == "off" {
+		fmt.Fprintln(w)
+		return
+	}
+	fmt.Fprintf(w, ", %d routing peers", d.RoutingPeers)
+	if !d.Bootstrapped.IsZero() {
+		fmt.Fprintf(w, ", bootstrapped %s ago", time.Since(d.Bootstrapped).Round(time.Second))
+	}
+	if d.BootstrapErr != "" {
+		fmt.Fprintf(w, " (%s)", d.BootstrapErr)
+	}
+	fmt.Fprintln(w)
+	if !d.LastProvide.IsZero() {
+		fmt.Fprintf(w, "provided:   %d keys %s ago", d.Provided, time.Since(d.LastProvide).Round(time.Second))
+		if d.ProvideErr != "" {
+			fmt.Fprintf(w, "; %s", d.ProvideErr)
+		}
+		fmt.Fprintln(w)
+	}
+}
+func dhtChecks(d *apiv0.DHTStatus) []check {
+	if d == nil || d.Mode == "off" {
+		return nil
+	}
+	out := []check{{Name: "dht", Status: "ok", Detail: fmt.Sprintf("%s mode, %d routing peers", d.Mode, d.RoutingPeers)}}
+	if d.BootstrapErr != "" || (d.RoutingPeers == 0 && !d.Bootstrapped.IsZero()) {
+		out[0].Status, out[0].Detail = "warn", "bootstrap incomplete: "+d.BootstrapErr
+		out[0].Action = "check DNS and UDP egress to the Amino bootstrap peers; content is still reachable through share links and LAN"
+	}
+	if d.ProvideErr != "" {
+		out = append(out, check{Name: "dht provide", Status: "warn", Detail: d.ProvideErr,
+			Action: "pinned content is found only through share links until this node has a public address (reachable directly or through a configured relay)"})
+	}
+	return out
 }
 func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 	if c == nil {

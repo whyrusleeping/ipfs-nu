@@ -186,6 +186,14 @@ type SwarmConfig struct {
 	// A grant also permits private candidate disclosure to that peer.
 	ProbeAllow     []string `toml:"probe_allow,omitempty"`
 	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
+	// DHT: auto (default; Amino client when a non-loopback address is bound, server
+	// once AutoNAT confirms public reachability), client (always a client, never a
+	// server) or off. Private/isolated modes never run it.
+	DHT string `toml:"dht,omitempty"`
+	// LookupDomain is a dnsaddr peer domain (`_dnsaddr.<peer>.<domain>`) and RoutingURL a
+	// routing/v1 base URL, both public peer-address sources (D13); none by default.
+	LookupDomain string `toml:"lookup_domain,omitempty"`
+	RoutingURL   string `toml:"routing_url,omitempty"`
 }
 
 // DefaultConfig returns the configuration written at init.

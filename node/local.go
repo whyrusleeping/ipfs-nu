@@ -426,6 +426,9 @@ func (n *Local) PinAdd(ctx context.Context, req apiv0.PinRequest) (*apiv0.Operat
 		if err := n.Store.Pin(p); err != nil {
 			return nil, err
 		}
+		if err := n.pinned(c, false); err != nil {
+			return nil, err
+		}
 		return apiPin(p), nil
 	}), nil
 }
@@ -453,7 +456,7 @@ func (n *Local) PinRm(ctx context.Context, s string) error {
 	if removed == 0 {
 		return apiv0.Errorf(apiv0.CodeNotFound, "%s is not pinned", c).WithAction("list pins with `" + nu.Name + " pin ls`")
 	}
-	return nil
+	return n.Repo.SetNoAnnounce(c.String(), false)
 }
 
 func (n *Local) Pins(ctx context.Context, cursor string, limit int) (*apiv0.Page[apiv0.Pin], error) {

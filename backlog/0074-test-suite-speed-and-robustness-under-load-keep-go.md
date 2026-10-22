@@ -1,7 +1,7 @@
 ---
 id: "0074"
 title: Test suite speed and robustness under load (keep go test ./... under a minute, no load flakes)
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

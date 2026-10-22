@@ -402,35 +402,67 @@ client-only mode registers no handler, and FIND_PEER lookup returns the target. 
 message-decoder fuzz target `kad.FuzzDecode` has fixed seeds and runs in the normal
 package suite.
 
-Interop: from `experiments/`, `go test -run '^TestAminoProviderInteropBothDirections$'
--count=1 -v ./kad` passed on 2026-10-21 in about 0.08 s. It used a loopback stock
-QUIC go-libp2p v0.50.0 host and Nu host, with `/ipfs/kad/1.0.0`: Nu's native BLAKE3
-provider was found by an independent go-libp2p DHT host, and Nu found a go-libp2p
-SHA-256 provider after a go-libp2p client announced it. No external network was used.
-Loopback path only; UDP receive-buffer warning was present. The go-side server's
-routing table was explicitly seeded with the Nu peer for this test; this is not a
-bootstrap/fleet result.
+Interop (both directions): `cd experiments && go test -run
+'^TestAminoProviderInteropBothDirections$' -count=1 -v ./kad` passed locally on a loopback
+Nu + stock go-libp2p v0.50.0 QUIC-v1 network. Nu BLAKE3 provider → independent go DHT
+`FindProvidersAsync`, and go SHA-256 provider → Nu `GET_PROVIDERS`. Go's server routing
+table is explicitly seeded with Nu in this test.
 
-Opt-in live test: `cd experiments && NU_AMINO=1 go test -run
-'^TestLiveNuAminoProviderKeys$' -count=1 -v ./kad` was run on 2026-10-21. It used
-Nu's own client and an independent Nu lookup client for SHA-256 control, BLAKE3 and
-the deterministic follow-swarm BLAKE3 key
-`bafkr4ie4nrxp5ca6g4zhxq7faiflql3tvztv6zpwohutv6bvewhvrdmjjq`. DNSADDR resolution
-returned QUIC-v1 candidates and the harness resolved DNS address components to
-literal IPs, but **no live provide→independent-find case passed**. An initial ~99 s
-run failed on TCP-only/non-v1 referrals, private/loopback and unreachable UDP claims,
-RPC timeouts and some remote application resets; only the latter BLAKE3 and swarm
-runs reached a provider query, without a successful find. After restricting routing
-referrals to public literal QUIC-v1 candidates, a second ~62 s run failed all three
-cases during Provide: several seeds were unreachable/timed out, and one QUIC remote
-refused/resets the connection. SHA-256, random BLAKE3 and the exact swarm key therefore
-remain **inconclusive**, not rejected by the key namespace. The exact follow CID was
-`bafkr4ie4nrxp5ca6g4zhxq7faiflql3tvztv6zpwohutv6bvewhvrdmjjq`. UDP receive-buffer
-warning remained (416 KiB available vs 7168 KiB requested). Owner-side daemon wiring of AutoNAT reachability,
-automatic bootstrap lifecycle, pinned-CID enumeration and periodic reprovide is not
-installed; private-mode disabling is enforced by the service constructor but owner
-policy remains to be wired. Provider replica fraction, long-term expiry/republish, and
-field Amino availability remain unmeasured.
+**Kubo v0.40.0 Docker acceptance (both directions):** `cd experiments && NU_DOCKER=1
+go test -run '^TestDockerKuboAminoProviderInterop$' -count=1 -v ./kad` passed on
+2026-10-21 (about 3 s). Image is digest pinned to the interop runner's
+`ipfs/kubo:v0.40.0@sha256:e08c602bf97f138a0ec5b42155b4fd4532852919250b11b4aadbea2bf42c0e10`.
+The disposable container uses `Routing.Type=dhtserver`, QUIC-v1 only, bootstrap=Nu;
+the reverse query is `ipfs routing provide` of a stored BLAKE3 CID. Nu checks the Kubo
+provider via `GET_PROVIDERS`, and Kubo `ipfs routing findprovs` returns Nu's PeerId.
+This is an isolated Docker bridge test, **not** public Amino or a throughput/replica test.
+The test disables Kubo Swarm address filters only inside that disposable bridge and
+uses synthetic `11.0.0.0/24` Docker addresses so LAN referrals pass routing admission;
+no public bootstrap peers are configured. Identify confirms Nu server advertises
+`/ipfs/kad/1.0.0`.
+
+The first Docker attempts exposed an Amino stream-lifecycle issue: go-libp2p-KAD can
+send multiple length-delimited requests on one `/ipfs/kad/1.0.0` stream, while Nu
+handled only one request and closed/reset the stream. Nu now serves a bounded sequence
+(up to 64 messages) until clean EOF; client RPCs half-close and drain the reply stream.
+Kubo also uses FIND_NODE with arbitrary provider-key bytes, not only PeerIds; Nu now
+accepts generic bounded DHT keys there. After these fixes, the Docker test passed both
+provider directions.
+
+**Live Amino / Q2:** the implementation compares with the interop driver's three pinned
+QUIC-v1 Kubo bootstrappers and identifies them before providing, uses the remote
+Identify-reported observed UDP address for provider records (instead of `0.0.0.0`), and
+asserts a client-only Nu host does not advertise `/ipfs/kad/1.0.0`. On 2026-10-21,
+`cd experiments && NU_AMINO=1 go test -run '^TestLiveNuAminoProviderKeys$' -count=1 -v ./kad`
+passed all three independent Nu announce/find cases:
+
+| Key | CID/multihash | Provide | Independent Nu find | Providers returned |
+|---|---|---:|---:|---:|
+| SHA-256 control | `bciqoiu4ttomaotanbabsgl4d4vvxmwxj6jqzdjnbezlyu4xob3p32vy` | 19.8 s | 11.4 s | 3 |
+| Random BLAKE3 | `bdyqfcepjvhblop2pihorxh3z3xv62peon4qpw2hgya4ndvl25qcqw5y` | 35.9 s | 16.6 s | 3 |
+| Follow-swarm BLAKE3 | `bdyqjy3do72eb4nzsppb6kaqkxaxxhlthl5s7m4pjhl4dkjmplcgysta` | 19.8 s | 12.1 s | 3 |
+
+Nu independently found its own provider PeerId in all cases. This is a single bounded
+run, not a replication-fraction measure; the public lookup returned three provider
+records per key.
+The exact deterministic recipe was `BLAKE3("nu.follow\\0did:plc:ewvi7nxzyoun6zhxrhs64oiz\\0amino-spike-dataset")`.
+
+Public `FIND_PEER`: `cd experiments && NU_AMINO=1 go test -run
+'^TestLiveNuAminoFindPeerPublicBootstrap$' -count=1 -v ./kad` passed on 2026-10-21.
+A Nu node seeded with two pinned public Amino peers, but not the target, found the third
+pinned Kubo bootstrap PeerId and a UDP/QUIC-v1 address. This demonstrates one public
+Kubo peer lookup, not broad global coverage. Some referrals were stale/unreachable or
+IPv6 (unsupported by this single-socket live harness); one response exceeded the
+current decoder limit, but the requested peer was still returned.
+
+**Receive buffer:** quic-go still reports 416 KiB available vs 7168 KiB requested.
+`net.core.rmem_max/default` are 212992; `sudo -n sysctl ...` failed because sudo requires
+a password, so no system setting was changed. Public runs remain subject to that limit
+and remote peer resource policies. The Docker test, unlike live public, isolates these
+variables. Owner-side daemon wiring of AutoNAT reachability, bootstrap lifecycle,
+pinned-CID enumeration and periodic reprovide is not installed; private mode is rejected
+by the service but the owner must wire its construction. Provider replica fraction and
+long-term expiry/republish remain unmeasured.
 
 ## Nu-path throughput profiling (0015, 2026-10-21)
 

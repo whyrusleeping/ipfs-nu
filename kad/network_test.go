@@ -80,6 +80,9 @@ func TestSmallDHTProvideFindClientAndServerModes(t *testing.T) {
 	if err := a.dht.Provide(ctx, key, []wire.Multiaddr{a.addr}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.dht.iterative(ctx, key, FindNode); err != nil {
+		t.Fatalf("FIND_NODE on BLAKE3 key: %v", err)
+	}
 	got, err := c.dht.FindProviders(ctx, key)
 	if err != nil {
 		t.Fatal(err)

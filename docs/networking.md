@@ -28,7 +28,11 @@ bootstrap PeerIds through the existing dnsaddr resolver, resolves DNS4/DNS6
 multiaddr components to bounded literal IP candidates, and keeps only UDP/QUIC-v1
 addresses; `AddBootstrap` accepts another bounded lookup Source. No TCP bootstrap
 addresses are dialed. Public mode rejects loopback, private and link-local referral
-addresses by default; `AllowPrivateAddresses` is an explicit in-process/lab override. Amino `ADD_PROVIDER` is a one-way request.
+addresses by default; `AllowPrivateAddresses` is an explicit in-process/lab override.
+Client mode registers no Kademlia handler and therefore does not advertise
+`/ipfs/kad/1.0.0` in Identify. Server streams accept up to 64 sequential length-delimited
+messages because Amino peers may reuse one stream for multiple RPCs; `ADD_PROVIDER` is
+one-way and the server continues reading until EOF.
 
 Wire/runtime limits: 64 KiB message, 80-byte key (matching upstream's provider-key
 limit), 20 peers/message and 32 addresses/peer (1024 bytes/address); routing k=20,

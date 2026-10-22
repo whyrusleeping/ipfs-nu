@@ -411,13 +411,83 @@ NU_SLOW=1 go test -tags natlab ./p2p/disco -run '^TestNATLabDiscoGiB$' -v -count
 the default suite. `natlab.IsolateTimeout` supplies an explicit four-minute child
 deadline for this test, leaving the normal 45-second fixture deadline unchanged.
 
-### Independent security review request / review plan (0017 and 0020)
+### HTTPS-compatible relay acceptance (0041, 2026-10-22)
+
+`TestDaemonWSSUDPBlocked` runs real `nu relay` and two real daemon/CLI processes
+inside rootless Linux network namespaces. Both daemon output firewalls drop **all
+UDP**, including loopback UDP; apart from local CLI/API TCP they permit only one
+remote TCP/443 destination. The direct case permits the relay, and the CONNECT
+case permits only the separate HTTP proxy (not the relay). DHT/mDNS are disabled,
+so neither lookup nor a direct content connection can bypass the restrictions.
+The fixture uses a generated, explicitly trusted operator certificate and a leaf
+certificate pin; it does not disable Web-PKI verification.
+
+Evidence command:
+
+```
+go test -p 1 -tags natlab ./node/swarm -run '^TestDaemonWSSUDPBlocked$' -count=1 -v
+```
+
+Passed locally, rootless, in 17.5 s: each case independently selected WSS after a
+reported UDP failure, transferred part of an 11,400,000-byte BLAKE3 blob, stopped
+the receiving daemon, inspected its persisted verified ranges, restarted both
+daemons, and completed `nu get` with a byte-for-byte SHA-256 comparison. The runs
+retained approximately 4 MiB of verified data. Existing `fetch.TestResumeAfterRestart`
+checks that resumed range requests do not overlap checkpointed ranges; this lab
+adds the real daemon/CLI and restricted-network assembly. Replacing the CONNECT
+proxy with a refusing proxy produces `CONNECT denied: HTTP 403` in status **and
+`nu doctor`**, not an opaque timeout or insecure retry.
+
+**Explicit limitation discovered during acceptance:** an immediate one-sided daemon
+restart can leave the surviving peer's old inner QUIC session alive. An immediate
+get retry then fails before that session expires. The passing restart fixture
+restarts both endpoints to isolate persisted resumability from this qpath recovery
+issue. Immediate one-sided reboot recovery is **not evidenced** and needs a separate
+socket/path-owner fix; do not represent this test as that guarantee.
+
+| Endpoint/proxy case | Support and evidence |
+|---|---|
+| Declared TCP/443 WSS, trusted TLS certificate, no proxy | Supported; UDP-blocked real-daemon lab above |
+| Explicit HTTP CONNECT to the admitted relay TCP/443 | Supported; same lab, with direct relay TCP also blocked |
+| QUIC timeout followed by declared WSS | `p2p/homerelay.TestDeclaredWSSFallbackIndependentBudget`: silent UDP sink consumes its full budget; WSS gets a fresh budget, reserves, publishes WSS and renews |
+| WSS endpoint/pin policy | `node/swarm.TestWSSRelayPolicyAndRemoteAdmission`: pin match/mismatch, config rejection and remote-record authorization negatives |
+| CONNECT refusal | Doctor-visible HTTP 403 in the real-daemon lab |
+| Untrusted TLS interception / Upgrade refusal | Stage-labelled hard failure in `p2p/wss` tests; no insecure fallback |
+| Locally trusted TLS interception CA | Not automatically distinguishable; configure a relay leaf pin. Operators must not grant trust to interception roots for relay dialing |
+| Ambient proxy env, PAC, SOCKS, HTTPS-to-proxy, NTLM, HTTP/2-only gateway, captive portal | Unsupported; no claim that arbitrary HTTPS availability implies Nu reachability |
+| Standard non-Nu peer | Outer WSS/Noise/yamux interop belongs to the existing 0041 experiment evidence; Nu inner qpath is not a standard-peer requirement |
+
+Resource limits and admission remain those of the WSS listener, Noise/yamux and
+circuit-v2 server: bounded unauthenticated connections/headers/frames/records,
+per-peer and per-observed-IP circuits/reservations, and full-service admission.
+Nodes sharing a proxy share its observed-IP budget. No public relay directory or
+new content/resume format is introduced. Fleet operations and external-network
+reach guarantees are not implied by these lab results.
+
+Pre-commit verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`:
+`go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`,
+plus gofmt, `git diff --check`, and the rootless WSS natlab test (18.1 s on the
+final run). An earlier loaded-machine run failed cluster repair and collection
+push timing checks; their focused serial reruns and the subsequent full gate
+passed. The recovery probe retains its short QUIC-only deadline rather than
+spending the larger WSS setup budget on a dead QUIC-only relay.
+
+### Independent security review request / review plan (0017, 0020 and 0041)
 
 **Requested; pending independent review.** The implementation author is not the
 independent reviewer. A networking/security reviewer should review the following
 before public enablement; record the reviewer, reviewed commit, findings and
 follow-up commits here. Passing the smoke/soak tests is not security approval.
 
+- **0041 independent review requested:** review `p2p/{noise,wss,yamux}`, the Host
+  WSS adapter, `relay/wss.go`, `p2p/homerelay/{manager,endpoints}.go`, and
+  `node/swarm/wss.go` plus its admission integration. Check Web-PKI + Noise
+  identity separation, pin/proxy credential handling, independent fallback
+  budgets, exact endpoint authority, parser/stream/handshake resource bounds,
+  teardown and qpath inner-session recovery. Reproduce the UDP-blocked direct
+  and CONNECT cases and adversarial TLS/Upgrade/CONNECT failures. Specifically
+  examine the one-sided restart limitation above. No independent sign-off has
+  been obtained; the author does not approve their own implementation.
 - **Contract and implementation:** D11's “Path v1 control and probe security
   contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set
   boundary, and the eventual 0020 socket-owner `Authorize`/candidate-disclosure

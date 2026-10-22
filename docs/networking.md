@@ -101,6 +101,28 @@ MUST NOT enlarge this authorization list. UDP failure may select a declared WSS 
 status/doctor must expose the selected transport and UDP failure reason. Never silently
 fall back to plaintext, disable certificate checking, or use ambient proxy credentials.
 
+The daemon accepts these endpoints in `swarm.relays` (a string array): at most 16
+relay identities, each with one literal `/ip4|ip6/.../udp/.../quic-v1/p2p/<relay>`
+and one `/dns|dns4|dns6|ip4|ip6/.../tcp/.../tls/ws/p2p/<relay>` (or `/wss`)
+endpoint. An explicit share-link hint may authorize a relay endpoint, but each
+identity still has at most one endpoint per transport (32 known identities total).
+Identify/lookup records may select an already authorized endpoint, not add one.
+Each UDP and WSS setup attempt has its own two-second budget; caller cancellation
+still bounds the entire operation. Reservations reuse the selected live connection;
+WSS is not periodically torn down just to retry UDP.
+
+`swarm.proxy = "http://proxy.example:8080"` explicitly configures HTTP CONNECT for
+WSS; optional URL user/password supplies Basic proxy authentication. Environment
+proxy discovery, PAC, SOCKS, HTTPS-to-proxy and NTLM are not supported. TLS uses the
+system trust store, including an explicitly installed operator CA; certificate
+hostname verification is always enabled. `swarm.relay_cert_pins` optionally contains
+`"<relay-PeerID>@<64-hex-SHA256-of-leaf-certificate-DER>"` entries for configured WSS
+relays. Pins are additional checks, never replacements for certificate/hostname
+validation, and must be updated when the certificate rotates. Status reports
+`transport` (`quic-v1`/`wss`) and `udp_error`; a failed UDP attempt is not by itself
+proof that a firewall blocked UDP. Doctor reports failed CONNECT/TLS/Upgrade stages
+without proxy credentials. WSS-only relays are not UDP AutoNAT witnesses.
+
 | Endpoint / middlebox | Production contract |
 |---|---|
 | Direct TCP 443 with valid DNS certificate and HTTP/1.1 Upgrade | Supported target; operator supplies certificate/key and explicit endpoint |

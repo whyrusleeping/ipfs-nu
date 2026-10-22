@@ -20,6 +20,8 @@ type ConnectivityStatus struct {
 	IPv6        *IPv6Status        `json:"ipv6,omitempty"`
 }
 type RelayStatus struct {
+	Transport string    `json:"transport,omitempty"` // quic-v1 or wss; last selected transport
+	UDPError  string    `json:"udp_error,omitempty"` // failed attempt, not proof of blocking
 	PeerID    string    `json:"peer_id"`
 	Address   string    `json:"address"`
 	Role      string    `json:"role,omitempty"` // home, backup or empty (candidate)
@@ -31,7 +33,7 @@ type RelayStatus struct {
 }
 type PeerPathStatus struct {
 	PeerID        string    `json:"peer_id"`
-	Path          string    `json:"path"` // direct-quic, direct, relay, recovering, offline
+	Path          string    `json:"path"` // direct-quic, direct, relay, relay-wss (outer), recovering, offline
 	Relay         string    `json:"relay,omitempty"`
 	Direct        string    `json:"direct,omitempty"` // proven physical endpoint, never virtual
 	RelayWarm     bool      `json:"relay_warm"`

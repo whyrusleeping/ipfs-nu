@@ -38,6 +38,9 @@ type ClusterJoinRequest struct {
 // ClusterMemberRemoveRequest removes (revokes) a member.
 type ClusterMemberRemoveRequest struct {
 	Peer string `json:"peer"`
+	// DryRun only reports; Force removes despite unconfirmed surplus (destructive, S6).
+	DryRun bool `json:"dry_run,omitempty"`
+	Force  bool `json:"force,omitempty"`
 }
 
 // MetadataState reports acknowledgment of signed cluster state. It says nothing about
@@ -88,6 +91,10 @@ type ContentState struct {
 	// Local is this node's own sync of the dataset; Release its protected versions.
 	Local   *LocalSync    `json:"local,omitempty"`
 	Release *ReleaseState `json:"release,omitempty"`
+	// Repair says whether lost copies are being restored (0048): "in_progress" with an
+	// online repair authority, "unavailable" without one; Alerts are the alert conditions.
+	Repair string  `json:"repair,omitempty"`
+	Alerts []Alert `json:"alerts,omitempty"`
 }
 
 // CopyCounts is the per-unit copy summary of a readiness evaluation; Unit is "blob", or
@@ -227,6 +234,12 @@ type ClusterInfo struct {
 	Boot     []string      `json:"boot,omitempty"`
 	Warnings []string      `json:"warnings,omitempty"`
 	Metadata MetadataState `json:"metadata"`
+	// Repair is the repair-authority state, Audits the audit results per member, Scrub
+	// this node's last scrub and Alerts the alert conditions (0048).
+	Repair *RepairInfo  `json:"repair,omitempty"`
+	Audits []AuditPeer  `json:"audits,omitempty"`
+	Scrub  *ScrubReport `json:"scrub,omitempty"`
+	Alerts []Alert      `json:"alerts,omitempty"`
 }
 
 // ClusterKey is an authorized key.
@@ -250,6 +263,12 @@ type MemberInfo struct {
 	Free          int64             `json:"free,omitempty"`
 	Used          int64             `json:"used,omitempty"`
 	SkewMS        int64             `json:"skew_ms,omitempty"`
+	// Auto marks a state set by a repair authority; Capacity and StoreLimit are the
+	// record's placement weight and physical budget.
+	Auto       bool   `json:"auto,omitempty"`
+	Capacity   int64  `json:"capacity,omitempty"`
+	StoreLimit int64  `json:"store_limit,omitempty"`
+	Label      string `json:"label,omitempty"`
 }
 
 // RepoInfo is one held state repository.
@@ -329,8 +348,11 @@ type Dataset struct {
 	Signer     string             `json:"signer"`
 	Head       *DatasetHead       `json:"head,omitempty"`
 	Heads      []DatasetHead      `json:"heads,omitempty"` // per-signer heads (union-head input)
-	Metadata   MetadataState      `json:"metadata"`
-	Content    ContentState       `json:"content"`
+	// Displaced lists the per-signer heads the merged head displaced (LWW): concurrent
+	// intent, protected from release until it settles (S4).
+	Displaced []DatasetHead `json:"displaced,omitempty"`
+	Metadata  MetadataState `json:"metadata"`
+	Content   ContentState  `json:"content"`
 	// History and SourcePath are set for archives and path-sourced datasets; Archive is
 	// archive-wide readiness over the live set (E8); Version is the version a head write
 	// or rollback appended.

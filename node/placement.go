@@ -34,6 +34,8 @@ type replicas struct {
 	mu    sync.Mutex
 	mgrs  map[*cluster.Cluster]*replica.Manager
 	ready map[string]readyMark // cluster ID/dataset → last ready evaluation
+	// unknown records since when a dataset's readiness has been unknown (E8 alert).
+	unknown map[string]time.Time
 }
 
 type readyMark struct {
@@ -63,6 +65,9 @@ func (n *Local) replicaFor(c *cluster.Cluster) *replica.Manager {
 				svc.KickHeartbeat()
 			}
 		}}
+	if c.Mode() != cluster.ModeLocal {
+		cfg.Evidence, cfg.Release = n.remoteEvidence, n.releaseSettings
+	}
 	if c.Mode() == cluster.ModeLocal {
 		cfg.Dir = n.clusterDir("local")
 	} else {
@@ -149,7 +154,7 @@ func (n *Local) evalContent(c *cluster.Cluster, name string, target cid.CID) eva
 // is the union over the live versions and reports must be bound to the live set (E8).
 func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live *liveBind) evalOut {
 	v := c.View()
-	out := evalOut{now: c.Now(), fresh: cluster.DefaultFresh, evidence: map[wire.PeerID]cluster.Evidence{}}
+	out := evalOut{now: c.Now(), fresh: EvidenceFresh, evidence: map[wire.PeerID]cluster.Evidence{}}
 	cs := apiv0.ContentState{Target: target.String(), Mode: cluster.ModeOwned, Confirmed: []apiv0.Confirmation{}, Missing: []apiv0.MissingOwner{},
 		Extra: []apiv0.Confirmation{}, Unmet: []string{}}
 	d, ok := v.Dataset(name)
@@ -214,7 +219,7 @@ func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live
 			cs.Local = ls
 		}
 		p := m.Protected(name)
-		cs.Release = &apiv0.ReleaseState{Ready: p.Ready, Held: p.Held, Staged: p.Staged, Candidates: p.Retained}
+		cs.Release = &apiv0.ReleaseState{Auto: c.Mode() != cluster.ModeLocal && n.settings().ReleaseAuto, Ready: p.Ready, Held: p.Held, Staged: p.Staged, Candidates: p.Retained}
 	}
 	key := c.ID.String() + "/" + name
 	if live != nil {
@@ -276,6 +281,7 @@ func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live
 			cs.Detail = "evidence is stale or unavailable; this is not data loss"
 		}
 	}
+	n.contentAlerts(c, name, &cs)
 	out.cs = cs
 	return out
 }

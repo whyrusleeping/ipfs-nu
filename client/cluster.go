@@ -51,9 +51,16 @@ func (c *Client) ClusterStatus(ctx context.Context) (*apiv0.ClusterStatus, error
 }
 
 // ClusterMemberRemove removes a member.
-func (c *Client) ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MetadataState, error) {
-	var out apiv0.MetadataState
-	if _, err := c.do(ctx, http.MethodDelete, "/cluster/members/"+url.PathEscape(req.Peer), nil, nil, &out); err != nil {
+func (c *Client) ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MemberRemoval, error) {
+	var out apiv0.MemberRemoval
+	q := url.Values{}
+	if req.DryRun {
+		q.Set("dry_run", "true")
+	}
+	if req.Force {
+		q.Set("force", "true")
+	}
+	if _, err := c.do(ctx, http.MethodDelete, "/cluster/members/"+url.PathEscape(req.Peer), q, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

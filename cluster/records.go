@@ -115,7 +115,10 @@ type Member struct {
 	Addrs      []string          `drisl:"addrs,omitempty"`
 	Label      string            `drisl:"label,omitempty"`
 	State      string            `drisl:"state"`
-	HLC        string            `drisl:"hlc"`
+	// Auto marks a state written by a repair authority (0048): `unavailable` from missed
+	// heartbeats or failed audits, which the authority lifts again (not an admin's choice).
+	Auto bool   `drisl:"auto,omitempty"`
+	HLC  string `drisl:"hlc"`
 }
 
 func (Member) DRISLType() string { return NSMember }

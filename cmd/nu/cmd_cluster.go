@@ -120,6 +120,20 @@ func printClusterInfo(w io.Writer, label string, c *apiv0.ClusterInfo) {
 	for _, warn := range c.Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", warn)
 	}
+	if r := c.Repair; r != nil {
+		if r.Online {
+			fmt.Fprintf(w, "  repair authority online: %s\n", strings.Join(r.Authorities, ", "))
+		} else {
+			fmt.Fprintf(w, "  repair authority: none online (%s)\n", r.Detail)
+		}
+	}
+	for _, a := range c.Audits {
+		fmt.Fprintf(w, "  audits of %s: %d passed, %d failed (%d consecutive)\n", a.Peer, a.Passed, a.Failed, a.Consecutive)
+	}
+	if s := c.Scrub; s != nil {
+		fmt.Fprintf(w, "  last scrub %s: %d object(s), %d corrupt\n", s.At.Local().Format(time.RFC3339), s.Checked, len(s.Corrupt))
+	}
+	printAlerts(w, "  ", c.Alerts)
 }
 
 func printDataset(w io.Writer, d *apiv0.Dataset) {
@@ -226,8 +240,16 @@ func printContent(w io.Writer, c apiv0.ContentState) {
 		fmt.Fprintln(w)
 	}
 	if r := c.Release; r != nil && len(r.Candidates) > 0 {
-		fmt.Fprintf(w, "  %d retained version(s) are release candidates; release.auto is off, nothing is released\n", len(r.Candidates))
+		how := "release.auto is off: `gc --dry-run` shows the evidence, `gc` releases what passes"
+		if r.Auto {
+			how = "released automatically once owners confirm the current head (release.auto)"
+		}
+		fmt.Fprintf(w, "  %d earlier version(s) are release candidates; %s\n", len(r.Candidates), how)
 	}
+	if c.Repair != "" {
+		fmt.Fprintf(w, "  repair: %s\n", c.Repair)
+	}
+	printAlerts(w, "  ", c.Alerts)
 }
 
 // datasetCommands builds `create|ls|status` for a scope.
@@ -470,7 +492,7 @@ func datasetCommands(scope string) []*command {
 				return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 			},
 		},
-	}, historyCommands(scope, get)...)
+	}, append(historyCommands(scope, get), releaseCommand(scope))...)
 }
 
 var cmdDataset = &command{
@@ -518,11 +540,26 @@ var cmdCluster = &command{
 				capacity := fs.String("capacity", "", "placement weight in bytes (K/M/G/T suffixes)")
 				peer := fs.String("peer", "", "pre-authorize this PeerId (writes its member record now)")
 				expires := fs.String("expires", "24h", "how long the token is valid")
+				revoke := fs.String("revoke", "", "revoke the outstanding secret invite with this id instead")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
 				if fs.NArg() != 0 {
 					return usagef("cluster invite takes only flags")
+				}
+				if *revoke != "" {
+					r, err := e.repair(ctx)
+					if err != nil {
+						return err
+					}
+					md, err := r.ClusterInviteRevoke(ctx, *revoke)
+					if err != nil {
+						return err
+					}
+					return e.emit(md, func(w io.Writer) {
+						fmt.Fprintf(w, "revoked invite %s\n", *revoke)
+						printMetadata(w, *md)
+					})
 				}
 				tm, err := parseTags(*tags)
 				if err != nil {
@@ -599,34 +636,11 @@ var cmdCluster = &command{
 		},
 		{
 			name:    "member",
-			summary: "manage members",
-			sub: []*command{{
-				name:    "rm",
-				args:    "<peerId>",
-				summary: "remove a member: it is refused by every member once the state replicates",
-				run: func(ctx context.Context, e *env, args []string) error {
-					fs := e.flags()
-					if err := parseFlags(fs, args); err != nil {
-						return err
-					}
-					if fs.NArg() != 1 {
-						return usagef("member rm needs one PeerId")
-					}
-					c, err := e.clusterLocal(ctx)
-					if err != nil {
-						return err
-					}
-					md, err := c.ClusterMemberRemove(ctx, apiv0.ClusterMemberRemoveRequest{Peer: fs.Arg(0)})
-					if err != nil {
-						return err
-					}
-					return e.emit(md, func(w io.Writer) {
-						fmt.Fprintf(w, "removed %s\n", fs.Arg(0))
-						printMetadata(w, *md)
-					})
-				},
-			}},
+			summary: "manage members: list, edit, drain, remove",
+			sub:     memberCommands(),
 		},
+		cmdClusterKey,
+		cmdClusterAudit,
 		{
 			name:    "dataset",
 			summary: "datasets of the networked cluster",

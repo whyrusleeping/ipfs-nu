@@ -151,7 +151,7 @@ func TestPrivateCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Revocation while partitioned: a removes b; c learns it only after healing.
-	if _, err := a.Local.ClusterMemberRemove(ctx(t), apiv0.ClusterMemberRemoveRequest{Peer: b.ID.String()}); err != nil {
+	if _, err := a.Local.ClusterMemberRemove(ctx(t), apiv0.ClusterMemberRemoveRequest{Peer: b.ID.String(), Force: true}); err != nil {
 		t.Fatal(err)
 	}
 	if !c.Local.NetCluster().View().IsMember(b.ID) {

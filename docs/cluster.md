@@ -402,15 +402,18 @@ claiming proofs remain verifiable after key/account changes.
   PeerId bytes, ascending. *Eligible* means role `storage`, state `active` and every
   `where` tag present with an allowed value; `replicas: all` makes `k` the eligible count.
   With `spread`, the first pass takes, in rank order, the best member of each distinct
-  non-empty value of the tag (untagged members have none). The **owner set** of a target
-  is the union of its blobs' owners, or the owners of the target's own multihash when it
-  has no blobs, so an empty tree still needs a confirming member. Duplicate domains do not satisfy strict
+  non-empty value of the tag (untagged members have none). Readiness counts confirmed
+  copies per blob against these owners ([E6](operations.md#e-readiness-evidence)); a
+  target without blobs counts its own multihash as its one blob, so an empty tree still
+  needs confirming members. A collection item is placed as one unit, keyed by the
+  multihash of the item root ([floor placement](collections.md#guaranteed-copies); vectors
+  in the same file, `items`). Duplicate domains do not satisfy strict
   spread: report policy-unsatisfied, not ready. Fewer than `k` members likewise cannot meet
   policy. Defaults are stored in dataset policy, not recomputed when tags change; preview
   tag/weight/member edits for feasibility and movement impacts.
 - Scores do not depend on the dataset. A blob shared by datasets with the same eligible set
   therefore has the same owners and is stored once. A blob referenced by several datasets is
-  owned by the union of their owner sets.
+  owned by the union of their owners.
 - Only `member` records affect placement. Adding or removing a member moves roughly that
   member's share, not the whole cluster. The **placement epoch** is a hash of the eligible
   members with their capacities, tags and states; completeness and status are keyed by it.
@@ -449,8 +452,8 @@ claiming proofs remain verifiable after key/account changes.
   other members found with `/nu/have/1`. There is no DHT lookup.
 - **Handoff:** a blob that a member held but no longer owns becomes **surplus**. Keep its
   `cluster-surplus` pin until [S1–S3](operations.md#s-safe-release) hold for that blob:
-  fresh `complete: true` reports from every owner in the current epoch, bound to the
-  current head, policy and epoch, after `release.settle`. A sampled audit is not a
+  `k` fresh confirmed copies on its owners in the current epoch, bound to the current
+  head, policy and epoch, after `release.settle`. A sampled audit is not a
   completion report (E9). Surplus holders serve new owners; unknown/partitioned evidence
   preserves their pins. `/nu/have/1` answers are not evidence.
 - **Liveness and repair:** members send signed heartbeats. Admin daemons running with
@@ -489,23 +492,31 @@ claiming proofs remain verifiable after key/account changes.
   policy: <hash>, epoch, complete: bool, missing?: {blobs, bytes}, owned: {blobs, bytes},
   state: "syncing"|"held"|"paused"|"error", seq}`. `target` is the exact head CID the
   member is working toward; `complete: true` is set only from completeness marks for
-  `(target, epoch)` and cleared by any scrub failure or deletion. For a dataset with
+  `(target, epoch)` and cleared by any scrub failure or deletion. A member that holds
+  every blob (of the target and every live version) reports mode `full`, which confirms
+  every blob; otherwise `owned`, which confirms the blobs it owns in `epoch`. For a dataset with
   history, `live` is the live-set identity and `incomplete: [<tid>]` (at most 256) lists
   the live versions whose structure or owned blobs this member lacks; the live set is
   complete when `complete` is true and `incomplete` is empty (0047).
   `policy` is the SHA-256 of the DRISL-encoded `policy` map of the dataset record; `epoch`
   is the placement epoch hash. The heartbeat's `seq` orders reports per member.
 - A dataset is **ready** at head H in epoch E by [E5–E6](operations.md#e-readiness-evidence):
-  feasible policy and fresh `complete: true` reports from every owner of H in E, bound to
-  H, policy and E. Archive-wide readiness applies the same rule with `live` set to the
+  feasible policy and at least `k` confirmed copies of every blob of H: fresh
+  `complete: true` reports bound to H, policy and E, from owners of the blob (`owned`) or
+  from members holding every blob (`full`). The evaluator walks H's structure once,
+  groups blobs by owner set and counts each group's confirming members, so a member that
+  is briefly stale does not block readiness while other members confirm its blobs `k`
+  times; status shows `copies: {unit, units, below, min}`. Archive-wide readiness applies
+  the same rule over the blobs of every live version with `live` set to the
   retention live set's version-tree root; a snapshot's availability is reported
   separately. Reports are trusted completeness assertions, not byzantine storage proofs.
   Stale reports make the result unknown ([E8](operations.md#e-readiness-evidence)),
   never a green result because all remaining nodes are complete.
 - **Release algorithm** ([S1–S8](operations.md#s-safe-release)), run per member on its
   own state: for each candidate blob b, compute `owners(b, E)` from merged state; require
-  for each owner a fresh report with `target = H`, `live = L`, `policy = P`, `epoch = E`,
-  `complete: true`; require `(H, L, P, E)` unchanged in merged state for `release.settle`
+  at least `k` owners other than this member with a fresh report with `target = H`,
+  `live = L`, `policy = P`, `epoch = E`, `complete: true` (non-owner copies never permit a
+  release, S2); require `(H, L, P, E)` unchanged in merged state for `release.settle`
   with no held-back records and no owner reporting another epoch; then move b's pin to
   GC after `dataset.remove_grace`. With `release.auto = false` (default) the decision is
   only recorded for `nu cluster dataset gc --dry-run`.
@@ -728,9 +739,9 @@ restore before a production recommendation.
 
 ## Details still to specify
 
-- Owner-set size with `replicas: k` on large clusters: E6 requires every owner's report, so
-  a 100-member cluster needs 100 fresh reports per dataset; per-blob confirmed-copy counting
-  from the same reports is the scale-track refinement, with identical outcomes for k ≤ n.
+- Evaluation cost on large clusters: per-blob counting walks the target's structure and
+  hashes each blob against every eligible member per evaluation (status, waits);
+  caching owner groups per `(target, epoch)` is scale-track work (0050/0068).
 - Immutable version identity/collision validation and annotation authority; import manifest
   references authenticated by signed versions, plus historical key/identity evidence.
 - Mirror/archive preset defaults, historical availability, provenance/key evidence, budgets,

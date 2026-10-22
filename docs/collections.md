@@ -138,8 +138,27 @@ rescue = { below = 2, max_bytes = "100GiB" }
 
 - Collection policies keep D20's `replicas`, `where` and `spread`. Those copies are placed by
   [rendezvous hashing](cluster.md#placement) on the eligible members, exactly as for other
-  datasets. Only they count toward policy readiness. `replicas: 0` is allowed only for
-  collections and means no guaranteed copies.
+  datasets, except that the unit is the **whole item**: `b` in the placement score is the
+  34-byte binary multihash of the item root (the CID of the item's entry in the catalog,
+  for a directory item its SHA-256 DRISL directory node), so the `k` floor owners of an
+  item hold all of it and nothing about its internal structure is needed to place it.
+  Vectors: `testdata/vectors/nu-cluster/placement.json`, `items`. Balance is per item, so
+  coarser than per blob. Only floor copies count toward policy readiness. `replicas: 0` is
+  allowed only for collections and means no guaranteed copies.
+- **Floor holdings:** an eligible member holds every item it owns with source `floor`
+  (pin source `cluster`), before manual holds, its own written items and rules, and with
+  no rule budget. An epoch or policy change re-decides every item. A complete floor item
+  that the member no longer owns, or that left the catalog, stays held as `surplus` (pin
+  source `cluster-surplus`) and, with `release.auto` off, is not released; an incomplete
+  one is dropped. Holdings logs and the index carry `floor` and `surplus` like other
+  sources, so copy counts, rarest-first and `where` include them; `where` also names the
+  item's floor owners, and collection status shows the node's floor counts.
+- **Floor readiness** is [E6](operations.md#e-readiness-evidence) with items as units:
+  each floor member's completion report is bound to the merged catalog root, the policy
+  hash and the placement epoch, mode `owned`, `owned.blobs` counting items; `complete`
+  means the last evaluation succeeded and every `floor` holding is complete. An evaluator
+  groups the catalog's items by floor owners and requires `k` fresh complete reports
+  among each item's owners; `dataset status` and `wait` bind to the merged root.
 - Self-selected copies are additive and best effort. Status reports them as holder counts and
   never as `replicated`. A typical deployment tags a few large members (`where: role=floor`,
   `replicas: 1` or `2`) and lets every other member select.
@@ -150,7 +169,7 @@ rescue = { below = 2, max_bytes = "100GiB" }
   floor members, needs the readiness-evidence protocol of
   [operations](operations.md#readiness-and-status) and is later work.
 - **D20 defaults for collections:** collections use mirror semantics with `history` off by
-  default. The protected-version rule and surplus handoff apply only to blobs placed by
+  default. The protected-version rule and surplus handoff apply only to items placed by
   `replicas`. Self-selected holdings follow the latest merged head without readiness gating.
   With `replicas: 0`, nothing waits on the release-evidence protocol. Archive history for a
   collection is an explicit opt-in, and its encoding is still to specify.
@@ -318,9 +337,11 @@ roots are in `testdata/vectors/nu-collection/vectors.json`.
   1000). A rule's `path` limits it to items at or below that path. Rules are validated
   against the facets when set; a predicate that does not fit its facet's type is an error.
   `files` (partial items) is rejected until it is implemented.
-- **Holding precedence:** a manual hold, then items this node wrote (an item in its own
-  writer head is always held: the writer is the first source), then the first matching
-  rule. A rescue rule's matches are held only by the rescue pass.
+- **Holding precedence:** floor ownership, then a kept surplus copy, then a manual hold,
+  then items this node wrote (an item in its own writer head is always held: the writer
+  is the first source), then the first matching rule. A rescue rule's matches are held
+  only by the rescue pass. Holdings are per path: a replaced entry at a path takes over
+  the holding, and the previous entry is not kept as surplus.
 - **Catalog:** the `nu-catalog` walk profile is the nu-tree profile except that an entry
   with `meta` contributes only its metadata record, and plain files and symlinks outside
   items are not followed. Members pin each merged writer head and the merged header with
@@ -357,7 +378,7 @@ roots are in `testdata/vectors/nu-collection/vectors.json`.
   database epoch (`resync` otherwise).
 - **Holdings log:** per collection on each member, `{seq, path, entry, state, src, bytes}`
   with `state` `fetching`, `complete` or `released` (`partial` is reserved) and `src`
-  `select`, `rescue`, `manual` or `writer`; bounded to 1M transitions; positions are
+  `select`, `rescue`, `manual`, `writer`, `floor` or `surplus`; bounded to 1M transitions; positions are
   `(epoch, seq)`, where the epoch names the member's collection database. The `holdings`
   request ([`/nu/cluster/1`](cluster.md#nucluster1)) answers the transitions after a
   cursor, `resync` for a cursor from another epoch, past the head or older than the log,

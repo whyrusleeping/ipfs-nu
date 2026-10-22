@@ -945,9 +945,10 @@ large-cluster evidence belong to 0050/0068). Commands: `go test ./cluster ./repl
 |---|---|---|
 | Placement vectors | `cluster.TestPlacementVectors`, `TestPlacementRules` | scores, ranking, owners with/without spread and the epoch are fixed bytes; draining/client members own nothing; adding a member moves only its share |
 | R1 (E10/W2) | `cluster_test.TestPlacementReadiness` | a head acknowledged by all 3 storage members (`metadata` wait, 3 acks) whose content nobody has: content not ready, `ready` wait times out |
-| E6, placement sync | same | 3 routed private members, `replicas: 2`: each member holds the structure and exactly the blobs it owns; `ready` once every owner's fresh report confirms; `held` wait names holders, non-member holder fails |
-| R3 (E1/W1) | same | a wait on T keeps T after the head moves, ends in timeout with `superseded_by`, while the new head becomes ready on its own |
-| R4, R5, R7, R8, E8 | `cluster.TestReadyMatrix` (fake clock) | other-epoch/policy report → `missing: epoch`; clock past `evidence.fresh` → `unknown`, not degraded; incomplete surplus holder → still ready, not in `extra`; complete non-owners only → not ready, `extra` shown; fresh contradiction after ready → `degraded` |
+| E6, placement sync | same | 3 routed private members, `replicas: 2`: `ready` once every blob has two confirmed copies (`copies.below` 0, the writer's `full` report counts); each member holds the structure and exactly the blobs it owns; `held` wait (mode `owned`) names holders, non-member holder fails |
+| R3 (E1/W1) | same | a wait on T keeps T after the head moves and reports `superseded_by`, while the new head becomes ready on its own |
+| R4, R5, R7, R8, E8 | `cluster.TestReadyMatrix` (fake clock) | other-epoch/policy report → `missing: epoch`; clock past `evidence.fresh` → `unknown`, not degraded; k-of-n: a stale owner's blobs confirmed by a `full` holder → ready with the owner `missing: stale`; incomplete surplus holder → in neither `confirmed` nor `extra`; complete non-owners only → not ready, `extra` shown; fresh contradiction after ready → `degraded` |
+| Collection floor placement | `collection_test.TestCollectionFloor` | `replicas: 2` on 3 members: each item's two floor owners (rendezvous on the item-root multihash, vectors `items`) hold it whole with src `floor`; `where` names the owners, the index counts the floor copies; `ready` at the merged root with `copies.unit: item`; a fourth member moves items to itself and a previous owner keeps its copy as `surplus` |
 | R6 (E5) | `TestPlacementReadiness`, `TestReadyMatrix` | `replicas: 4` on 3 members and `spread: zone` without zones fail a ready wait fast with the shortfall; the team default warns instead of sharing failure domains silently |
 | Heartbeat reports | `cluster.TestReportDelta` | deltas apply in sequence, a missed heartbeat forces a full pull, removals propagate |
 | R15 (S5) | `replica.TestFirstHeldProtection` | never-ready dataset, five head changes with unavailable content: the last fully held view stays pinned, two heads staged, later heads observed only |
@@ -955,9 +956,11 @@ large-cluster evidence belong to 0050/0068). Commands: `go test ./cluster ./repl
 | One-node `k=1` | `cluster_test.TestLocalReady`, `cmd/nu.TestDatasetWaitCLI` | local dataset ready at `required: 1`, epoch `local`; CLI `update`/`wait`, timeout exit 6 with the snapshot |
 | `release.auto=false` | by construction | nothing in 0046 unpins held or ready versions; only never-held staged heads are dropped |
 
-Not yet covered: collection floor placement (`replicas` > 0 on collections), E8 under a
-real partition in nutest (the fake-clock table covers the rule), and the Linux isolated
-lab with placement traffic.
+Not yet covered: E8 under a real partition in nutest (the fake-clock table covers the
+rule), the Linux isolated lab with placement traffic, and floor-surplus release (0048).
+Network tests retry joins (each attempt with its own dial deadline) and wait on
+conditions with generous deadlines, so a loaded shared machine slows them rather than
+failing them.
 
 ## Version history and archives (0047)
 
@@ -966,7 +969,7 @@ Scaled to the v0-era test policy: a few fast tests per acceptance bullet (Linux 
 | Bullet / rule | Test | Shows |
 |---|---|---|
 | One-copy archive preset, two versions, exact old bytes without PDS or other nodes | `node.TestOneNodeArchive`, `cmd/nu.TestCLIArchive` (daemonless) | `--archive` writes the default schedule with `replicas: 1`; `--source` imports the first version; `update` re-adds; `cat`/`get -o` of `<ds>@<tid|label|time>` return the old bytes; `/c/<ds>@<label>/<path>` redirects to `/tree/<cid>/<path>` |
-| R9 (E6), E8 archive-wide | `node.TestOneNodeArchive`, `cluster_test.TestClusterArchive` | one node: content and archive state `ready`, `required: 1`, one confirmation; two members (`replicas: 1`): `wait --condition archive-ready` needs both owners' live-set reports (`required: 2`) |
+| R9 (E6), E8 archive-wide | `node.TestOneNodeArchive`, `cluster_test.TestClusterArchive` | one node: content and archive state `ready`, `required: 1`, one confirmation; two members (`replicas: 1`): `wait --condition archive-ready` needs one confirmed copy of every blob of the live set (`required: 1`, `copies.below` 0) |
 | New incomplete version vs established availability (E8) | `cluster_test.TestClusterArchive` | a head whose content exists nowhere makes the archive not ready while the older version stays `retained-complete`; reading the new version is `unavailable`; the old one lists through placement |
 | Rollback as a new head | `TestOneNodeArchive`, `TestClusterArchive` | new head and version with `restored_from`; the restored version's identity and label unchanged; metadata and content are separate results |
 | Incomplete/never-replicated/pruned never claim retrieval; skipped versions | `node.TestArchiveRetentionAvailability` | a head with unheld content is `observed`, superseded outside the live set it is `skipped`; a pruned version is `pruned`, reads (by TID or by a time selecting it) and rollback fail `unavailable` naming it, never a neighbour |

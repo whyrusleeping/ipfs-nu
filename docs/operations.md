@@ -43,10 +43,12 @@ seed waits and follow modes in [follow.md](follow.md#seed-waits).
   every blob the holder is responsible for under `mode` (`full`: all; `scoped`: the proof
   chain and the subtree; `lazy`: structure only; `owned`: the blobs it owns in `epoch`) is
   present and verified against its CID/outboard, as recorded by completeness marks. A
+  storage member that holds every blob of the target reports `full`, else `owned`. A
   report is authenticated by the holder's node key (heartbeat signature) or by the
   authenticated stream it arrives on, and is attributed to that PeerId only.
-- **E3 Binding.** A report counts only for the exact `(target, mode, policy, epoch)` it
-  names. A report for another epoch, policy or mode is not evidence for the current one.
+- **E3 Binding.** A report counts only for the exact `(target, policy, epoch)` it names,
+  in a mode that covers what is counted (`full` covers `owned`). A report for another
+  epoch, policy or mode is not evidence for the current one.
   `policy` is the hash of the dataset's policy fields; `epoch` is the placement epoch; the
   local cluster uses the constant epoch `local`.
 - **E4 Freshness.** A report is *fresh* for `evidence.fresh` (default 5 min) after the
@@ -59,24 +61,31 @@ seed waits and follow modes in [follow.md](follow.md#seed-waits).
   `replicas` distinct values of the spread tag among them. Infeasible policy reports
   `policy_unsatisfiable` with the shortfall (members or domains missing); it is never
   "ready" and never weakened automatically, including during setup and after failures.
-- **E6 Ready.** A dataset is *ready* at target T in epoch E when E5 holds and every
-  member that owns at least one blob of T in E (the *owner set*) has a fresh report
-  `complete: true` bound to `(T, owned, policy, E)` (a seed's `held` condition uses the
-  follow's own mode instead). The owner set is computed locally
-  from merged state and placement; for `replicas: all` it is every eligible member. For
-  the one-node local cluster the owner set is `{self}` and the local completeness mark
-  is the report, so one-node readiness is local completeness at the explicit `k=1`.
-- **E7 Counting.** Status reports `confirmed` (owners with fresh complete reports),
-  `required` (owner-set size), `missing` (owners without fresh complete reports, each as
-  `stale`, `incomplete`, `epoch` (report bound to another epoch/policy) or `absent`),
-  `extra` (fresh complete reports from non-owners:
-  surplus, draining members, member-selected collection holdings) and `evidence_age`
-  (the oldest fresh report counted). `extra` never contributes to `ready`.
-- **E8 Transitions.** Once ready, a target becomes *unknown* when some owner's evidence
-  goes stale and nothing fresh contradicts it, and *degraded* when fresh evidence or a
-  merged-state change shows fewer confirmed owners than required: an owner reports
+- **E6 Ready (k-of-n per blob).** A dataset is *ready* at target T in epoch E when E5
+  holds and every blob of T has at least `k` *confirmed copies*: members with a fresh
+  report `complete: true` bound to `(T, policy, E)` that covers the blob. An `owned`
+  report covers the blobs its sender owns in E; a `full` report covers every blob. `k` is
+  `replicas` (the eligible count for `replicas: all`); a target without blobs counts its
+  own multihash as its one blob. Blob lists and owners are computed locally from the
+  target's structure, merged state and placement, so per-blob counting needs no per-blob
+  reports. Collections count items instead of blobs, and only floor owners' reports
+  ([collections](collections.md#guaranteed-copies)). A seed's `held` condition uses the
+  follow's own mode instead. For the one-node local cluster `k=1` and the local
+  completeness mark is the report, so one-node readiness is local completeness.
+- **E7 Counting.** Status reports `required` (`k`), `copies: {unit, units, below, min}`
+  (units counted, those with fewer than `k` confirmed copies, and the fewest confirmed
+  copies of any unit), `confirmed` (members whose fresh complete report confirms at least
+  one unit), `missing` (owners without a counted report, each `stale`, `incomplete`,
+  `epoch` (bound to another epoch/policy/mode) or `absent`), `extra` (fresh complete
+  reports that confirm no unit: an `owned` report from a non-owner, member-selected
+  collection holdings) and `evidence_age` (the oldest counted report). `extra` never
+  contributes to `ready`; a missing owner whose blobs other members confirm `k` times
+  does not block it.
+- **E8 Transitions.** Once ready, a target becomes *unknown* when some blob falls below
+  `k` confirmed copies only because evidence went stale, and *degraded* when fresh
+  evidence or a merged-state change leaves a blob below `k`: a counted member reports
   `complete: false` or omits the target, or an epoch change (a member `unavailable`,
-  `draining` or `removed`) replaces owners that have not yet confirmed in the new epoch.
+  `draining` or `removed`) moves blobs to owners that have not yet confirmed them.
   Status keeps the last ready `{epoch, evidence_age}` beside the current result.
   Unknown is not degraded; neither is loss. Unknown longer than `evidence.unknown_alert`
   (default 30 min) is an alert condition. Archive-wide readiness is the same rule over
@@ -97,7 +106,7 @@ seed waits and follow modes in [follow.md](follow.md#seed-waits).
   head moved. Waiting for the newest head is a separate command, not a mode of `wait`.
 - **W2 Conditions.** `metadata` (signed state held by ≥ n storage members, existing
   `MetadataState`), `held` (every named `--holder <peer>` has a fresh complete report for
-  the target in the requested mode), `ready` (E6) and `archive-ready` (E6 over the live
+  the target in the requested mode, `full` satisfying `owned`), `ready` (E6) and `archive-ready` (E6 over the live
   set). `held` with no holder is a usage error. A condition is satisfied only by evidence
   of its own kind: metadata acknowledgments never satisfy `held`/`ready`, and content
   reports never satisfy `metadata`.
@@ -129,11 +138,14 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **S1 Candidate.** A blob is a candidate only when the member's merged state no longer
   obliges it to hold it: it is surplus (not owned in the current epoch), or unique to a
   version that is neither current, last policy-ready, labeled nor retention-selected.
-- **S2 Evidence.** The member holds fresh (E4) `complete: true` reports from **every**
-  owner of the blob in the current epoch, bound (E3) to the current head (and live-set
-  root), policy and epoch. "Every owner", not a quorum: a partition that hides one owner
-  defers release. With `replicas: k`, fewer than `k` fresh confirmed owners never permits
-  release; the releasing member's own copy does not count as one of them.
+- **S2 Evidence.** Release of blob b needs at least `k` confirmed copies of b (E6) that
+  stay after the release: fresh (E4) `complete: true` reports bound (E3) to the current
+  head (and live-set root), policy and epoch, from **owners** of b in the current epoch.
+  Only owners count here, because they are obliged to keep b; surplus and other non-owner
+  copies count for readiness but may be released concurrently, so they never permit
+  another member's release. The releasing member's own copy never counts. With `k`
+  owners per blob this is every owner: a partition that hides one defers release, and a
+  release never leaves fewer than `k` confirmed copies.
 - **S3 Settled state.** The head, policy and epoch the evidence binds to have been the
   member's merged current state for `release.settle` (default 10 min), no record is held
   back for clock skew, and no owner's fresh report names a different epoch or policy
@@ -171,8 +183,8 @@ per blob, decided locally by the member holding it, and only under all of the fo
 | R4 | E3 | member reports complete for T in epoch E1; E2 current | not counted; status `missing` with reason `epoch` | gate: 0046 |
 | R5 | E4 | clock jumps past `evidence.fresh` with no new reports | ready → unknown, no degraded, no release | gate: 0046 |
 | R6 | E5 | `replicas: 2`, one storage member (or `spread: zone`, one zone) | `policy_unsatisfiable`, shortfall named; `wait ready` fails fast | gate: 0046 |
-| R7 | E6/E7 | all owners complete but one surplus holder incomplete | ready; `extra` counts it, `confirmed` does not change | gate: 0046 |
-| R8 | E7 | collection holdings or surplus complete, owners not | not ready; `extra` shown, no green status | gate: 0046 |
+| R7 | E6/E7 | `k=2`; one owner stale, a full holder (writer, surplus) confirms that owner's blobs | ready; `missing` lists the stale owner, `copies.below` 0; an incomplete holder is in neither `confirmed` nor `extra` | gate: 0046 |
+| R8 | E7 | non-owner `owned` reports or member-selected collection holdings complete, owners not | not ready; `extra` shown, `copies.below` > 0, no green status | gate: 0046 |
 | R9 | E6 | one-node local cluster, content complete | ready at `k=1`, `required: 1`, never claims two copies | gate: 0047 |
 | R10 | S2 | partition hides one owner after a head update | old head's unique blobs stay pinned on every member | gate: 0048 |
 | R11 | S2 | `k=2`, one owner complete, the other stale | no release; dry-run names the stale owner | gate: 0048 |
@@ -194,12 +206,17 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **0046 (placement and readiness)**: E1–E8, E10, W1–W3, W6, S5, S7 and `release.auto`
   defaulting to false; R1, R3–R8, R15, R17; `ContentState` carries the W3 fields; one-node
   `k=1` status (R9) with 0047.
-  Implemented with these readings: `extra` lists fresh **complete** reports from
-  non-owners (R7's incomplete surplus holder appears in neither `confirmed` nor `extra`);
-  a report naming another target is `absent`; a never-ready target with only stale
-  evidence is `unknown`, with fresh contradicting evidence `syncing`; a well-formed target
-  that no head names yet keeps a wait waiting (`target_not_observed`) rather than failing
-  it. Evidence: [validation](validation.md#placement-and-readiness-0046).
+  Implemented with these readings: readiness counts confirmed copies per blob (E6, a
+  product decision replacing "every owner's report"); a member's single report per
+  dataset suffices because the evaluator derives the blobs it confirms from placement
+  (`owned`) or takes all of them (`full`, sent by any member holding every blob, such as
+  the writer); `extra` lists fresh complete reports that confirm nothing (an incomplete
+  holder appears in neither `confirmed` nor `extra`); a report naming another target is
+  `absent`; a never-ready target with only stale evidence is `unknown`, with fresh
+  contradicting evidence `syncing`; a well-formed target that no head names yet keeps a
+  wait waiting (`target_not_observed`) rather than failing it. Collection floor
+  placement counts items by floor owners' reports at the merged catalog root.
+  Evidence: [validation](validation.md#placement-and-readiness-0046).
 - **0047 (presets and history)**: E8 archive-wide readiness over the live-set root, R9,
   and version availability reported separately from readiness.
   Implemented with these readings: the live-set root is the live-set identity of

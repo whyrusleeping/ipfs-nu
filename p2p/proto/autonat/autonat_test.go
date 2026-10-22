@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
@@ -49,7 +50,7 @@ func addr(t *testing.T, text string) wire.Multiaddr {
 }
 func connect(t *testing.T, a, b *host.Host) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	if _, err := a.Dial(ctx, addr(t, b.Addrs()[0].String()+"/p2p/"+b.ID().String())); err != nil {
 		t.Fatal(err)

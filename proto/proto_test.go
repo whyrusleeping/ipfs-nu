@@ -18,6 +18,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/nutest/slow"
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
@@ -67,7 +68,7 @@ func connect(t *testing.T, a *host.Host, b *host.Host) proto.Opener {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	if _, err := a.Dial(ctx, addr); err != nil {
 		t.Fatal(err)
@@ -105,7 +106,7 @@ func readBlob(t *testing.T, st *store.Store, c cid.CID) []byte {
 }
 
 func ctxT(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*timeouts.Ceiling())
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -286,7 +287,7 @@ func (s *countStream) Read(b []byte) (int, error) {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(timeouts.Ceiling())
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for !cond() {

@@ -23,7 +23,7 @@ func TestRestartMidTransfer(t *testing.T) {
 	n := nutest.New(t, 3, nutest.Options{Fetch: smallRequests})
 	// Startup is normally tens of milliseconds; the bound only catches gross regressions
 	// and stays loose because the full suite runs packages in parallel on shared CPUs.
-	if d := time.Since(started); d > 10*time.Second {
+	if d := time.Since(started); d > nutest.Scale(10*time.Second) {
 		t.Fatalf("starting 3 nodes took %s", d)
 	} else {
 		t.Logf("started 3 nodes in %s", d)

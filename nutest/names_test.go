@@ -68,9 +68,18 @@ func TestPublishSeedWait(t *testing.T) {
 	root := a.Add(dir, true)
 
 	// R2: the seed cannot fit the blobs; the wait times out with b incomplete, and the
-	// publication itself succeeded regardless.
+	// publication itself succeeded regardless. The first seed wait creates the seed
+	// dataset; the seed's state is established before the wait whose result is checked,
+	// so that wait can be short.
 	b.Local.Store.SetLimits(store.Limits{Physical: 200 << 10})
-	res, err := a.Local.Publish(ctx, apiv0.PublishRequest{Name: "photos", Target: root.String(), WaitSeed: []string{b.ID.String()}, Timeout: "4s"})
+	if _, err := a.Local.Publish(ctx, apiv0.PublishRequest{Name: "photos", Target: root.String(), WaitSeed: []string{b.ID.String()}, Timeout: "1ms"}); err == nil {
+		t.Fatal("a budget-limited seed wait was satisfied")
+	}
+	nutest.Eventually(t, "seed sees the head and cannot complete it", func() bool {
+		ds, err := b.Local.Dataset(ctx, node.ScopeCluster, "pub-photos")
+		return err == nil && ds.Head != nil && ds.Head.Target == root.String() && ds.Content.Local != nil && !ds.Content.Local.Complete && ds.Content.Local.State != ""
+	})
+	res, err := a.Local.Publish(ctx, apiv0.PublishRequest{Name: "photos", Target: root.String(), WaitSeed: []string{b.ID.String()}, Timeout: "300ms"})
 	if err == nil || res == nil || res.Wait == nil || res.Wait.Satisfied {
 		t.Fatalf("budget-limited seed wait: %v %+v", err, res)
 	}
@@ -113,7 +122,7 @@ func TestPublishSeedWait(t *testing.T) {
 	n.Partition(a, b)
 	waitErr := make(chan error, 1)
 	go func() {
-		_, err := a.Local.DatasetWait(ctx, node.ScopeCluster, "pub-photos", apiv0.DatasetWaitRequest{Target: root2.String(), Condition: apiv0.WaitHeld, Holders: []string{b.ID.String()}, Timeout: "2s"})
+		_, err := a.Local.DatasetWait(ctx, node.ScopeCluster, "pub-photos", apiv0.DatasetWaitRequest{Target: root2.String(), Condition: apiv0.WaitHeld, Holders: []string{b.ID.String()}, Timeout: "1s"})
 		waitErr <- err
 	}()
 	if _, err := a.Local.Publish(ctx, apiv0.PublishRequest{Name: "photos", Target: root2.String()}); err != nil {

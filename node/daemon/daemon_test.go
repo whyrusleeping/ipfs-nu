@@ -15,13 +15,14 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/client"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 )
 
 // End to end: a fresh NU_PATH is initialized on first use, the daemon serves API and
 // gateway on ephemeral ports, the client finds it through the repo, follows an operation
 // via events and wait, and errors arrive as the typed envelope.
 func TestDaemonEndToEnd(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 
 	root := filepath.Join(t.TempDir(), "nu")

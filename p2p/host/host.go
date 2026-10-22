@@ -399,6 +399,7 @@ func (h *Host) removeConnection(c *Conn) {
 	} else {
 		h.peers[c.peer] = list
 	}
+	h.signalChangedLocked()
 	streams := make([]*Stream, 0, len(c.streams))
 	for s := range c.streams {
 		streams = append(streams, s)

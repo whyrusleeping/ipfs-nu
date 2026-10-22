@@ -10,6 +10,7 @@ import (
 
 	nu "github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -17,6 +18,15 @@ type Config struct {
 	AgentVersion, ProtocolVersion string
 	MaxPeers, MaxObservers        int
 	Timeout                       time.Duration
+	// Addresses supplies the current advertised direct and live circuit addresses.
+	// Nil uses Host.Addrs. Call AddressesChanged after changing this snapshot.
+	// The callback must be concurrency-safe and return promptly.
+	Addresses func() []wire.Multiaddr
+	// OnPeerRecord receives fresh, authenticated signed records outside service
+	// locks. It must return promptly. Callbacks may be concurrent/out of sequence;
+	// consumers must compare
+	// Seq, bound their storage, and must not treat addresses as dial authorization.
+	OnPeerRecord func(wire.PeerRecord)
 }
 type PeerInfo struct {
 	Message   IdentifyMessage
@@ -33,19 +43,20 @@ type Observation struct {
 	Updated               time.Time
 }
 type Service struct {
-	host         *host.Host
-	config       Config
-	ctx          context.Context
-	cancel       context.CancelFunc
-	unwatch      func()
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
-	requests     chan struct{}
-	mu           sync.Mutex
-	peers        map[wire.PeerID]PeerInfo
-	observations map[string]Observation
-	changed      chan struct{}
-	seq          uint64
+	host           *host.Host
+	config         Config
+	ctx            context.Context
+	cancel         context.CancelFunc
+	unwatch        func()
+	wg             sync.WaitGroup
+	closeOnce      sync.Once
+	requests       chan struct{}
+	mu             sync.Mutex
+	peers          map[wire.PeerID]PeerInfo
+	observations   map[string]Observation
+	changed        chan struct{}
+	addressChanges chan struct{}
+	seq            uint64
 }
 
 func New(h *host.Host, cfg Config) (*Service, error) {
@@ -76,7 +87,7 @@ func New(h *host.Host, cfg Config) (*Service, error) {
 		cfg.ProtocolVersion = "ipfs/0.1.0"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{host: h, config: cfg, ctx: ctx, cancel: cancel, requests: make(chan struct{}, 32), peers: make(map[wire.PeerID]PeerInfo), observations: make(map[string]Observation), changed: make(chan struct{})}
+	s := &Service{host: h, config: cfg, ctx: ctx, cancel: cancel, requests: make(chan struct{}, 32), peers: make(map[wire.PeerID]PeerInfo), observations: make(map[string]Observation), changed: make(chan struct{}), addressChanges: make(chan struct{}, 1)}
 	handlers := []struct {
 		id string
 		fn host.Handler
@@ -105,6 +116,22 @@ func (s *Service) ownMessage(c *host.Conn) (IdentifyMessage, error) {
 		return IdentifyMessage{}, err
 	}
 	addrs := s.host.Addrs()
+	if s.config.Addresses != nil {
+		addrs = s.config.Addresses()
+	}
+	// Never sign or disclose a local-only routing key, even if an owner provider
+	// accidentally includes it. Normalize also rejects a conflicting /p2p suffix.
+	filtered := make([]wire.Multiaddr, 0, len(addrs))
+	for _, a := range addrs {
+		if s.host.IsLocalOnlyMultiaddr(a) {
+			continue
+		}
+		if _, err := lookup.NormalizeAddress(s.host.ID(), a); err != nil {
+			return IdentifyMessage{}, err
+		}
+		filtered = append(filtered, a)
+	}
+	addrs = filtered
 	s.mu.Lock()
 	now := uint64(time.Now().UnixNano())
 	if now > s.seq {
@@ -260,8 +287,8 @@ func (s *Service) consume(c *host.Conn, m IdentifyMessage) error {
 	}
 	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	old, exists := s.peers[id]
+	freshRecord := certified != nil && (old.Certified == nil || certified.Seq > old.Certified.Seq)
 	if !exists && len(s.peers) >= s.config.MaxPeers {
 		var oldest wire.PeerID
 		var when time.Time
@@ -306,6 +333,12 @@ func (s *Service) consume(c *host.Conn, m IdentifyMessage) error {
 	}
 	close(s.changed)
 	s.changed = make(chan struct{})
+	s.mu.Unlock()
+	if freshRecord && s.config.OnPeerRecord != nil {
+		record := *certified
+		record.Addresses = append([]wire.Multiaddr(nil), certified.Addresses...)
+		s.config.OnPeerRecord(record)
+	}
 	return nil
 }
 func cloneInfo(info PeerInfo) PeerInfo {
@@ -356,12 +389,24 @@ func (s *Service) WaitPeer(ctx context.Context, id wire.PeerID, ready func(PeerI
 		}
 	}
 }
+
+// AddressesChanged coalesces a publication request with connection/protocol
+// changes. The worker pushes a fresh signed snapshot to connected push peers.
+// It performs no network I/O on the caller and is safe during shutdown.
+func (s *Service) AddressesChanged() {
+	select {
+	case s.addressChanges <- struct{}{}:
+	default:
+	}
+}
+
 func (s *Service) watch(changes <-chan struct{}) {
 	defer s.wg.Done()
 	known := make(map[*host.Conn]bool)
 	for {
 		select {
 		case <-changes:
+		case <-s.addressChanges:
 		case <-s.ctx.Done():
 			return
 		case <-s.host.Context().Done():

@@ -3,6 +3,8 @@ package host
 import (
 	"net"
 
+	ma "github.com/multiformats/go-multiaddr"
+
 	quic "github.com/quic-go/quic-go"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
@@ -15,6 +17,23 @@ import (
 type PacketConnPolicy interface {
 	QUICConfigForPeer(remote net.Addr, base *quic.Config) *quic.Config
 	VerifyPeerAddress(remote net.Addr, peer wire.PeerID) error
+}
+
+// IsLocalOnlyMultiaddr checks literal IP components against the socket policy,
+// including relay prefixes. It does not resolve DNS or authorize a dial.
+func (h *Host) IsLocalOnlyMultiaddr(a wire.Multiaddr) bool {
+	m, err := ma.NewMultiaddrBytes(a.Bytes())
+	if err != nil {
+		return false
+	}
+	for _, part := range m {
+		if part.Code() == ma.P_IP4 || part.Code() == ma.P_IP6 {
+			if h.IsLocalOnlyAddress(&net.UDPAddr{IP: net.ParseIP(part.Value()), Port: 1}) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // IsLocalOnlyAddress prevents virtual transport routing keys from escaping into

@@ -207,15 +207,35 @@ func (c *Client) Maintain(ctx context.Context, relay wire.PeerID, update func(Re
 		if update != nil {
 			update(r)
 		}
+		c.mu.Lock()
+		held := c.reservations[relay]
+		c.mu.Unlock()
+		if held.conn == nil {
+			return NoReservation
+		}
 		timer := time.NewTimer(time.Until(r.Expires) / 2)
 		select {
 		case <-timer.C:
+		case <-held.conn.Context().Done():
+			timer.Stop()
+			return net.ErrClosed
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
 		}
 	}
 }
+
+// DropReservation revokes local STOP admission. Circuit-v2 has no cancellation
+// message: the remote reservation expires naturally (or when its connection
+// closes). Existing circuits are not reset; their owner controls their lifetime.
+// The owner must first cancel/join its renewal loop to prevent re-reservation.
+func (c *Client) DropReservation(relay wire.PeerID) {
+	c.mu.Lock()
+	delete(c.reservations, relay)
+	c.mu.Unlock()
+}
+
 func (c *Client) Connect(ctx context.Context, relay, peer wire.PeerID) (*Circuit, error) {
 	if !c.begin() {
 		return nil, net.ErrClosed

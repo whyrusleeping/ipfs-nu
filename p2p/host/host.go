@@ -499,6 +499,9 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 		return nil, err
 	}
 	context.AfterFunc(qc.Context(), h.releaseConnection)
+	if err := awaitAccepted(dialCtx, qc); err != nil {
+		return nil, err // the connection is closed: its AfterFunc releases the slot
+	}
 	c, err := h.addConnection(qc, true)
 	if err != nil {
 		_ = qc.CloseWithError(1, "connection refused")
@@ -509,6 +512,40 @@ func (h *Host) Dial(ctx context.Context, addr wire.Multiaddr) (*Conn, error) {
 	}
 	return c, nil
 }
+
+// acceptBound caps the wait for the responder's first post-handshake packet.
+const acceptBound = 2 * time.Second
+
+// awaitAccepted waits until the responder has acted on our client certificate. The
+// client's QUIC handshake completes when it sends its Finished, before the responder
+// verifies the certificate and runs its connection policy, so a refused dial would
+// otherwise look connected for a round trip and then drop (a private member rejecting a
+// non-member). The responder sends nothing after the client's Finished until that check
+// is done: its next packet (HANDSHAKE_DONE at the latest) means acceptance, a close
+// means refusal. Silence past acceptBound or the dial context is treated as acceptance
+// so an unusual peer still connects.
+func awaitAccepted(ctx context.Context, qc *quic.Conn) error {
+	before := qc.ConnectionStats().PacketsReceived
+	deadline := time.NewTimer(acceptBound)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		if qc.ConnectionStats().PacketsReceived > before {
+			return nil
+		}
+		select {
+		case <-qc.Context().Done():
+			return fmt.Errorf("host: connection refused by the peer after the handshake: %w", context.Cause(qc.Context()))
+		case <-ctx.Done():
+			return nil
+		case <-deadline.C:
+			return nil
+		case <-tick.C:
+		}
+	}
+}
+
 func dialAddress(addr wire.Multiaddr) (*net.UDPAddr, wire.PeerID, int, error) {
 	if addr.Opaque() {
 		return nil, "", 0, ErrUnsupportedAddress

@@ -21,3 +21,4 @@ Acceptance: measured (NU_SLOW, method recorded in docs/validation.md): single-pr
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Partial (ed6d80c; merged ac1159a): removed per-chunk global fsync barrier (overlapped bounded checkpoints), Bao read-ahead + batched verified writes, Partial.Flush snapshot fixes. Numbers: plain QUIC 323–384 MB/s; 10 GB controlled 161.8 → 281.3 MB/s; 2 GiB single-peer runs 252/278/46 MB/s; capped 3-provider (40 MB/s each, one corrupt) 0.99×/0.99×/0.44× honest sum; original physical-source scenario 73.7 → 107.7 MB/s single, 47.3 → 85.8 MB/s multi. Open: intermittent stall (~1 in 3 runs) — investigating.

@@ -33,12 +33,15 @@ const (
 	// SourceCollectionPush protects the metadata and files of an item push until the
 	// item is in the writer head (or the push failed).
 	SourceCollectionPush = "collection-push"
+	// SourcePublic marks a root the operator chose to serve on the public HTTPS listener
+	// (operations.md P2); it protects the root like an explicit pin.
+	SourcePublic = "public"
 )
 
 var sources = map[string]bool{
 	SourceExplicit: true, SourceFollow: true, SourceMyNames: true, SourceCluster: true,
 	SourceClusterSurplus: true, SourceCollectionSelect: true, SourceCollectionManual: true,
-	SourceCollectionConflict: true, SourceCollectionPush: true,
+	SourceCollectionConflict: true, SourceCollectionPush: true, SourcePublic: true,
 }
 
 // Pin protects an object, and for recursive pins everything its walk profile reaches, from

@@ -96,6 +96,17 @@ waits) returns the operation once finished, else a `timeout` error with the snap
 `nu operations wait <id>` or by default after `nu add`/`nu pin add` (`--no-wait` prints
 the operation instead); with `--json` it prints the NDJSON events.
 
+## Connectivity status
+
+`GET /status` includes `network.connectivity` while a swarm runs: `reachability`
+(`unknown`, `private`, `public`, `disabled`), home/backup relay PeerIDs, per-relay RTT,
+reservation expiry/error, and per-peer paths (`direct-quic`, `direct`, `relay`,
+`recovering`, `offline`). Direct endpoints are proven physical addresses, never local
+virtual routing keys. `network_change_error` reports failed recovery stages;
+`physical_rebind` is currently false. Reservations failing over does not by itself
+prove an active transfer survived; Nu-path recovery is separately bounded by QUIC's
+idle timeout. Status/doctor render these same diagnostics.
+
 ## Routes (v0)
 
 ```text

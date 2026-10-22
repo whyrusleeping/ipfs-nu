@@ -139,6 +139,7 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		// clusters run no LAN discovery.
 		scfg.AllowPeer = n.GateSwarm(scfg.AllowPeer)
 		if n.PrivateNetwork() {
+			scfg.Isolated = true // cluster gate owns membership; disable all public mechanisms
 			scfg.MDNS = false
 		}
 		d.Swarm, err = swarm.Start(ctx, scfg)

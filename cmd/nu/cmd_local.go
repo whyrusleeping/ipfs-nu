@@ -291,6 +291,7 @@ var cmdStatus = &command{
 					addrs = strings.Join(ls.Network.Addrs, "\n            ")
 				}
 				fmt.Fprintf(w, "addresses:  %s\n", addrs)
+				printConnectivity(w, ls.Network.Connectivity)
 				if ls.Network.Serving {
 					fmt.Fprintf(w, "network:    serving, %d peers connected\n", ls.Network.Peers)
 					for _, p := range ls.Network.Connected {
@@ -460,6 +461,9 @@ func networkChecks(ctx context.Context, cfg *repo.Config, network *apiv0.Network
 			pc.Close()
 			add("swarm port", "ok", l+" can be bound (no daemon is serving right now)", "start `"+nu.Name+" daemon` to share continuously")
 		}
+	}
+	if network != nil {
+		checks = append(checks, connectivityChecks(network.Connectivity)...)
 	}
 	if peer == "" {
 		return checks

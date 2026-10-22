@@ -143,6 +143,11 @@ func (n *Local) networkStatus() *apiv0.NetworkStatus {
 			ns.Connected = append(ns.Connected, id.Base36())
 		}
 		ns.Peers = len(ns.Connected)
+		if live, ok := n.Net.(interface {
+			ConnectivityStatus() *apiv0.ConnectivityStatus
+		}); ok {
+			ns.Connectivity = live.ConnectivityStatus()
+		}
 	}
 	return ns
 }

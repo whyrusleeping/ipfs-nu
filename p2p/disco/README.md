@@ -67,10 +67,15 @@ outbound budgets; source authentication never implicitly permits a new endpoint.
   reservation, outer relay reconnection or a network-blocking relay. Reflexive
   fixture mappings are primed by an observer-bound packet before candidate
   exchange; this avoids nft conntrack caching a pre-mapping DNAT miss.
-- This is not a field success matrix or the 1 GB soak; long/bulk matrices and
-  no-reconnect exit gates remain 0024/0025. Public/IPv6/mapped router topologies,
-  physical socket replacement, constrained-MTU paths and capacity changes need
-  further evidence. Small disco probes do not certify the required 1200-byte
+- Additional tagged tests cover public↔EIM/APDF, IPv6 (no NAT), and a real
+  miniupnpd UPnP-mapped side↔EIM/APDF. Set `NU_MINIUPNPD` if the binary is not on
+  PATH. `NU_SLOW=1 go test -tags natlab ./p2p/disco -run '^TestNATLabDiscoGiB$'
+  -timeout=5m -v` opts into a byte-verified 1 GiB transfer through a standalone
+  interface flap and a hotspot-style address replacement; the same inner
+  connection/stream remained open. See docs/validation.md for measured results
+  and the independent-review request. These are not a field success matrix;
+  long matrices and no-reconnect exit gates remain 0024/0025. Physical socket
+  replacement, constrained-MTU paths and capacity changes need further evidence. Small disco probes do not certify the required 1200-byte
   inner packet budget; owners must restrict eligible paths accordingly.
 - NAT profiles, prediction, port ranges, spray sockets, priming strategies and
   datagram relay optimization are not v1. Unknown control/probe encodings fail

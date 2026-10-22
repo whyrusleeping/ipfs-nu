@@ -12,14 +12,17 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/whyrusleeping/nu/nutest/slow"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
 	"github.com/whyrusleeping/nu/p2p/natlab"
 	"github.com/whyrusleeping/nu/p2p/netmon"
+	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -27,15 +30,20 @@ import (
 // a fake UDP NAT and not a claim to test circuit reservation/reconnection. All
 // direct probes and inner QUIC use real UDP, namespaces and nftables fixtures.
 type labConfig struct {
-	Key                    []byte
-	Peer, Relay, Advertise string
+	Key                              []byte
+	Peer, Relay, Advertise           string
+	Listen, Scope, Gateway, Internal string
 }
-type labCommand struct{ Op, Address string }
+type labCommand struct {
+	Op, Address string
+	Bytes       int64
+}
 type labReply struct {
 	Error    string
 	Status   Status
 	Progress int64
 	Alive    bool
+	Mapping  portmap.Mapping
 }
 type labPeer struct {
 	in  io.WriteCloser
@@ -64,12 +72,26 @@ func TestDiscoLabHelper(t *testing.T) {
 	check(t, err)
 	peer, err := wire.ParsePeerID(cfg.Peer)
 	check(t, err)
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 4000})
+	network := "udp4"
+	if cfg.Listen == "" {
+		cfg.Listen = "0.0.0.0:4000"
+	}
+	if strings.Contains(cfg.Listen, "[") {
+		network = "udp6"
+	}
+	bind, err := net.ResolveUDPAddr(network, cfg.Listen)
 	check(t, err)
-	// Reflexive candidates imply an existing observer mapping. Prime the fixture
-	// before exchange, avoiding nft conntrack's cached pre-mapping DNAT miss.
-	_, err = udp.WriteToUDP([]byte("fixture observer"), &net.UDPAddr{IP: net.ParseIP("198.18.0.1"), Port: 5000})
+	udp, err := net.ListenUDP(network, bind)
 	check(t, err)
+	// Reflexive candidates imply an existing observer mapping. Prime only the
+	// IPv4 EIM fixtures, avoiding conntrack's cached pre-mapping DNAT miss.
+	if network == "udp4" {
+		observer := netip.MustParseAddrPort(cfg.Advertise)
+		ip := observer.Addr().As4()
+		ip[3] = 1
+		_, err = udp.WriteToUDP([]byte("fixture observer"), net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(ip), 5000)))
+		check(t, err)
+	}
 	m, err := magicsock.New(magicsock.Config{UDP: udp})
 	check(t, err)
 	defer m.Close()
@@ -86,8 +108,27 @@ func TestDiscoLabHelper(t *testing.T) {
 	advertised.Store(netip.MustParseAddrPort(cfg.Advertise))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	d, err := New(ctx, Config{Host: h, Socket: m, Candidates: func(wire.PeerID) []Candidate { return []Candidate{candidate(advertised.Load().(netip.AddrPort))} }, Authorize: func(p wire.PeerID, c Candidate) bool {
-		return p == peer && netip.MustParsePrefix("198.18.0.0/24").Contains(c.Addr.Addr()) && c.Addr.Port() == 4000
+	if cfg.Scope == "" {
+		cfg.Scope = "198.18.0.0/24"
+	}
+	scope := netip.MustParsePrefix(cfg.Scope)
+	var lease atomic.Value
+	lease.Store(portmap.Mapping{})
+	d, err := New(ctx, Config{Host: h, Socket: m, Candidates: func(wire.PeerID) []Candidate {
+		if m := lease.Load().(portmap.Mapping); m.External.IsValid() {
+			c, ok := FromMapping(m, netip.AddrPort{}, time.Now())
+			if !ok {
+				return nil
+			}
+			return []Candidate{c}
+		}
+		c := candidate(advertised.Load().(netip.AddrPort))
+		if c.Addr.Addr().Is6() {
+			c.Kind = IPv6
+		}
+		return []Candidate{c}
+	}, Authorize: func(p wire.PeerID, c Candidate) bool {
+		return p == peer && scope.Contains(c.Addr.Addr()) && c.Addr.Port() >= 1024
 	}, Heartbeat: 100 * time.Millisecond, ProbeTimeout: 150 * time.Millisecond})
 	check(t, err)
 	defer d.Close()
@@ -104,8 +145,23 @@ func TestDiscoLabHelper(t *testing.T) {
 		r := labReply{}
 		var err error
 		switch command.Op {
+		case "map":
+			mapper, e := portmap.New(portmap.Config{Gateway: netip.MustParseAddr(cfg.Gateway), Local: netip.MustParseAddrPort(cfg.Internal), Protocols: []portmap.Protocol{portmap.UPnP}})
+			err = e
+			if err == nil {
+				r.Mapping, err = mapper.Refresh(ctx)
+				if err == nil {
+					lease.Store(r.Mapping)
+					advertised.Store(r.Mapping.External)
+					d.Update()
+				}
+			}
 		case "open":
-			ma, e := wire.ParseMultiaddr(fmt.Sprintf("/ip4/%s/udp/%d/quic-v1/p2p/%s", v.Addr(), v.Port(), peer), 1024)
+			family := "ip4"
+			if v.Addr().Is6() {
+				family = "ip6"
+			}
+			ma, e := wire.ParseMultiaddr(fmt.Sprintf("/%s/%s/udp/%d/quic-v1/p2p/%s", family, v.Addr(), v.Port(), peer), 1024)
 			err = e
 			if err == nil {
 				conn, err = h.Dial(ctx, ma)
@@ -129,6 +185,14 @@ func TestDiscoLabHelper(t *testing.T) {
 				err = pipeline.Run(ctx, events)
 			}
 		case "transfer":
+			total := command.Bytes
+			if total == 0 {
+				total = 4 << 20
+			}
+			pace := time.Duration(0)
+			if total <= 4<<20 {
+				pace = 5 * time.Millisecond
+			}
 			transferDone = make(chan error, 1)
 			go func() {
 				s, e := h.OpenStream(ctx, peer, "/disco-lab-echo/1")
@@ -137,8 +201,8 @@ func TestDiscoLabHelper(t *testing.T) {
 					return
 				}
 				defer s.Close()
-				_ = s.SetDeadline(time.Now().Add(8 * time.Second))
-				for i := 0; i < 256; i++ {
+				_ = s.SetDeadline(time.Now().Add(3 * time.Minute))
+				for i := int64(0); i < total/(16<<10); i++ {
 					data := bytes.Repeat([]byte{byte(i)}, 16<<10)
 					if _, e = s.Write(data); e != nil {
 						transferDone <- e
@@ -154,7 +218,9 @@ func TestDiscoLabHelper(t *testing.T) {
 						return
 					}
 					progress.Add(int64(len(data)))
-					time.Sleep(5 * time.Millisecond)
+					if pace > 0 {
+						time.Sleep(pace)
+					}
 				}
 				if conn == nil || s.Conn() != conn || conn.Context().Err() != nil {
 					transferDone <- fmt.Errorf("inner connection replaced")
@@ -181,9 +247,27 @@ func TestNATLabDisco(t *testing.T) {
 	if !natlab.Isolate(t) {
 		return
 	}
-	for _, filter := range []natlab.Filtering{natlab.FilterEndpointIndependent, natlab.FilterAddressPortDependent} {
+	testNATDisco(t, false)
+}
+func TestNATLabDiscoGiB(t *testing.T) {
+	slow.Skip(t)
+	if !natlab.IsolateTimeout(t, 4*time.Minute) {
+		return
+	}
+	testNATDisco(t, true)
+}
+func testNATDisco(t *testing.T, bulk bool) {
+	filters := []natlab.Filtering{natlab.FilterEndpointIndependent, natlab.FilterAddressPortDependent}
+	if bulk {
+		filters = filters[1:]
+	}
+	for _, filter := range filters {
 		t.Run(string(filter), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			timeout := 15 * time.Second
+			if bulk {
+				timeout = 3 * time.Minute
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			l, err := natlab.New(ctx)
 			check(t, err)
@@ -222,7 +306,7 @@ func TestNATLabDisco(t *testing.T) {
 				in, out, e := clients[i].Start("env", "NU_DISCO_HELPER=1", os.Args[0], "-test.run=^TestDiscoLabHelper$")
 				check(t, e)
 				peers[i] = &labPeer{in, json.NewDecoder(out)}
-				check(t, json.NewEncoder(in).Encode(labConfig{keys[i].Marshal(), keys[1-i].Public().PeerID().String(), path, fmt.Sprintf("198.18.0.%d:4000", 20+i)}))
+				check(t, json.NewEncoder(in).Encode(labConfig{Key: keys[i].Marshal(), Peer: keys[1-i].Public().PeerID().String(), Relay: path, Advertise: fmt.Sprintf("198.18.0.%d:4000", 20+i)}))
 			}
 			left, err := listener.Accept()
 			check(t, err)
@@ -246,9 +330,34 @@ func TestNATLabDisco(t *testing.T) {
 				return a.Status.Selected.IsValid() && b.Status.Selected.IsValid()
 			})
 			t.Logf("EIM/EIF <-> EIM/%s: both direct in %v", filter, time.Since(started))
-			peers[0].call(t, labCommand{Op: "transfer"})
+			total := int64(4 << 20)
+			if bulk {
+				total = 1 << 30
+			}
+			transferStart := time.Now()
+			peers[0].call(t, labCommand{Op: "transfer", Bytes: total})
 			eventually(t, func() bool { return peers[0].call(t, labCommand{Op: "status"}).Progress >= 128<<10 })
 			before := peers[0].call(t, labCommand{Op: "status"}).Progress
+			if bulk {
+				check(t, clients[0].Link("eth0", false))
+				peers[0].call(t, labCommand{Op: "restart"})
+				peers[1].call(t, labCommand{Op: "restart"})
+				time.Sleep(200 * time.Millisecond)
+				check(t, clients[0].Link("eth0", true))
+				_, err = clients[0].Run("ip", "route", "replace", "default", "via", "10.0.0.1")
+				check(t, err)
+				peers[0].call(t, labCommand{Op: "restart"})
+				peers[1].call(t, labCommand{Op: "restart"})
+				eventually(t, func() bool {
+					a, b := peers[0].call(t, labCommand{Op: "status"}), peers[1].call(t, labCommand{Op: "status"})
+					return a.Status.Selected.IsValid() && b.Status.Selected.IsValid()
+				})
+				after := peers[0].call(t, labCommand{Op: "status"}).Progress
+				if after <= before || after >= total {
+					t.Fatalf("flap progress not preserved during transfer: before=%d after=%d", before, after)
+				}
+				t.Logf("standalone 200ms interface flap: progress %d -> %d; same stream still active", before, after)
+			}
 			check(t, clients[0].Link("eth0", false))
 			peers[0].call(t, labCommand{Op: "restart"})
 			peers[1].call(t, labCommand{Op: "restart"})
@@ -269,10 +378,10 @@ func TestNATLabDisco(t *testing.T) {
 			})
 			recovered := time.Since(recovery)
 			result := peers[0].call(t, labCommand{Op: "result"})
-			if !result.Alive || result.Progress != 4<<20 || result.Progress <= before {
+			if !result.Alive || result.Progress != total || result.Progress <= before {
 				t.Fatalf("progress not preserved: %+v", result)
 			}
-			t.Logf("address change -> direct recovery %v; verified %d bytes, prior progress %d; same inner connection and stream remained open", recovered, result.Progress, before)
+			t.Logf("address change -> direct recovery %v; verified %d bytes in %v, prior progress %d; same inner connection and stream remained open", recovered, result.Progress, time.Since(transferStart), before)
 		})
 	}
 }

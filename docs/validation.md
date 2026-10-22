@@ -61,6 +61,89 @@ the required 1200-byte inner packet budget. Prediction/spraying/profile negotiat
 and datagram relay optimization are separate extension tasks, not silently enabled
 by the baseline protocol.
 
+### Remaining 0017 acceptance (2026-10-22)
+
+Added real namespace/nftables scenarios on baseline `ae66acc` plus these tests:
+
+| Pair | Both direct after Open | Transfer check |
+|---|---:|---|
+| Public IPv4 ↔ EIM/APDF | 39.1 ms | 4 MiB byte-verified, same inner connection |
+| IPv6 ↔ IPv6, no NAT (`2001:db8:1::/64`) | 11.5 ms | 4 MiB byte-verified, same inner connection |
+| miniupnpd UPnP-mapped ↔ EIM/APDF | 43.0 ms | 4 MiB byte-verified, same inner connection |
+
+The mapped case uses **real miniupnpd 2.2.3**, its nftables backend, and
+`p2p/portmap` UPnP discovery/lease acquisition. The test checks the daemon's actual
+DNAT rule, feeds the lease through `disco.FromMapping` with expiry preserved, and
+uses the granted external endpoint. `11.0.0.0/24` is confined to the isolated
+namespace (no Internet uplink), because miniupnpd rejects reserved WAN addresses.
+IPv6 runs on real veth/bridge interfaces with DAD disabled only in the test peers.
+Together with the earlier EIM/EIF and EIM/APDF cases, these cover the requested
+baseline classes; they are not an exhaustive field/NAT implementation matrix.
+
+The opt-in bulk test transferred **1 GiB (1,073,741,824 bytes)** across EIM/EIF ↔
+EIM/APDF in **35.37 s**. It performed a standalone **200 ms interface flap**
+(progress **163,840 → 4,636,672 bytes** after recovery), then changed both inside
+and outside addresses as in a Wi-Fi → hotspot move during the same transfer.
+Direct recovery after the address replacement took **1.030 s**. All 65,536
+16 KiB chunks were byte-compared; **the same inner QUIC connection and application
+stream stayed open**, without replaying or resetting the verified progress counter.
+The fixture restores the default route after link-up, as an OS network manager
+would: without that route, relay progress continued but direct probing correctly
+could not recover. The stable Unix-stream relay leg caveat above still applies;
+real circuit/daemon failover belongs to 0020. This supersedes the earlier statement
+that the 1 GB / IPv6 / mapped acceptance scenarios were unverified. Physical
+socket replacement, constrained MTU and long field matrices remain unverified.
+
+Reproduce the added acceptance (miniupnpd is required for the mapped case; without
+it that test reports a skip, not a pass):
+
+```
+NU_MINIUPNPD=/path/to/miniupnpd go test -tags natlab ./p2p/disco -run 'TestNATLab(PublicEIM|IPv6|MappedMiniUPnPd)$' -v -count=1
+NU_SLOW=1 go test -tags natlab ./p2p/disco -run '^TestNATLabDiscoGiB$' -v -count=1 -timeout=5m
+```
+
+`slow.Skip` and the `natlab` build tag both gate the bulk test; it does not run in
+the default suite. `natlab.IsolateTimeout` supplies an explicit four-minute child
+deadline for this test, leaving the normal 45-second fixture deadline unchanged.
+
+### Independent security review request / review plan (0017 and 0020)
+
+**Requested; pending independent review.** The implementation author is not the
+independent reviewer. A networking/security reviewer should review the following
+before public enablement; record the reviewer, reviewed commit, findings and
+follow-up commits here. Passing the smoke/soak tests is not security approval.
+
+- **Contract and implementation:** D11's “Path v1 control and probe security
+  contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set
+  boundary, and the eventual 0020 socket-owner `Authorize`/candidate-disclosure
+  policy. Review the library and the assembly together, not just MAC primitives.
+- **Threat model:** untrusted authenticated peers may assert victim endpoints;
+  UDP sources can be forged; a relay can observe, delay, replay, reorder or drop
+  frames but must not authenticate as an endpoint. Include a compromised trusted
+  peer, concurrent/crossed circuit attempts, network changes and control-stream
+  reopening on the same TLS connection. The relay must not grant application
+  membership, bypass Host gates, or turn metadata assertions into peer identity.
+- **Authorization:** exact asserted endpoints plus independent owner policy;
+  sensitive/private/loopback/infrastructure destinations, interface scope and
+  directed broadcasts; PCP PEER restrictions and lease expiry; no implicit
+  permission from pong observations or incoming source addresses. Verify public
+  peers cannot use a permissive callback as a UDP scanner/reflection service.
+- **Cryptography/replay/state:** inner rather than outer TLS exporter, sorted
+  identity context, independent hello nonces, directional keys, constant-time
+  MAC check, sliding replay window, challenge/destination/expiry matching,
+  counter/generation exhaustion, duplicate streams, revocation and key teardown.
+- **Abuse and lifecycle:** combined ping/pong peer/socket rate budgets, no size
+  amplification or unsolicited errors, bounded decoding/queues/challenges,
+  candidate replacement/expiry, rejection before state growth, cancel/join and
+  slow-reader behavior, path-proof revocation, and fallback without weakening
+  QUIC authentication. Read security negatives and fuzz seeds as evidence, then
+  devise independent adversarial cases (including policy bypass and replay after
+  teardown). Prediction/spraying needs a separately negotiated reviewed contract.
+- **Exit:** resolve high-severity findings before untrusted-peer activation;
+  explicitly record residual trust assumptions and limits. 0020 must not treat
+  this pending request or the mandatory callback alone as permission to enable
+  arbitrary-peer probing.
+
 ## Libp2p container interop (2026-10-21)
 
 Task 0011; [runner, contract, exact source/image pins and reproduction](../interop/README.md).

@@ -26,6 +26,16 @@ const isolatedEnv = "NU_NATLAB_ISOLATED"
 // Each test must call this before creating a Lab. Use top-level tests only.
 func Isolate(t *testing.T) bool {
 	t.Helper()
+	return IsolateTimeout(t, 45*time.Second)
+}
+
+// IsolateTimeout is Isolate with an explicit child deadline for opt-in bulk/soak
+// scenarios. The default fast fixture deadline remains unchanged.
+func IsolateTimeout(t *testing.T, timeout time.Duration) bool {
+	t.Helper()
+	if timeout <= 0 || timeout > time.Hour {
+		t.Fatal("natlab: invalid isolation timeout")
+	}
 	if os.Getenv(isolatedEnv) == "1" {
 		return true
 	}
@@ -38,8 +48,8 @@ func Isolate(t *testing.T) bool {
 	if os.Geteuid() != 0 {
 		args = append(args, "--user", "--map-root-user")
 	}
-	args = append(args, "--", os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v", "-test.count=1", "-test.timeout=45s")
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	args = append(args, "--", os.Args[0], "-test.run=^"+regexp.QuoteMeta(t.Name())+"$", "-test.v", "-test.count=1", "-test.timeout="+timeout.String())
+	ctx, cancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "unshare", args...)
 	cmd.Env = append(os.Environ(), isolatedEnv+"=1")

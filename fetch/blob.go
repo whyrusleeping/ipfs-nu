@@ -302,6 +302,7 @@ type sched struct {
 	busy      int
 	holders   map[*peer]holding
 	stuck     bool
+	err       error // local checkpoint failure, not a provider failure
 }
 
 func (s *sched) canServe(p *peer, c *chunk) bool {
@@ -354,14 +355,34 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 
 	var flushMu sync.Mutex
 	var sinceFlush uint64
+	var flushing chan struct{}
 	flush := func(n int64) error {
 		flushMu.Lock()
-		defer flushMu.Unlock()
-		if sinceFlush += uint64(n); sinceFlush < r.f.cfg.FlushBytes {
-			return nil
+		sinceFlush += uint64(n)
+		for sinceFlush >= r.f.cfg.FlushBytes {
+			if flushing != nil {
+				// Allow one checkpoint's worth of overlap, not an unbounded
+				// amount of uncheckpointed work if the disk stops making progress.
+				done := flushing
+				flushMu.Unlock()
+				<-done
+				flushMu.Lock()
+				continue
+			}
+			sinceFlush, flushing = 0, make(chan struct{})
+			flushMu.Unlock()
+			// Only this worker checkpoints. Other workers keep downloading instead
+			// of queueing behind fsync at every chunk boundary. Flush snapshots the
+			// bitmap BEFORE syncing; new groups remain dirty for the next Flush.
+			err := part.Flush()
+			flushMu.Lock()
+			close(flushing)
+			flushing = nil
+			flushMu.Unlock()
+			return err
 		}
-		sinceFlush = 0
-		return part.Flush()
+		flushMu.Unlock()
+		return nil
 	}
 
 	worker := func(p *peer) {
@@ -418,7 +439,7 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 				r.update(func(pr *Progress) { pr.Bytes += c.bytes })
 				if err := flush(c.bytes); err != nil {
 					s.mu.Lock()
-					s.stuck = true
+					s.stuck, s.err = true, err
 					s.cond.Broadcast()
 					s.mu.Unlock()
 				}
@@ -435,6 +456,9 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 	wg.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if s.err != nil {
+		return s.err
 	}
 	if s.remaining > 0 || !part.Complete() {
 		return fmt.Errorf("%w: %s: %d of %d ranges unavailable", ErrNoProvider, part.MH, s.remaining, len(s.chunks))

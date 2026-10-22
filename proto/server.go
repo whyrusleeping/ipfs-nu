@@ -275,8 +275,12 @@ func (s *Server) serveBytes(b []byte, w *bufio.Writer) (*failure, error) {
 	if err := writeOK(w, bl.Size); err != nil {
 		return nil, err
 	}
+	// Bao reads 16 KiB data groups and 64-byte parents. Coalesce nearby reads
+	// without loading the blob or its entire outboard into memory.
+	data := newReadAheadAt(bl, 64<<10)
+	parents := newReadAheadAt(ob, 4<<10)
 	for _, r := range ranges {
-		if err := blob.ExtractSlice(w, bl, ob, bl.Size, r); err != nil {
+		if err := blob.ExtractSlice(w, data, parents, bl.Size, r); err != nil {
 			return nil, err
 		}
 	}

@@ -20,14 +20,15 @@ var ErrComplete = errors.New("store: blob already complete")
 // persisted by Flush, after the data is synced, so it never claims unsynced data. It
 // survives restarts: calling Partial again resumes. Use one handle per blob.
 type Partial struct {
-	s      *Store
-	MH     cid.Multihash
-	Size   uint64
-	f, ob  *os.File
-	mu     sync.Mutex
-	groups []byte // bitmap of verified groups
-	dirty  bool
-	held   int64 // verified bytes as last persisted
+	s       *Store
+	MH      cid.Multihash
+	Size    uint64
+	f, ob   *os.File
+	mu      sync.Mutex
+	flushMu sync.Mutex // serialize snapshots so older maps cannot overwrite newer ones
+	groups  []byte     // bitmap of verified groups
+	dirty   bool
+	held    int64 // verified bytes as last persisted
 	// reserved is the admitted but unwritten bytes (A6): the missing bytes at open, less
 	// what each Flush persisted; released on close.
 	reserved int64
@@ -210,7 +211,18 @@ func (p *Partial) ExtractSlice(dst io.Writer, r blob.Range) error {
 }
 
 // Flush syncs the data and persists the held-group map and verified byte count.
-func (p *Partial) Flush() error {
+func (p *Partial) Flush() (err error) {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+	// A failed sync or database update must be retried even if no new groups
+	// arrive. Otherwise Close/Commit could mistake an unsaved bitmap for clean.
+	defer func() {
+		if err != nil {
+			p.mu.Lock()
+			p.dirty = true
+			p.mu.Unlock()
+		}
+	}()
 	p.mu.Lock()
 	if !p.dirty || p.readOnly {
 		p.mu.Unlock()
@@ -226,7 +238,7 @@ func (p *Partial) Flush() error {
 		return err
 	}
 	held := heldBytes(snap, p.Size)
-	_, err := p.s.db.Exec(`UPDATE partials SET groups = ?, held = ?, updated = ? WHERE mh = ?`, snap, held, p.s.nowUnix(), mhKey(p.MH))
+	_, err = p.s.db.Exec(`UPDATE partials SET groups = ?, held = ?, updated = ? WHERE mh = ?`, snap, held, p.s.nowUnix(), mhKey(p.MH))
 	if err != nil {
 		return err
 	}

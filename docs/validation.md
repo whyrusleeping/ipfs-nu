@@ -1151,3 +1151,141 @@ package passed vet/staticcheck/tests; Rust regeneration matched the golden file;
 Python/YAML parsed; a final one-second-per-target runner smoke and a second 48-kill
 campaign passed. No main-module dependencies or concurrent owners' production files
 were changed. The nightly/native workflows themselves remain unobserved.
+
+## Download tuning (0071, 2026-10-21–22)
+
+**Controlled transport-relative and capped-provider targets were attained, but not
+consistently under shared-storage stalls. The original 10 GB end-to-end scenario
+still falls short of the single-peer throughput target.** These are local results,
+not a field-network or dedicated-disk guarantee. The 0071 backlog file was absent
+from this worktree; the task handoff supplied its acceptance criteria.
+
+Machine: AMD EPYC 9684X, 192 visible logical CPUs/default GOMAXPROCS, Linux
+5.15.0-176-generic, Go 1.26.2 linux/amd64, quic-go v0.64.1. Unpinned shared host,
+ext4 on `/dev/mapper/ubuntu--vg-ubuntu--lv`, about 96% full (84 GiB available at
+start). No sysctls, QUIC windows, dependencies or hash/proof formats changed.
+quic-go warned that the UDP receive buffer could only grow to 416 KiB, not its
+requested 7168 KiB. No external network traffic was used.
+
+### Method and measurements
+
+`nutest/download_test.go` supplies opt-in (`slow.Skip`, `NU_SLOW=1`) benchmarks:
+
+- `BenchmarkPlainQUIC`: two actual quic-go loopback endpoints, one stream,
+  TLS/encryption, 2 GiB to `io.Discard`, without Nu, disk or Bao. Both Nu's current
+  receive windows and upstream default windows are measured; connection setup is
+  untimed. This is the reference ceiling, not a hash/memory-copy microbenchmark.
+- `BenchmarkDownload`: real Nu hosts, `/nu/have/1`, scheduler, `/nu/bytes/1`, Bao
+  verification, partial files, SQLite checkpoints, fsync and final commit. Each
+  iteration uses a fresh destination. Default 2 GiB input is a **sparse zero file**
+  registered nocopy, avoiding source-disk read bandwidth and size-proportional Go
+  heap. QUIC does not compress it. Source creation, connection setup and an
+  independent final BLAKE3 digest/length check are outside the benchmark timer.
+- Capped case: each of three providers has its **own shared-across-streams**
+  40,000,000 B/s write pacer (64 KiB maximum write, no accumulated idle credit).
+  The third flips a payload byte. Its rejection is asserted, as is the final
+  digest. The denominator is **80 MB/s**, not the uncapped one-peer loopback rate.
+  Throughput ratios are reported, not asserted against noisy CI timing.
+- CPU, block and mutex profiles were collected with `go test` and inspected with
+  `go tool pprof`. Profiles include untimed setup/final verification too; scoped
+  call stacks distinguish those from the transfer. Profiled and unprofiled
+  timings are identified below; do not treat single samples as precise speedups.
+
+All MB/s below are decimal. Final repeated measurements use three `-benchtime=1x`
+runs (not three downloads into an already populated destination):
+
+| Measurement | Before / control | Final result |
+|---|---|---|
+| Plain QUIC, Nu receive windows, 2 GiB | No transport change | 336.02 / 383.71 / 326.29 MB/s |
+| Plain QUIC, upstream windows, 2 GiB | No transport change | 324.50 / 326.49 / 322.88 MB/s |
+| Controlled single peer, 2 GiB | 227.94 MB/s, profiled before production edits | 252.31 / 278.04 / **45.85** MB/s, unprofiled; median **252.31** |
+| Controlled single peer, 10 GB | 161.76 MB/s after read-ahead/checkpoint overlap, before write batching, profiled | **281.34 MB/s**, 35.54 s, profiled after write batching |
+| Three capped peers, one corrupt, 2 GiB | Initial 512 MiB profiled control: 73.74 MB/s, 0.922 of good caps (different size) | **34.80 / 79.16 / 79.21 MB/s**; 0.435 / **0.990 / 0.990** of good caps |
+| Original 10 GB node fetch + final digest | Historical **73.72 MB/s** | **107.73 MB/s**, 92.83 s (1.46× historical) |
+| Original 10 GB, three uncapped peers, one corrupt, + digest | Historical **47.27 MB/s** | **85.83 MB/s**, 116.51 s (1.82× historical; not a capped-link sum test) |
+
+Even using the **fastest** plain-QUIC sample, the lower single-peer target is
+`min(5 × 73.7, 383.71 / 2) = 191.86 MB/s`: the controlled median and 10 GB sample
+exceed it. Two of three final capped runs exceed 0.8 of the honest caps. However,
+one single and the immediately following capped run had large stalls and failed
+those thresholds; they are retained above rather than discarded. No competing
+host workload or disk latency telemetry was captured, so attributing those
+outliers specifically to another user is not established.
+
+The original `TestHardening10GB` was rerun unchanged, including physical source
+files, full nodes, 128 MiB soft Go limit, 5 ms `runtime.ReadMemStats` polling and a
+final digest **inside** the timer. It passed in 433.78 s. Download sampled peak Go
+heap was **24.82 MB single / 28.99 MB multi** (not RSS/page cache); local streaming
+memory assertions passed. Four corrupt responses were served and rejected.
+That scenario remains below 191.86 MB/s; sparse-source benchmarks must not be
+presented as a 5× improvement to it. Storage cost, instrumentation and final
+readback are included there but not isolated by this campaign. An earlier
+intermediate run was 72.20 / 105.38 MB/s before write batching, further evidence
+that shared-host timing is variable.
+
+### Findings and changes
+
+1. **Checkpoint barrier:** every worker acquired the same mutex after every
+   1 MiB request, even while another worker held it across fsync. The initial
+   2 GiB mutex profile attributed **4.33 s aggregate wait** to that checkpoint
+   closure. Now one worker checkpoints while others proceed, with backpressure
+   after one more checkpoint's worth of completed work. The default cadence
+   remains **16 MiB**, and final Commit still waits for all workers and syncs.
+   This permits bounded overlap (at most two checkpoint intervals plus in-flight
+   chunks), not unlimited uncheckpointed work. Scheduler chunk size, four workers
+   per peer, corruption dropping and endgame cancellation are unchanged.
+2. **Small positional I/O:** Bao's traversal issued one read/write per 16 KiB
+   group and per 64-byte parent. Server request-local read-ahead uses 64 KiB for
+   data and 4 KiB for parents. The client similarly coalesces already-verified
+   writes. It publishes group bits **only after both data and proof writes**;
+   corrupt/truncated responses still flush their verified prefix. No unchecked
+   data is stored, no full blob/outboard is cached, and SHA-256's 8 MiB whole-object
+   path is unchanged. Additional buffers are 68 KiB per active request on each
+   side, independent of blob size; byte-identical proof verification is retained.
+   The focused 10 GB decoder CPU profile's syscall samples fell **26.92 → 20.29 s**,
+   while group-hashing CPU stayed **6.49 → 6.42 s**. Checkpoint-overlap wait in the
+   block profile fell **77.36 s → 0.115 s aggregate** after write batching. These
+   support small I/O/checkpointing as bottlenecks, not BLAKE3 speed.
+3. **Checkpoint correctness:** serialize store Flush snapshots so an older map
+   cannot overwrite a newer one; restore dirty state after sync/SQLite failures.
+   Fetch now returns checkpoint errors as local errors rather than losing them
+   or calling them unavailable providers. Data/proofs are still synced before
+   SQLite advertises held groups; buffering does not weaken resume durability.
+4. **Not changed:** QUIC window enlargement was not supported by the reference
+   measurements (upstream defaults were not faster). A 10 GB trial with a 64 MiB
+   checkpoint cadence achieved only **121.38 MB/s**, versus 161.76 at 16 MiB in
+   the preceding intermediate run; it was not adopted. QUIC packet/syscall,
+   runtime/GC and disk costs remain substantial; hash throughput alone is not a
+   realistic encrypted-network/download ceiling.
+
+Reproduce from the worktree root (default benchmarks skip without `NU_SLOW=1`):
+
+```sh
+mkdir -p .hardening/download
+NU_SLOW=1 go test ./nutest -run '^$' \
+  -bench 'Benchmark(Download|PlainQUIC)' -benchtime=1x -count=3 -timeout=15m
+NU_SLOW=1 NU_DOWNLOAD_BYTES=10000000000 go test ./nutest -run '^$' \
+  -bench 'BenchmarkDownload/single$' -benchtime=1x -count=1 -timeout=10m \
+  -cpuprofile=.hardening/download/download.cpu \
+  -blockprofile=.hardening/download/download.block \
+  -mutexprofile=.hardening/download/download.mutex \
+  -o .hardening/download/nutest.test
+go tool pprof -top .hardening/download/download.cpu
+go tool pprof -top .hardening/download/download.block
+go tool pprof -top .hardening/download/download.mutex
+NU_SLOW=1 go test ./nutest -run '^TestHardening10GB$' -count=1 -v -timeout=25m
+# Optional checkpoint experiment, without changing production defaults:
+# NU_DOWNLOAD_FLUSH_BYTES=67108864 NU_SLOW=1 ...
+```
+
+Local raw logs/profiles are under ignored `.hardening/download/`: `single-before.*`,
+`single-after.*`, `after.log` (reference and intermediate repeats), `final.*`
+(intermediate bounded-overlap profiles), `10gb.*`, `10gb-flush64.log`,
+`10gb-batched.*`, `batched-final.log`, and `legacy-10gb-batched.log`.
+Fast tests cover cache seeking/EOF, verified-prefix preservation after corruption
+and truncation, delayed publication on write failure, and retry/concurrent durable
+checkpoints. Pre-commit `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` passed, as did focused race tests for partial checkpoints,
+read-ahead, resume and multi-peer corruption recovery. Remaining gaps: consistent
+throughput on busy/full storage, the original 10 GB single-peer target, physical independent providers,
+WAN/high-BDP tuning, and remote/native-platform execution. No backlog edits.

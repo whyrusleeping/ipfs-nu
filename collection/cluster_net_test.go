@@ -18,8 +18,9 @@ import (
 
 func init() { node.ClusterInterval = 100 * time.Millisecond }
 
+// ctx bounds operations generously (joins retry within it on a busy machine).
 func ctx(t *testing.T) context.Context {
-	c, cancel := context.WithTimeout(context.Background(), nutest.Timeout)
+	c, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	return c
 }

@@ -32,8 +32,10 @@ type CollectionItem struct {
 	// without one).
 	Copies  *int `json:"copies,omitempty"`
 	Unknown *int `json:"unknown,omitempty"`
-	// Holders and Conflicts are filled by the single-item query.
+	// Holders and Conflicts are filled by the single-item query, as are Owners, the
+	// item's floor owners (replicas > 0) in rank order.
 	Holders   []CollectionHolder   `json:"holders,omitempty"`
+	Owners    []string             `json:"owners,omitempty"`
 	Conflicts []CollectionConflict `json:"conflicts,omitempty"`
 	// Push is this node's push for the path (single-item query on a receiving member);
 	// an item pushed here but not in the merged catalog yet has only Path and Push.
@@ -115,6 +117,8 @@ type CollectionStatus struct {
 	LocalBytes uint64         `json:"local_bytes"`
 	// Shortfall is the logical bytes of matched items paused by rule budgets.
 	Shortfall uint64 `json:"shortfall_bytes,omitempty"`
+	// Floor is this node's floor placement (replicas > 0).
+	Floor *CollectionFloor `json:"floor,omitempty"`
 	// Index reports the holdings index when this node runs one.
 	Index *CollectionIndex `json:"index,omitempty"`
 	// Log is this node's holdings-log position.
@@ -122,6 +126,18 @@ type CollectionStatus struct {
 	LogSeq   int64     `json:"log_seq"`
 	Synced   time.Time `json:"synced,omitempty"`
 	Warnings []string  `json:"warnings,omitempty"`
+}
+
+// CollectionFloor is a node's floor placement of a collection: whether it is eligible,
+// the placement epoch, the items it owns (and of them complete) with their logical
+// bytes, and complete items it no longer owns, kept as surplus.
+type CollectionFloor struct {
+	Eligible bool   `json:"eligible"`
+	Epoch    string `json:"epoch"`
+	Owned    int    `json:"owned"`
+	Complete int    `json:"complete"`
+	Bytes    uint64 `json:"bytes"`
+	Surplus  int    `json:"surplus"`
 }
 
 // CollectionWriter is one writer head merged into the catalog.

@@ -164,7 +164,8 @@ func (m *Manager) manual(name, path string, on bool) error {
 	if Compile(rules, specs) != nil {
 		rules = nil
 	}
-	released, err := m.evalItem(name, path, rules, m.now(), m.heldKeys())
+	d, _ := m.cfg.Cluster.View().Dataset(name)
+	released, err := m.evalItem(name, path, rules, m.now(), m.heldKeys(), m.floor(d))
 	if released {
 		m.scheduleGC()
 	}
@@ -366,6 +367,9 @@ func (m *Manager) Item(name, path string) (*apiv0.CollectionItem, error) {
 	}
 	out := m.itemInfo(it)
 	out.Push = push
+	if d, ok := m.cfg.Cluster.View().Dataset(name); ok && !it.deleted {
+		out.Owners = m.floorOwners(d, it.entry)
+	}
 	if h, err := m.holding(name, path); err == nil && h != nil {
 		out.Local = h.state
 	}
@@ -535,6 +539,7 @@ func (m *Manager) Status(name string) (*apiv0.CollectionStatus, error) {
 	if st.Shortfall > 0 {
 		st.Warnings = append(st.Warnings, "rule budgets (max_bytes) leave matched items unheld")
 	}
+	st.Floor = m.floorStatus(name, d)
 	if m.indexOn(name) {
 		if st.Index, err = m.indexStatus(name, v.MemberIDs()); err != nil {
 			return nil, err

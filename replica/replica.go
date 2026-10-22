@@ -86,9 +86,12 @@ type Status struct {
 	Owned, Missing   cluster.Counts
 	// StructureMissing counts structure nodes not held (the owner set is then unknown).
 	StructureMissing int
-	Reason, Detail   string
-	Need             int64 // bytes needed when paused for storage (S7)
-	Protection       Protection
+	// HoldsAll says every blob of the target (and of every live version) is held, not only
+	// the owned ones: the report is then in mode full and confirms every blob (E6).
+	HoldsAll       bool
+	Reason, Detail string
+	Need           int64 // bytes needed when paused for storage (S7)
+	Protection     Protection
 	// Live is the live-set identity of a dataset with history; LiveVersions its versions
 	// (tid → whether this member holds the version's structure and owned blobs).
 	Live         string
@@ -198,9 +201,9 @@ func (m *Manager) saveLocked() error {
 	return os.Rename(tmp, filepath.Join(m.cfg.Dir, stateFile))
 }
 
-// Placed reports whether a dataset receives placement (guaranteed copies): a non-collection
-// dataset, or a collection, with replicas > 0 or all. Collection floor placement is not
-// run here yet; collections are placed by the collection manager.
+// Placed reports whether this manager places a dataset: a non-collection dataset with
+// replicas > 0 or all. Collections are floor-placed by whole items in the collection
+// manager.
 func Placed(d *cluster.Dataset) bool {
 	return d != nil && d.Collection == nil && (d.Policy.Replicas > 0 || d.Policy.All)
 }
@@ -311,6 +314,7 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 
 	chk := m.check(work, workSize, pl, s.Mode == cluster.ModeFull)
 	s.Owned, s.Missing, s.StructureMissing, s.Complete = chk.owned, chk.missing, chk.structMissing, chk.complete()
+	s.HoldsAll = s.Complete && chk.allHeld
 	switch {
 	case chk.err != nil:
 		s.State, s.Reason, s.Detail = cluster.SyncError, "walk", chk.err.Error()
@@ -403,10 +407,12 @@ func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *S
 		} else {
 			if err := m.cfg.Store.Pin(pinFor(name, root)); err != nil {
 				s.LiveVersions[e.TID] = false
+				s.HoldsAll = false
 				continue
 			}
 			chk := m.check(root, 0, pl, full)
 			complete = chk.complete()
+			s.HoldsAll = s.HoldsAll && complete && chk.allHeld
 			if !complete && !fetchNext.Defined() {
 				fetchNext = root
 			}
@@ -558,7 +564,11 @@ func (m *Manager) finish(name string, s *Status, prev *Status) bool {
 	m.mu.Lock()
 	s.Protection = m.state[name].clone()
 	m.mu.Unlock()
-	s.Reported = cluster.Report{Name: name, Target: s.Target.String(), Mode: s.Mode, Policy: s.Policy, Epoch: s.Epoch, Complete: s.Complete,
+	mode := s.Mode
+	if s.Complete && s.HoldsAll {
+		mode = cluster.ModeFull // every blob is held: confirms them all
+	}
+	s.Reported = cluster.Report{Name: name, Target: s.Target.String(), Mode: mode, Policy: s.Policy, Epoch: s.Epoch, Complete: s.Complete,
 		Owned: s.Owned, State: s.State, Live: s.Live}
 	if s.Live != "" {
 		for tid, ok := range s.LiveVersions {
@@ -641,10 +651,12 @@ func (m *Manager) startFetch(name string, work cid.CID, pl *cluster.Placement, v
 	}()
 }
 
-// checkResult is a completeness walk of a target under a placement.
+// checkResult is a completeness walk of a target under a placement; allHeld says every
+// blob is held, owned or not.
 type checkResult struct {
 	owned, missing cluster.Counts
 	structMissing  int
+	allHeld        bool
 	blobs          []cid.Multihash
 	err            error
 }
@@ -656,7 +668,7 @@ func (c checkResult) complete() bool {
 // check walks target's structure in the store: every structure node must be held, and
 // every blob this member owns (all blobs when full). It also collects the blobs.
 func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full bool) checkResult {
-	var res checkResult
+	res := checkResult{allHeld: true}
 	st := m.cfg.Store
 	seen := map[cid.Multihash]bool{}
 	type item struct {
@@ -680,6 +692,7 @@ func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full
 		held := ok && info.Complete
 		if it.c.Codec() == cid.Raw {
 			res.blobs = append(res.blobs, mh)
+			res.allHeld = res.allHeld && held
 			if !full && !pl.Owns(m.cfg.Self, mh) {
 				continue
 			}
@@ -749,34 +762,35 @@ func (m *Manager) Reports() []cluster.Report {
 	return out
 }
 
-// Owners computes the owner set of target under dataset name's current policy and epoch
-// (E6): the union of the owners of its blobs, or of the target itself when it has no
-// blobs. known is false when the target's structure is not held here.
-func (m *Manager) Owners(name string, target cid.CID) (owners []wire.PeerID, pl *cluster.Placement, known bool) {
+// Groups computes the blobs of roots (deduplicated) by owner set under dataset name's
+// current policy and epoch (E6); a target without blobs counts its own multihash as the
+// unit, so an empty tree still needs confirming members. known is false when some root's
+// structure is not held here.
+func (m *Manager) Groups(name string, roots ...cid.CID) (groups []cluster.OwnerGroup, pl *cluster.Placement, known bool) {
 	v := m.cfg.Cluster.View()
 	d, ok := v.Dataset(name)
 	if !ok {
 		return nil, nil, false
 	}
 	pl = cluster.NewPlacement(v, d.Policy, m.cfg.Self)
-	chk := m.check(target, 0, pl, true)
-	if chk.err != nil || chk.structMissing > 0 {
-		return nil, pl, false
-	}
-	set := map[wire.PeerID]bool{}
-	if len(chk.blobs) == 0 {
-		chk.blobs = []cid.Multihash{target.Multihash()}
-	}
-	for _, mh := range chk.blobs {
-		for _, id := range pl.Owners(mh) {
-			set[id] = true
+	var gs cluster.GroupSet
+	seen := map[cid.Multihash]bool{}
+	for _, root := range roots {
+		chk := m.check(root, 0, pl, true)
+		if chk.err != nil || chk.structMissing > 0 {
+			return nil, pl, false
+		}
+		if len(chk.blobs) == 0 {
+			chk.blobs = []cid.Multihash{root.Multihash()}
+		}
+		for _, mh := range chk.blobs {
+			if !seen[mh] {
+				seen[mh] = true
+				gs.Add(pl.Owners(mh), 1)
+			}
 		}
 	}
-	for id := range set {
-		owners = append(owners, id)
-	}
-	slices.Sort(owners)
-	return owners, pl, true
+	return gs.List(), pl, true
 }
 
 func (p *Protection) clone() Protection {

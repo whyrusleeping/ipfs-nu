@@ -65,18 +65,21 @@ type MetadataState struct {
 // and the Unmet requirements. A head write's Metadata and its Content are separate
 // results (E10).
 type ContentState struct {
-	State       string         `json:"state"`
-	Detail      string         `json:"detail,omitempty"`
-	Target      string         `json:"target,omitempty"`
-	Mode        string         `json:"mode,omitempty"`
-	Epoch       string         `json:"epoch,omitempty"`
-	Policy      string         `json:"policy,omitempty"`
-	Confirmed   []Confirmation `json:"confirmed"`
-	Required    int            `json:"required"`
-	Missing     []MissingOwner `json:"missing"`
-	Extra       []Confirmation `json:"extra"`
-	EvidenceAge int64          `json:"evidence_age_ms"`
-	Unmet       []string       `json:"unmet"`
+	State     string         `json:"state"`
+	Detail    string         `json:"detail,omitempty"`
+	Target    string         `json:"target,omitempty"`
+	Mode      string         `json:"mode,omitempty"`
+	Epoch     string         `json:"epoch,omitempty"`
+	Policy    string         `json:"policy,omitempty"`
+	Confirmed []Confirmation `json:"confirmed"`
+	Required  int            `json:"required"`
+	Missing   []MissingOwner `json:"missing"`
+	Extra     []Confirmation `json:"extra"`
+	// Copies summarises confirmed copies per unit (E7): units counted, those below
+	// Required, and the fewest confirmed copies of any unit.
+	Copies      *CopyCounts `json:"copies,omitempty"`
+	EvidenceAge int64       `json:"evidence_age_ms"`
+	Unmet       []string    `json:"unmet"`
 	// Live is the live-set identity an archive-wide evaluation is bound to (E1).
 	Live string `json:"live,omitempty"`
 	// LastReady is the last time this node saw Target ready (E8: kept beside a later
@@ -85,6 +88,15 @@ type ContentState struct {
 	// Local is this node's own sync of the dataset; Release its protected versions.
 	Local   *LocalSync    `json:"local,omitempty"`
 	Release *ReleaseState `json:"release,omitempty"`
+}
+
+// CopyCounts is the per-unit copy summary of a readiness evaluation; Unit is "blob", or
+// "item" for collections.
+type CopyCounts struct {
+	Unit  string `json:"unit"`
+	Units int64  `json:"units"`
+	Below int64  `json:"below"`
+	Min   int    `json:"min"`
 }
 
 // Confirmation is one counted (or extra) fresh complete report.

@@ -61,8 +61,9 @@ type clusterState struct {
 	svc   *cluster.Service
 	sw    ClusterNet
 	coll  *collection.Manager
-	// svcPtr mirrors svc for readers that must not take mu.
-	svcPtr atomic.Pointer[cluster.Service]
+	// svcPtr and collPtr mirror svc and coll for readers that must not take mu.
+	svcPtr  atomic.Pointer[cluster.Service]
+	collPtr atomic.Pointer[collection.Manager]
 	// gated mirrors net for the connection gate, which must not take mu (the host
 	// rechecks connections while cluster operations hold it).
 	gated atomic.Pointer[cluster.Cluster]
@@ -182,13 +183,14 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 	if cs.coll != nil { // opened without networking (a query before attach): reopen with it
 		_ = cs.coll.Close()
 		cs.coll = nil
+		cs.collPtr.Store(nil)
 	}
 	m, err := n.collectionsLocked(c)
 	if err != nil {
 		return err
 	}
 	svc, err := cluster.StartService(cluster.ServiceConfig{Cluster: c, Host: cs.sw.Host(), Key: n.Key, Connect: cs.sw.Connect, Addrs: cs.sw.Addrs,
-		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks, Reports: n.reportsOf(c)})
+		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks, Reports: n.reportsOf(c, m)})
 	if err != nil {
 		return err
 	}
@@ -214,6 +216,7 @@ func (n *Local) closeClusters() {
 	svc, coll := cs.svc, cs.coll
 	cs.svc, cs.sw, cs.coll = nil, nil, nil
 	cs.svcPtr.Store(nil)
+	cs.collPtr.Store(nil)
 	cs.mu.Unlock()
 	if svc != nil {
 		_ = svc.Close()
@@ -775,7 +778,17 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	slices.SortFunc(out.Heads, func(a, b apiv0.DatasetHead) int { return cmpStr(a.Signer, b.Signer) })
 	if h, ok := v.Head(name); ok {
 		out.Head = &apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: h.Signer, HLC: h.HLC.String()}
-		if t, err := cid.Parse(h.Value.Target); err == nil {
+		t, err := cid.Parse(h.Value.Target)
+		if d.Value != nil && d.Value.Collection != nil {
+			// Collection readiness binds to the merged catalog root (floor placement).
+			err = apiv0.Errorf(apiv0.CodeUnavailable, "no merged catalog yet")
+			if cm := n.clusters.collPtr.Load(); cm != nil {
+				if root, ok := cm.MergedRoot(name); ok {
+					t, err = root, nil
+				}
+			}
+		}
+		if err == nil {
 			out.Content = n.evalContent(c, name, t).cs
 			if d.Value != nil && d.Value.Policy.History != nil {
 				hs := histFor(c, name, d.Value)

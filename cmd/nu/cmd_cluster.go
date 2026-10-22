@@ -164,8 +164,18 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 	printMetadata(w, d.Metadata)
 	printContent(w, d.Content)
 	if a := d.Archive; a != nil {
-		fmt.Fprintf(w, "archive-wide (live set %.16s): %s, %d of %d owner(s) confirmed\n", a.Live, a.State, len(a.Confirmed), a.Required)
+		fmt.Fprintf(w, "archive-wide (live set %.16s): %s, %s\n", a.Live, a.State, copiesText(*a))
 	}
+}
+
+// copiesText summarises confirmed copies per unit (E6/E7).
+func copiesText(c apiv0.ContentState) string {
+	s := fmt.Sprintf("%d confirmed cop(ies) required per unit, %d member(s) confirming", c.Required, len(c.Confirmed))
+	if p := c.Copies; p != nil {
+		s = fmt.Sprintf("%d confirmed cop(ies) required per %s: %d of %d %[2]s(s) below, fewest %d; %d member(s) confirming",
+			c.Required, p.Unit, p.Below, p.Units, p.Min, len(c.Confirmed))
+	}
+	return s
 }
 
 // printContent prints a content status with its W3 fields.
@@ -178,7 +188,7 @@ func printContent(w io.Writer, c apiv0.ContentState) {
 	if c.Target == "" {
 		return
 	}
-	fmt.Fprintf(w, "  target %s, %d of %d owner(s) confirmed", c.Target, len(c.Confirmed), c.Required)
+	fmt.Fprintf(w, "  target %s, %s", c.Target, copiesText(c))
 	if len(c.Confirmed) > 0 {
 		fmt.Fprintf(w, ", oldest evidence %s", (time.Duration(c.EvidenceAge) * time.Millisecond).Round(time.Millisecond))
 	}
@@ -199,7 +209,11 @@ func printContent(w io.Writer, c apiv0.ContentState) {
 		fmt.Fprintf(w, "  last ready at %s (epoch %.16s)\n", lr.At.Local().Format(time.RFC3339), lr.Epoch)
 	}
 	if l := c.Local; l != nil {
-		fmt.Fprintf(w, "  this node: %s %s (%s), owns %d blob(s) %d B, missing %d blob(s) %d B", l.State, l.Target, l.Mode, l.Owned.Blobs, l.Owned.Bytes, l.Missing.Blobs, l.Missing.Bytes)
+		unit := "blob"
+		if c.Copies != nil {
+			unit = c.Copies.Unit
+		}
+		fmt.Fprintf(w, "  this node: %s %s (%s), owns %d %s(s) %d B, missing %d %s(s) %d B", l.State, l.Target, l.Mode, l.Owned.Blobs, unit, l.Owned.Bytes, l.Missing.Blobs, unit, l.Missing.Bytes)
 		if l.Observed != "" {
 			fmt.Fprintf(w, "; head %s observed only (staging full)", l.Observed)
 		}

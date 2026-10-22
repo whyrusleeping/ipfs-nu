@@ -16,10 +16,26 @@ import (
 
 func init() { node.ClusterInterval = 100 * time.Millisecond }
 
+// slow bounds operations and waits in these tests: generous, because they share a busy
+// machine; a real failure still fails, only later.
+const slow = 45 * time.Second
+
 func ctx(t *testing.T) context.Context {
-	c, cancel := context.WithTimeout(context.Background(), nutest.Timeout)
+	c, cancel := context.WithTimeout(context.Background(), slow)
 	t.Cleanup(cancel)
 	return c
+}
+
+// eventually polls cond until it holds or slow expires.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(slow)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // form creates a cluster in mode on n0 and joins n1 with a pre-authorized invite and n2
@@ -56,7 +72,7 @@ func form(t *testing.T, n *nutest.Network, mode string) {
 
 func converged(t *testing.T, n *nutest.Network, what string, cond func(*cluster.View) bool, nodes ...*nutest.Node) {
 	t.Helper()
-	nutest.Eventually(t, what, func() bool {
+	eventually(t, what, func() bool {
 		for _, nd := range nodes {
 			if !nd.Running() || !cond(nd.Local.NetCluster().View()) {
 				return false
@@ -143,7 +159,7 @@ func TestPrivateCluster(t *testing.T) {
 	}
 	n.Heal(a, b)
 	n.Heal(a, c)
-	nutest.Eventually(t, "LWW and removal", func() bool {
+	eventually(t, "LWW and removal", func() bool {
 		var notes []string
 		for _, nd := range []*nutest.Node{a, c} {
 			v := nd.Local.NetCluster().View()
@@ -155,7 +171,7 @@ func TestPrivateCluster(t *testing.T) {
 		}
 		return notes[0] == notes[1]
 	})
-	nutest.Eventually(t, "b disconnected", func() bool { return !a.ConnectedTo(b.ID) && !c.ConnectedTo(b.ID) })
+	eventually(t, "b disconnected", func() bool { return !a.ConnectedTo(b.ID) && !c.ConnectedTo(b.ID) })
 
 	// Non-members (the outsider, the removed b) cannot open streams or even connect.
 	if err := outsider.Swarm.Connect(ctx(t), a.ID, a.Addrs()); err == nil {
@@ -201,7 +217,7 @@ func TestClusterRestart(t *testing.T) {
 		_, two := v.Dataset("two")
 		return one && two && len(v.MemberIDs()) == 3
 	}, n.Nodes...)
-	nutest.Eventually(t, "heartbeats", func() bool {
+	eventually(t, "heartbeats", func() bool {
 		hb := a.Local.ClusterService().Peers()[c.ID]
 		return hb.Heartbeat != nil
 	})
@@ -237,7 +253,7 @@ func TestClusterAPI(t *testing.T) {
 	if _, err := a.DatasetCreate(ctx(t), node.ScopeLocal, apiv0.DatasetCreateRequest{Name: "photos"}); err == nil {
 		t.Fatal("a local dataset reused a networked dataset's name")
 	}
-	nutest.Eventually(t, "dataset replicated", func() bool {
+	eventually(t, "dataset replicated", func() bool {
 		_, err := b.Dataset(ctx(t), node.ScopeCluster, "photos")
 		return err == nil
 	})

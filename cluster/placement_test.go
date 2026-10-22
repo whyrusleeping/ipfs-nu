@@ -28,6 +28,13 @@ type placementVectors struct {
 		Owners2   []string `json:"owners_k2"`
 		Spread2   []string `json:"owners_k2_spread_zone"`
 	} `json:"blobs"`
+	// Items are collection floor placement units: the multihash of the item root (its
+	// entry's CID) is the placement key (docs/collections.md "Guaranteed copies").
+	Items []struct {
+		Root      string   `json:"root"`
+		Multihash string   `json:"multihash"`
+		Owners2   []string `json:"owners_k2"`
+	} `json:"items"`
 }
 
 // testView builds a networked view with the given members.
@@ -90,6 +97,14 @@ func buildPlacementVectors(t *testing.T) placementVectors {
 			Owners2   []string `json:"owners_k2"`
 			Spread2   []string `json:"owners_k2_spread_zone"`
 		}{mh.String(), scores, str(pl.Ranked(mh)), str(pl.Owners(mh)), str(sp.Owners(mh))})
+	}
+	for i := range 2 {
+		root := cid.New(cid.DRISL, cid.Sum(cid.SHA256, fmt.Appendf(nil, "item %d", i)))
+		out.Items = append(out.Items, struct {
+			Root      string   `json:"root"`
+			Multihash string   `json:"multihash"`
+			Owners2   []string `json:"owners_k2"`
+		}{root.String(), root.Multihash().String(), str(pl.Owners(root.Multihash()))})
 	}
 	_ = peers
 	return out

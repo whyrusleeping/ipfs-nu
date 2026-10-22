@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/collection"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
@@ -106,13 +106,18 @@ func (n *Local) closeReplicas() {
 	}
 }
 
-// reportsOf returns c's completion reports for heartbeats.
-func (n *Local) reportsOf(c *cluster.Cluster) func() []cluster.Report {
+// reportsOf returns c's completion reports for heartbeats: placed datasets and, from
+// coll (nil: none), collection floor placement.
+func (n *Local) reportsOf(c *cluster.Cluster, coll *collection.Manager) func() []cluster.Report {
 	return func() []cluster.Report {
+		var out []cluster.Report
 		if m := n.replicaFor(c); m != nil {
-			return m.Reports()
+			out = m.Reports()
 		}
-		return nil
+		if coll != nil {
+			out = append(out, coll.Reports()...)
+		}
+		return out
 	}
 }
 
@@ -154,62 +159,82 @@ func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live
 		return out
 	}
 	cs.Policy = d.PolicyHash()
+	var (
+		groups []cluster.OwnerGroup
+		pl     *cluster.Placement
+		known  bool
+		unit   = "blob"
+	)
+	self := n.PeerID()
+	var m *replica.Manager
 	if d.Collection != nil {
+		// Floor placement: items are the units, bound to the merged catalog root.
 		if d.Policy.Replicas == 0 && !d.Policy.All {
 			cs.State, cs.Detail = cluster.ReadyUnsatisfied, "a collection with replicas 0 has no guaranteed copies; see `"+nu.Name+" cluster collection status`"
 			cs.Unmet = append(cs.Unmet, "no_guaranteed_copies")
-		} else {
-			cs.State, cs.Detail = cluster.ReadyUnknown, "collection floor placement is not run yet; see `"+nu.Name+" cluster collection status`"
-			cs.Unmet = append(cs.Unmet, "floor placement not implemented")
+			out.cs = cs
+			return out
 		}
-		out.cs = cs
-		return out
+		cm := n.clusters.collPtr.Load()
+		if cm == nil {
+			cs.State, cs.Detail = cluster.ReadyUnknown, "collection state unavailable"
+			out.cs = cs
+			return out
+		}
+		unit, pl = "item", cluster.NewPlacement(v, d.Policy, self)
+		var root cid.CID
+		root, groups, known = cm.FloorGroups(name, pl)
+		known = known && root == target
+		if r, ok := cm.Report(name); ok {
+			out.evidence[self] = cluster.Evidence{Report: r, Received: out.now}
+			ls := &apiv0.LocalSync{Target: r.Target, Mode: r.Mode, State: r.State, Complete: r.Complete, Owned: apiv0.Counts(r.Owned)}
+			if r.Missing != nil {
+				ls.Missing = apiv0.Counts(*r.Missing)
+			}
+			cs.Local = ls
+		}
+	} else {
+		if m = n.replicaFor(c); m == nil {
+			cs.State, cs.Detail = cluster.ReadyUnknown, "placement state unavailable"
+			out.cs = cs
+			return out
+		}
+		roots := []cid.CID{target}
+		if live != nil {
+			roots = append(roots, live.roots...)
+		}
+		groups, pl, known = m.Groups(name, roots...)
+		if s, ok := m.Status(name); ok {
+			out.evidence[self] = cluster.Evidence{Report: s.Reported, Received: out.now}
+			ls := &apiv0.LocalSync{Target: s.Target.String(), Mode: s.Mode, State: s.State, Complete: s.Complete,
+				Owned: apiv0.Counts(s.Owned), Missing: apiv0.Counts(s.Missing), Reason: s.Reason, Detail: s.Detail, Need: s.Need}
+			if s.Observed.Defined() {
+				ls.Observed = s.Observed.String()
+			}
+			cs.Local = ls
+		}
+		p := m.Protected(name)
+		cs.Release = &apiv0.ReleaseState{Ready: p.Ready, Held: p.Held, Staged: p.Staged, Candidates: p.Retained}
 	}
-	m := n.replicaFor(c)
-	if m == nil {
-		cs.State, cs.Detail = cluster.ReadyUnknown, "placement state unavailable"
-		out.cs = cs
-		return out
-	}
-	owners, pl, known := m.Owners(name, target)
 	key := c.ID.String() + "/" + name
 	if live != nil {
 		cs.Live, key = live.id, key+"#live"
-		for _, r := range live.roots {
-			o, _, k := m.Owners(name, r)
-			known = known && k
-			for _, id := range o {
-				if !slices.Contains(owners, id) {
-					owners = append(owners, id)
+	}
+	cs.Epoch = pl.Epoch
+	if c.Mode() != cluster.ModeLocal {
+		if svc := n.clusters.svcPtr.Load(); svc != nil {
+			for id, e := range svc.Evidence(name) {
+				if id != self {
+					out.evidence[id] = e
 				}
 			}
 		}
-		slices.Sort(owners)
 	}
-	cs.Epoch = pl.Epoch
-	var svc *cluster.Service
-	if c.Mode() != cluster.ModeLocal {
-		if svc = n.clusters.svcPtr.Load(); svc != nil {
-			out.evidence = svc.Evidence(name)
-		}
-	}
-	self := n.PeerID()
-	if s, ok := m.Status(name); ok {
-		out.evidence[self] = cluster.Evidence{Report: s.Reported, Received: out.now}
-		ls := &apiv0.LocalSync{Target: s.Target.String(), Mode: s.Mode, State: s.State, Complete: s.Complete,
-			Owned: apiv0.Counts(s.Owned), Missing: apiv0.Counts(s.Missing), Reason: s.Reason, Detail: s.Detail, Need: s.Need}
-		if s.Observed.Defined() {
-			ls.Observed = s.Observed.String()
-		}
-		cs.Local = ls
-	}
-	p := m.Protected(name)
-	cs.Release = &apiv0.ReleaseState{Ready: p.Ready, Held: p.Held, Staged: p.Staged, Candidates: p.Retained}
 	n.reps.mu.Lock()
 	mark, was := n.reps.ready[key]
 	n.reps.mu.Unlock()
-	in := cluster.ReadyInput{Target: target.String(), Mode: cluster.ModeOwned, Policy: d.PolicyHash(), Epoch: pl.Epoch, Feasibility: pl.Feasible(),
-		Owners: owners, OwnersKnown: known, Evidence: out.evidence, Now: out.now, Fresh: out.fresh, WasReady: was && mark.target == target.String()}
+	in := cluster.ReadyInput{Target: target.String(), Policy: d.PolicyHash(), Epoch: pl.Epoch, Feasibility: pl.Feasible(), K: pl.K(),
+		Groups: groups, OwnersKnown: known, Unit: unit, Evidence: out.evidence, Now: out.now, Fresh: out.fresh, WasReady: was && mark.target == target.String()}
 	if live != nil {
 		in.Live = live.id
 	}
@@ -219,6 +244,9 @@ func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live
 	res := cluster.Ready(in)
 	cs.State, cs.Required, cs.EvidenceAge = res.State, res.Required, res.EvidenceAge.Milliseconds()
 	cs.Confirmed, cs.Extra = confirmations(res.Confirmed), confirmations(res.Extra)
+	if known {
+		cs.Copies = &apiv0.CopyCounts{Unit: res.Copies.Unit, Units: res.Copies.Units, Below: res.Copies.Below, Min: res.Copies.Min}
+	}
 	for _, mo := range res.Missing {
 		cs.Missing = append(cs.Missing, apiv0.MissingOwner{Peer: peerStr(mo.Peer), Reason: mo.Reason})
 	}
@@ -447,6 +475,18 @@ func (n *Local) waitEval(c *cluster.Cluster, name string, target cid.CID, cond s
 	if h, ok := v.Head(name); ok && h.Value.Target != ts {
 		res.SupersededBy = h.Value.Target
 	}
+	if d, ok := v.Dataset(name); ok && d.Collection != nil {
+		// A collection's target is its merged catalog root, which no single head names.
+		observed, res.SupersededBy = false, ""
+		if cm := n.clusters.collPtr.Load(); cm != nil {
+			if root, ok := cm.MergedRoot(name); ok {
+				observed = root == target
+				if !observed {
+					res.SupersededBy = root.String()
+				}
+			}
+		}
+	}
 	if !observed {
 		res.Unmet = append(res.Unmet, "target_not_observed: no head record of this dataset names it (yet)")
 	}
@@ -490,7 +530,7 @@ func (n *Local) waitEval(c *cluster.Cluster, name string, target cid.CID, cond s
 				reason = cluster.ReasonStale
 			case r.Target != ts:
 				reason = cluster.ReasonAbsent
-			case mode != "" && r.Mode != mode:
+			case mode != "" && r.Mode != mode && (mode != cluster.ModeOwned || r.Mode != cluster.ModeFull): // full covers owned
 				reason = cluster.ReasonEpoch
 			case !r.Complete:
 				reason = cluster.ReasonIncomplete

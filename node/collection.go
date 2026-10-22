@@ -54,7 +54,12 @@ func (n *Local) collectionsLocked(c *cluster.Cluster) (*collection.Manager, erro
 	cfg := collection.Config{DBPath: filepath.Join(n.clusterDir("net"), "collections.db"), Store: n.Store, Cluster: c, Self: n.PeerID(),
 		Service: n.ClusterServiceNoLock, Index: CollectionIndex || n.configIndex(), Interval: ClusterInterval, HTTP: n.httpClient(),
 		IngestBackoff: IngestBackoff, HeadInterval: HeadInterval,
-		GC: func(ctx context.Context) { _, _ = n.Store.GC(ctx, store.GCOptions{Grace: GCGrace}) }}
+		GC: func(ctx context.Context) { _, _ = n.Store.GC(ctx, store.GCOptions{Grace: GCGrace}) },
+		Changed: func() {
+			if svc := n.clusters.svcPtr.Load(); svc != nil {
+				svc.KickHeartbeat()
+			}
+		}}
 	if f := n.Fetcher; f != nil {
 		if _, none := f.(NoFetcher); !none {
 			cfg.FetchItem = func(ctx context.Context, root cid.CID) error { return f.Fetch(ctx, root, nil, nil) }
@@ -68,6 +73,7 @@ func (n *Local) collectionsLocked(c *cluster.Cluster) (*collection.Manager, erro
 		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the collection state: %v", err)
 	}
 	cs.coll = m
+	cs.collPtr.Store(m)
 	return m, nil
 }
 

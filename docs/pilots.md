@@ -247,7 +247,8 @@ and an action. It keeps every held version, and the operator raises the limit or
   and whether people needed help;
 - how far the reclaim estimate (prune or gc dry-run) differs from the space actually
   freed. In the smoke run, small-object shapes reclaimed less than estimated because the
-  SQLite file does not shrink;
+  SQLite file did not shrink. Since 0078, GC returns free database pages, and `prune`
+  reports `reclaim_bytes`, which came within 5–8% on the harness;
 - whether teams need preflight (`dataset update --dry-run` with required headroom),
   per-dataset quotas, automatic pruning to a byte budget (`max_bytes`), guided limit
   changes in status, or DB compaction.
@@ -262,9 +263,11 @@ than 25% on the pilot's data.
 The smoke run showed per-file costs that dominate small-object shapes. Updating a
 2,000-file tree took several seconds, mostly per-blob store lookups in readiness
 evaluation and archive establishment (`store.Has` through `replica.Manager.check`).
-Restore and cluster readiness behave similarly. Before support limits on entry count are
-published, measure update latency against the pilots' entry counts, versions kept and
-update windows.
+Restore and cluster readiness behave similarly. 0078 batched and memoized
+those checks: the `sparse` update dropped from about 9 s to 1.1 s, and cluster `ready`
+from about 8.7 s to 1.5 s ([validation](validation.md#per-file-overhead-and-space-reclaim-0078-2026-10-22)).
+Before support limits on entry count are published, measure update latency against the
+pilots' entry counts, versions kept and update windows.
 
 ## What remains for people
 

@@ -540,7 +540,9 @@ was rotated after the backup needs `nu login` again) and, per cluster (`local`, 
   `nu version` prints the versions this build writes.
 - **U2 Forward migrations at open.** Opening an older store migrates it forward in place,
   automatically, on the first command or daemon start after an upgrade. Each migration step
-  and its version bump commit in one SQLite transaction.
+  and its version bump commit in one SQLite transaction. A `nu.db` created before 0078 is
+  also rewritten once (`VACUUM`) to switch on incremental space reclaim; that needs free
+  space about the size of `nu.db`, and when it fails the store keeps working without it.
 - **U3 Interrupted upgrade.** A crash, kill or power loss during migration leaves the
   database at the last completed step; the next open resumes from there
   (`store.TestInterruptedUpgrade` kills the process inside the last migration). No marker

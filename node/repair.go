@@ -632,6 +632,9 @@ func (n *Local) DatasetRelease(ctx context.Context, scope, name string, req apiv
 	if m == nil {
 		return nil, apiv0.Errorf(apiv0.CodeUnavailable, "placement state unavailable")
 	}
+	if c.Mode() == cluster.ModeLocal {
+		m.Reconcile() // a daemonless command has not reconciled yet
+	}
 	rep, ok := m.ReleaseReport(name, req.DryRun)
 	if !ok {
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "this member keeps nothing of %q (no head, or not placed here)", name)

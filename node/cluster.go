@@ -730,6 +730,11 @@ func (n *Local) Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q in the %s cluster", name, scope).
 			WithAction("list datasets with `" + nu.Name + " dataset ls` or `" + nu.Name + " cluster dataset ls`")
 	}
+	if m := n.replicaFor(c); m != nil && c.Mode() == cluster.ModeLocal {
+		if _, ok := m.Status(name); !ok {
+			m.Reconcile() // a daemonless command: this node's own sync state is its evidence
+		}
+	}
 	return n.datasetInfo(c, name), nil
 }
 

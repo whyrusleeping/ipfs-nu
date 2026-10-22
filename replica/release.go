@@ -154,8 +154,13 @@ func (m *Manager) planFor(v *cluster.View, name string, d *cluster.Dataset, rs R
 	}
 	in := cluster.ReleaseInput{Target: target.String(), Live: p.rep.Live, Policy: p.rep.Policy, Epoch: p.rep.Epoch, K: pl.K(), Self: self,
 		Evidence: ev, Now: now, Fresh: rs.Fresh, Settle: rs.Settle, BoundSince: b.since, HeldBack: v.HeldBack, Members: v.IsMember, MemberSince: m.memberSince}
+	if m.cfg.Cluster.Mode() == cluster.ModeLocal {
+		// One member, one writer, a constant epoch: nothing to settle (S3 and S4 concern
+		// other members' evidence and concurrent writers).
+		in.BoundSince, in.MemberSince, in.Members = now.Add(-in.Settle-time.Second), nil, nil
+	}
 	for _, h := range v.Heads[name] {
-		if !h.Deleted && h.Value != nil && h.Value.Target != target.String() && now.Sub(h.HLC.Time()) < rs.Settle {
+		if !h.Deleted && h.Value != nil && h.Value.Target != target.String() && now.Sub(h.HLC.Time()) < rs.Settle && m.cfg.Cluster.Mode() != cluster.ModeLocal {
 			in.Displaced = append(in.Displaced, h.Value.Target)
 		}
 	}

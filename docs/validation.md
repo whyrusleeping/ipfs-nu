@@ -1093,6 +1093,7 @@ has a clock-free table test. Commands: `go test ./cluster -run
 | S2 surplus release | same | the writer drops its explicit pin; `gc --dry-run` lists its non-owned blobs as `surplus`, releasable once owners confirm; `gc` removes exactly the blobs it does not own |
 | Scrub → repair | `TestAuditScrub` | a flipped byte in a stored blob file is found by `audit --full`, dropped (`scrub_failed` alert) and fetched again from members |
 | Networked prune gate (S1) | `cluster_test.TestClusterArchive` | prune with an incomplete live version fails `failed` with the shortfall |
+| CLI, one-node release | `cmd/nu.TestDatasetGCCLI` (daemonless) | `dataset gc --dry-run` lists the previous head as a releasable version (one member: nothing to settle) and changes nothing; `gc` unpins it and the current head still reads |
 
 Not covered: crash (kill) between a release decision and the store removal (removal is
 one transaction under the GC lock; the in-memory settle restarts after any restart, so a

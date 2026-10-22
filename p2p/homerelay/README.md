@@ -61,3 +61,7 @@ rankings make selection deterministic while probes still perform real ping I/O.
 They cover renewal, failover promotion, backup replacement, public-reachability
 withdrawal/restoration and inert disabled mode. They do **not** establish two-NAT
 daemon sharing, direct-path upgrades, or error-free active-get relay failover.
+
+`table.go` serves and fetches `/nu/relays/1`, the held-reservation latency table used by
+the connectivity owner for pair-aware relay choice (`Choose`: minimum combined RTT with
+20 %/5 ms hysteresis; see D11c §5). It is information, never relay authorization.

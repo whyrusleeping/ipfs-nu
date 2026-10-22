@@ -699,6 +699,69 @@ and provider lookups as soon as a round yields providers). `peer address cache u
 failed … context deadline exceeded` warnings appear when a kad request's bounded context
 expires while the peers.json cache is written; harmless, not yet silenced.
 
+## Datagram relay extension (0019, 2026-10-22)
+
+Loopback (`go test ./p2p/host ./p2p/proto/circuit ./p2p/proto/qpath ./node/swarm`, < 2 s):
+a 1202-byte channel-0 probe is echoed on the default 1280-byte outer budget (quic-go
+budget = packet size − 37 → 1243 bytes) and a 1300-byte probe is refused; on a relay host
+pinned to a 1200-byte outer packet the 1202-byte probe fails with `DatagramTooLargeError`
+(1163 bytes), the relay answers `ConnectionFailed` and the pair keeps relaying on the
+stream with zero datagrams sent. A full upgrade carries ~120 inner packets per direction
+for 8 × 12 KiB echoes; detaching the leg on one side tears the pair down at the relay
+within milliseconds, the stream carries the next echoes, a re-upgrade works, and the
+inner connection object is never replaced. Self/relay targets and non-admitted or
+circuit-less pairs are refused before any probe. Two swarms through one relay reach
+`relay_mode=datagram` on both sides and echo 64 KiB over the datagram leg. Fuzz seeds:
+`FuzzDatagramMessages` (circuit control frames, canonical re-encode) and `FuzzTable`
+(`/nu/relays/1`). Fixing this exposed a pre-existing deadlock: `wire.LazySelect.Write`
+held its mutex across a flow-control-blocked write while `Read` needed it, so any
+full-duplex stream (echo of ≥ 256 KiB) hung; regression test
+`TestLazySelectFullDuplexNoDeadlock`.
+
+**NAT lab** (`go test -tags natlab -run 'TestDatagramRelay.*NATLab' ./p2p/proto/qpath`,
+~36 s, rootless netns): two EIM/APDF-NAT'd peers, one public relay, impairment on every
+router interface (both directions), the same inner connection measured on the stream
+leg, then upgraded to the datagram leg, then detached again (warm-up control). 50 idle
+32-byte pings, a 256 KiB echo, then 50 pings while a second stream keeps a 32 KiB echo
+loop running on the same inner connection ("loaded"). Three runs each:
+
+| Impairment (per interface) | Phase | idle p95 | loaded p50 / p95 / p99 | 256 KiB echo |
+|---|---|---|---|---|
+| 4 Mbit/s tbf, 300 ms queue, 10 ms delay | stream | 41.0 ms | 43 / 64–69 / 67 ms | 700–734 ms |
+| | **datagram** | 40.9 ms | 43 / **43.5–44.0** / 45.6 ms | 717–751 ms |
+| | stream (control) | 41.0 ms | 43 / 66–72 / 67 ms | 698–732 ms |
+| 2 % random loss, 10 ms delay | stream | 88–90 ms | 44–59 / 86–103 / 150 ms | 317–549 ms |
+| | **datagram** | 115–118 ms (one run 41) | 61 / 109–130 / 175 ms | 693–934 ms |
+| | stream (control) | 89 ms | 44 / 102 / 150 ms | 665–949 ms |
+
+Findings: under **congestion** the datagram leg cuts loaded tail latency by roughly a
+third (p95 44 ms vs 64–72 ms; p99 46 vs 67 ms) at equal throughput (both at the
+bottleneck), because the relay no longer buffers stream windows ahead of later packets.
+Under **random loss** with the relay mid-path the datagram leg is *worse*: an outer loss
+is recovered hop-by-hop in one leg RTT (~20 ms, plus PTO when idle) and the inner
+connection sees only jitter, while on the datagram leg the inner connection must detect
+and retransmit over the full ~40 ms path and its congestion controller sees ~4 % loss
+(Mathis: throughput ∝ 1/√p at twice the RTT). Stock quic-go also keeps DATAGRAM frames
+under the outer congestion controller, so nested congestion control is **not** removed.
+The 0019 acceptance text ("throughput and tail latency beat stream relaying at 2 %
+loss") is therefore not met as written and is not claimed; the measured benefit is the
+congested/loaded-latency case. The extension stays on by default; a loss-aware
+stream/datagram policy is open work.
+
+**Daemon NAT lab** (`go test -tags natlab -run TestDaemonPairAwarePeerRelay ./node/swarm`,
+~8–10 s after a `go build` of `cmd/nu`): two real daemons behind NATs, a `nu relay` with
+40 ms one-way netem on its interface and a public seed daemon with
+`swarm.peer_relay_allow` for the two peers. A `get` through a link whose only hint is the
+far relay forms the pair there; within ~1.7 s of the get completing the lower peer logged
+`pair-aware relay switch from=<far> to=<seed> combined_rtt≈1.3ms`, both daemons' status
+showed the seed as the relay with `relay_mode=datagram`, and the inner connection
+survived. In-process (`TestSwarmPairAwareRelayChoiceWithPeerRelay`, 0.5 s) the same
+switch happens with the far relay simulated through 30 ms ping-reply latency.
+
+Not covered: WSS outer connections (no datagrams, documented), peer relays advertised
+automatically in `nu.node` (devices list the seed in `swarm.relays`), relays behind
+asymmetric budgets other than the pinned 1200/1280 cases, and field networks.
+
 ## Nu-path throughput profiling (0015, 2026-10-21)
 
 **Optimized, but the original ≤~5% versus uninstrumented raw criterion is still open.**

@@ -406,12 +406,13 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 }
 
 // FetchCatalog fetches a collection catalog (header, container directories and item
-// metadata, not item contents) from connected peers.
-func (s *Swarm) FetchCatalog(ctx context.Context, root cid.CID) error {
+// metadata, not item contents) from connected peers. skip, if set, names objects below
+// root to leave out (held already, or fetched separately).
+func (s *Swarm) FetchCatalog(ctx context.Context, root cid.CID, skip func(cid.CID) bool) error {
 	if s.fetcher == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "this node has no store to fetch into")
 	}
-	_, err := s.fetcher.Fetch(ctx, root, fetch.Options{Catalog: true})
+	_, err := s.fetcher.Fetch(ctx, root, fetch.Options{Catalog: true, Skip: skip})
 	if err == nil || ctx.Err() != nil {
 		return err
 	}

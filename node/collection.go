@@ -31,7 +31,7 @@ var _ CollectionNode = (*Local)(nil)
 // CatalogFetcher is implemented by fetchers that can fetch a collection catalog alone
 // (the swarm).
 type CatalogFetcher interface {
-	FetchCatalog(ctx context.Context, root cid.CID) error
+	FetchCatalog(ctx context.Context, root cid.CID, skip func(cid.CID) bool) error
 }
 
 // HeadInterval overrides head.min_interval (0: the 10 s default); tests shorten it.

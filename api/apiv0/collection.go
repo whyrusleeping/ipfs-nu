@@ -32,8 +32,9 @@ type CollectionItem struct {
 	// without one).
 	Copies  *int `json:"copies,omitempty"`
 	Unknown *int `json:"unknown,omitempty"`
-	// Holders and Conflicts are filled by the single-item query, as are Owners, the
-	// item's floor owners (replicas > 0) in rank order.
+	// Holders and Conflicts are filled by the single-item query (Holders also by a
+	// listing with holders=true), as are Owners, the item's floor owners (replicas > 0)
+	// in rank order.
 	Holders   []CollectionHolder   `json:"holders,omitempty"`
 	Owners    []string             `json:"owners,omitempty"`
 	Conflicts []CollectionConflict `json:"conflicts,omitempty"`
@@ -70,7 +71,10 @@ type CollectionItemsQuery struct {
 	Holder string `json:"holder,omitempty"`
 	Unheld bool   `json:"unheld,omitempty"`
 	Held   bool   `json:"held,omitempty"` // held by this node
-	Prefix string `json:"prefix,omitempty"`
+	// Holders adds each listed item's holders from the holdings index (as the
+	// single-item query reports them); ignored without the index.
+	Holders bool   `json:"holders,omitempty"`
+	Prefix  string `json:"prefix,omitempty"`
 	// Match is a rule in its flat JSON form whose predicates items must satisfy.
 	Match json.RawMessage `json:"match,omitempty"`
 }

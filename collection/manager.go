@@ -17,6 +17,7 @@ import (
 	"github.com/whyrusleeping/nu/cluster"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
+	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
 	"github.com/whyrusleeping/nu/httpsrc"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -56,9 +57,10 @@ type Config struct {
 	Store   *store.Store
 	Cluster *cluster.Cluster
 	Self    wire.PeerID
-	// FetchCatalog fetches a catalog (header, containers, metadata) and FetchItem an
-	// item's whole tree; nil when offline (only held content is used).
-	FetchCatalog func(ctx context.Context, root cid.CID) error
+	// FetchCatalog fetches a catalog (header, containers, metadata), leaving out the
+	// objects skip names (nil: none), and FetchItem an item's whole tree; nil when offline
+	// (only held content is used).
+	FetchCatalog func(ctx context.Context, root cid.CID, skip func(cid.CID) bool) error
 	FetchItem    func(ctx context.Context, root cid.CID) error
 	// Service returns the running cluster service (holdings pulls, peer freshness), or nil.
 	Service func() *cluster.Service
@@ -110,8 +112,9 @@ type Manager struct {
 	pmu    sync.Mutex
 	pushCh chan struct{}
 	ikick  chan struct{}
-	// ownKeys overrides heldKeys in tests.
+	// ownKeys overrides heldKeys and freshFn freshness in tests.
 	ownKeys func() map[string]bool
+	freshFn func() map[string]bool
 	// repMu guards reports, this node's floor completion reports by collection.
 	repMu   sync.Mutex
 	reports map[string]cluster.Report
@@ -410,18 +413,21 @@ func (m *Manager) syncCatalog(ctx context.Context, name string, d *cluster.Datas
 		if err := m.cfg.Store.Pin(pin); err != nil {
 			return nil, err
 		}
-		if !m.heldCatalog(ctx, pin) {
-			if m.cfg.FetchCatalog == nil {
-				err = errors.New("catalog not held and no network")
-			} else {
-				fctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-				err = m.cfg.FetchCatalog(fctx, target)
-				cancel()
-			}
-			if err == nil && !m.heldCatalog(ctx, pin) {
-				err = errors.New("catalog incomplete after fetch")
+		// Catalogs held complete and pinned: this writer's previous head, the merged
+		// catalog and the other writers' synced heads.
+		var known []cid.CID
+		if p, ok := prev[did]; ok && p.Head.Defined() {
+			known = append(known, p.Head)
+		}
+		if row.header.Defined() {
+			known = append(known, row.header)
+		}
+		for _, w := range append(slices.Clone(next), row.writers...) {
+			if w.DID != did && w.Head.Defined() {
+				known = append(known, w.Head)
 			}
 		}
+		err = m.syncWriterCatalog(ctx, target, known)
 		var root cid.CID
 		if err == nil {
 			root, err = m.headerRoot(target)
@@ -465,6 +471,9 @@ func (m *Manager) syncCatalog(ctx context.Context, name string, d *cluster.Datas
 	u := &Union{St: m.cfg.Store, Writers: prevWriters, Drop: row.drops, Root: row.root, Size: row.size}
 	u.OnItem = func(p string, old *tree.Entry, nw *Leaf) error {
 		if nw != nil && old != nil && *old == nw.Entry {
+			// Another writer now has (or no longer has) the same entry: the item stays,
+			// but whether this node holds it as its writer may change.
+			changed = append(changed, p)
 			_, err := tx.Exec(`UPDATE items SET writer = ? WHERE ds = ? AND path = ?`, nw.Writer, name, p)
 			return err
 		}
@@ -795,13 +804,13 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 		return err
 	}
 	paths := slices.Sorted(maps.Keys(set))
-	keys := m.heldKeys()
-	if IsFollow(d) {
-		keys = nil // the follower's admin wrote the head from the proof; it is no writer
+	own, err := m.ownHeads(name, d)
+	if err != nil {
+		return err
 	}
 	released := false
 	for _, p := range paths {
-		r, err := m.evalItem(name, p, rules, now, keys, fl, limit)
+		r, err := m.evalItem(name, p, rules, now, own, fl, limit)
 		if err != nil {
 			_, _ = m.db.Exec(`UPDATE coll SET floor = '' WHERE ds = ?`, name) // re-decide everything next pass
 			return err
@@ -820,9 +829,54 @@ type want struct {
 	rule int
 }
 
+// ownHeads answers whether this node's own writer heads, as last merged, have an entry
+// at a path: such items are held with source `writer` (the writer is their first
+// source), whichever writer the merged view credits with the entry. A followed
+// collection has none: the follower's admin signs the head it rebuilt from the
+// publisher's proof, but it is no writer.
+type ownHeads struct {
+	roots []cid.CID
+	dir   func(cid.CID) *mst.Tree[tree.Entry]
+}
+
+func (m *Manager) ownHeads(name string, d *cluster.Dataset) (*ownHeads, error) {
+	if IsFollow(d) {
+		return &ownHeads{}, nil
+	}
+	row, err := m.loadColl(name)
+	if err != nil {
+		return nil, err
+	}
+	keys := m.heldKeys()
+	dirs := map[cid.CID]*mst.Tree[tree.Entry]{}
+	o := &ownHeads{dir: func(c cid.CID) *mst.Tree[tree.Entry] {
+		t, ok := dirs[c]
+		if !ok {
+			t = tree.Dir(m.cfg.Store, c)
+			dirs[c] = t
+		}
+		return t
+	}}
+	for _, w := range row.writers {
+		if keys[w.DID] && w.Root.Defined() {
+			o.roots = append(o.roots, w.Root)
+		}
+	}
+	return o, nil
+}
+
+func (o *ownHeads) has(path string, entry cid.CID) bool {
+	for _, r := range o.roots {
+		if st, e, err := statusIn(o.dir, r, split(path)); err == nil && st == leaf && e.CID == entry {
+			return true
+		}
+	}
+	return false
+}
+
 // evalItem decides one item's holding and applies it; it reports a release. fl is the
 // collection's floor placement (nil: replicas 0).
-func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys map[string]bool, fl *cluster.Placement, limit int64) (bool, error) {
+func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, own *ownHeads, fl *cluster.Placement, limit int64) (bool, error) {
 	it, err := m.item(name, path)
 	if err != nil {
 		return false, err
@@ -856,7 +910,7 @@ func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys 
 		w = &want{SrcSurplus, -1}
 	case manual:
 		w = &want{SrcManual, -1}
-	case keys[it.writer]:
+	case own.has(path, it.entry):
 		w = &want{SrcWriter, -1}
 	case ruleIdx >= 0 && rules[ruleIdx].Rescue != nil:
 		if cur != nil && cur.src == SrcRescue && cur.rule == ruleIdx && cur.entry == it.entry {

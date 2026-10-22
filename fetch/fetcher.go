@@ -120,6 +120,9 @@ type Options struct {
 	// Rank, if set, orders the sources of an object: the peers it returns are tried
 	// first, in that order, then the other candidates (D15 placement order).
 	Rank func(c cid.CID) []wire.PeerID
+	// Skip, if set, names objects below the root the walk leaves out: neither fetched
+	// nor descended into (the caller holds them complete, or fetches them itself).
+	Skip func(c cid.CID) bool
 }
 
 // Source is a non-peer source of whole objects (package rasl implements it over
@@ -493,7 +496,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 				return fmt.Errorf("fetch: walking %s: %w", c, err)
 			}
 			for _, k := range kids {
-				if seen[k.c.Multihash()] {
+				if seen[k.c.Multihash()] || (r.opts.Skip != nil && r.opts.Skip(k.c)) {
 					continue
 				}
 				seen[k.c.Multihash()] = true

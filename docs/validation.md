@@ -1168,10 +1168,10 @@ same digest-pinned `ipfs/kubo:v0.40.0` image recorded in `interop/run.py`. It pa
 leaves, a symlink, and CARs for CIDv1/raw-leaf and CIDv0 imports; imported file bytes and
 symlink target bytes were compared against `ipfs get` output. The large directory exercised
 Kubo's sharded-directory representation and conversion completed. This is a local opt-in
-fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in live
-Kubo-over-QUIC test currently fails: the protocol is negotiated but Kubo sends no Bitswap
-response before timeout. Thus Kubo Bitswap acceptance and live Amino provider discovery are
-not met. The CAR import is exposed through CLI/API and durable operation recovery is tested,
-but CAR operation persists only request/stage/result and replays from the CAR rather than
-persisting per-block checkpoints. Cutover readiness and representative-installation
-reconciliation remain unverified.
+fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in pinned-Kubo
+Bitswap test also passes: a Nu host requests a 1 MiB CIDv1 raw block over QUIC-v1 and receives
+and verifies the payload (0.87 s locally). That probe uses a static provider result; live Amino
+DHT provider discovery against Kubo/the public network is not verified. The CAR import is
+exposed through CLI/API and durable operation recovery is tested, but CAR jobs persist the
+request/stage/result and replay from the CAR rather than retaining per-block checkpoints.
+Cutover readiness and representative-installation reconciliation remain unverified.

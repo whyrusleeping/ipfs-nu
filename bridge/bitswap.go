@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/whyrusleeping/nu/kad"
@@ -27,18 +28,75 @@ const (
 type ProviderFinder interface {
 	FindProviders(context.Context, []byte) ([]kad.Peer, error)
 }
+type bitswapReply struct {
+	data []byte
+	err  error
+}
 type BitswapSource struct {
 	Host      *host.Host
 	Providers ProviderFinder
 	Timeout   time.Duration
+	mu        sync.Mutex
+	pending   map[IPFSCID][]chan bitswapReply
+	handler   bool
 }
 
 func NewBitswapSource(h *host.Host, p ProviderFinder) *BitswapSource {
-	return &BitswapSource{Host: h, Providers: p, Timeout: 20 * time.Second}
+	return &BitswapSource{Host: h, Providers: p, Timeout: 20 * time.Second, pending: map[IPFSCID][]chan bitswapReply{}}
+}
+func (s *BitswapSource) ensureHandler() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handler {
+		return nil
+	}
+	if s.Host == nil {
+		return errors.New("bitswap: host required")
+	}
+	if err := s.Host.Handle(BitswapProtocol, 64, s.receive); err != nil {
+		return err
+	}
+	s.handler = true
+	return nil
+}
+func (s *BitswapSource) Close() {
+	s.mu.Lock()
+	registered := s.handler
+	s.handler = false
+	s.mu.Unlock()
+	if registered && s.Host != nil {
+		s.Host.RemoveHandler(BitswapProtocol)
+	}
+}
+func (s *BitswapSource) receive(st *host.Stream) {
+	defer st.Close()
+	r := bufio.NewReader(st)
+	for {
+		msg, e := readDelimited(r, maxBitswapMessage)
+		if e != nil {
+			return
+		}
+		data, id, e := parseBitswapPayload(msg)
+		s.mu.Lock()
+		chs := append([]chan bitswapReply(nil), s.pending[id]...)
+		s.mu.Unlock()
+		if id.Hash != 0 {
+			reply := bitswapReply{data: data, err: e}
+			for _, ch := range chs {
+				select {
+				case ch <- reply:
+				default:
+				}
+			}
+		}
+	}
 }
 func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
-	if s.Host == nil || s.Providers == nil {
-		return nil, errors.New("bitswap: host and provider finder required")
+	if s.Providers == nil {
+		return nil, errors.New("bitswap: provider finder required")
+	}
+	if e := s.ensureHandler(); e != nil {
+		return nil, e
 	}
 	timeout := s.Timeout
 	if timeout <= 0 {
@@ -46,12 +104,33 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	replyCh := make(chan bitswapReply, 1)
+	s.mu.Lock()
+	s.pending[id] = append(s.pending[id], replyCh)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		list := s.pending[id]
+		for i, ch := range list {
+			if ch == replyCh {
+				s.pending[id] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(s.pending[id]) == 0 {
+			delete(s.pending, id)
+		}
+		s.mu.Unlock()
+	}()
 	ps, e := s.Providers.FindProviders(ctx, append([]byte{0x12, 32}, id.Digest[:]...))
 	if e != nil {
 		return nil, e
 	}
 	var errs []string
 	for _, p := range ps {
+		if s.Host == nil {
+			return nil, errors.New("bitswap: host required")
+		}
 		if p.ID == s.Host.ID() {
 			continue
 		}
@@ -94,53 +173,51 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 			errs = append(errs, er.Error())
 			continue
 		}
-		b, er := bitswapRequest(st, id)
-		if er == nil {
-			er = id.Verify(b)
+		if er = bitswapSend(st, id); er != nil {
+			errs = append(errs, er.Error())
+			continue
 		}
-		if er == nil {
-			return b, nil
+		break
+	}
+	if len(errs) > 0 {
+		select {
+		case reply := <-replyCh:
+			if reply.err != nil {
+				return nil, reply.err
+			}
+			if e = id.Verify(reply.data); e != nil {
+				return nil, e
+			}
+			return reply.data, nil
+		default:
 		}
-		errs = append(errs, er.Error())
 	}
-	if len(errs) == 0 {
-		return nil, errors.New("bitswap: no providers found")
+	select {
+	case reply := <-replyCh:
+		if reply.err != nil {
+			return nil, reply.err
+		}
+		if e = id.Verify(reply.data); e != nil {
+			return nil, e
+		}
+		return reply.data, nil
+	case <-ctx.Done():
+		if len(errs) > 0 {
+			return nil, fmt.Errorf("bitswap: all providers failed: %s; %w", strings.Join(errs, "; "), ctx.Err())
+		}
+		return nil, ctx.Err()
 	}
-	return nil, fmt.Errorf("bitswap: all providers failed: %s", strings.Join(errs, "; "))
 }
-func bitswapRequest(st *host.Stream, id IPFSCID) ([]byte, error) {
+func bitswapSend(st *host.Stream, id IPFSCID) error {
 	defer st.Close()
-	_ = st.SetDeadline(time.Now().Add(20 * time.Second))
-	entry := []byte{}
-	entry = pbBytes(entry, 1, id.Bytes())
+	entry := pbBytes(nil, 1, id.Bytes())
 	entry = pbVarint(entry, 2, 1)
 	entry = pbVarint(entry, 4, 0)
 	entry = pbVarint(entry, 5, 1)
 	want := pbBytes(nil, 1, entry)
 	want = pbVarint(want, 2, 1)
 	msg := pbBytes(nil, 1, want)
-	if e := writeDelimited(st, msg); e != nil {
-		return nil, e
-	}
-	// Bitswap is a persistent full-duplex stream; keep the write side open while the
-	// peer services the wantlist, then reset/close the stream after the block arrives.
-	r := bufio.NewReader(st)
-	for {
-		m, e := readDelimited(r, maxBitswapMessage)
-		if e != nil {
-			return nil, e
-		}
-		data, cid, e := parseBitswapPayload(m)
-		if e != nil {
-			return nil, e
-		}
-		if cid == id {
-			return data, nil
-		}
-		if len(m) == 0 {
-			return nil, errors.New("bitswap: empty response")
-		}
-	}
+	return writeDelimited(st, msg)
 }
 func parseBitswapPayload(b []byte) ([]byte, IPFSCID, error) {
 	for len(b) > 0 {

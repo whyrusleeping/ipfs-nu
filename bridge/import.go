@@ -29,6 +29,7 @@ type BlobSink interface {
 type ImportOptions struct {
 	ImporterVersion, Source string
 	MaxDepth, MaxBlocks     int
+	OnBlock                 func(int, IPFSCID)
 }
 type FileMapping struct {
 	Path   string   `drisl:"path"`
@@ -126,6 +127,9 @@ func (i *importer) block(c IPFSCID) ([]byte, error) {
 	}
 	if e = c.Verify(b); e != nil {
 		return nil, fmt.Errorf("bridge: verify %s: %w", c.String(), e)
+	}
+	if i.opts.OnBlock != nil {
+		i.opts.OnBlock(i.blocks, c)
 	}
 	return b, nil
 }

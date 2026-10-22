@@ -246,7 +246,8 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 	}
 	h := netStack.Host()
 	if finder, ok := netStack.(bridge.ProviderFinder); ok {
-		return bridge.NewBitswapSource(h, finder), func() {}, nil
+		src := bridge.NewBitswapSource(h, finder)
+		return src, src.Close, nil
 	}
 	for _, protocol := range h.Protocols() {
 		if protocol == kad.Protocol {
@@ -272,5 +273,6 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 		}
 		return nil, nil, errors.New("Amino returned no usable routing peers")
 	}
-	return bridge.NewBitswapSource(h, dht), func() { _ = dht.Close() }, nil
+	src := bridge.NewBitswapSource(h, dht)
+	return src, func() { src.Close(); _ = dht.Close() }, nil
 }

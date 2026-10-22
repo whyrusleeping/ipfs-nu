@@ -32,8 +32,9 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 	}
 	defer server.Close()
 	if err := server.Handle(BitswapProtocol, 4, func(st *host.Stream) {
-		defer st.Close()
+		remote := st.Conn().PeerID()
 		req, err := readDelimited(bufio.NewReader(st), maxBitswapMessage)
+		_ = st.Close()
 		if err != nil {
 			return
 		}
@@ -41,6 +42,11 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 		if err != nil || want != id {
 			return
 		}
+		reply, err := server.OpenStream(context.Background(), remote, BitswapProtocol)
+		if err != nil {
+			return
+		}
+		defer reply.Close()
 		prefix := appendUvarint(nil, 1)
 		prefix = appendUvarint(prefix, codecRaw)
 		prefix = appendUvarint(prefix, hashSHA256)
@@ -48,7 +54,7 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 		block := pbBytes(nil, 1, prefix)
 		block = pbBytes(block, 2, payload)
 		response := pbBytes(nil, 3, block)
-		_ = writeDelimited(st, response)
+		_ = writeDelimited(reply, response)
 	}); err != nil {
 		t.Fatal(err)
 	}

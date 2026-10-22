@@ -698,6 +698,7 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 		}
 	}
 	var errs []error
+	answered := 0
 	for rounds := 0; rounds < 16; rounds++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -725,6 +726,7 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 				errs = append(errs, r.e)
 				continue
 			}
+			answered++
 			s.addPeers(r.m.Closer)
 			for _, peer := range r.m.Closer {
 				if usable, ok := s.usablePeer(peer); ok {
@@ -742,8 +744,13 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 	for _, p := range providers {
 		res = append(res, p)
 	}
-	if len(res) > 0 {
+	// No providers is a result once routing peers answered; it is an error only when
+	// nobody could be asked (not bootstrapped, or every query failed).
+	if len(res) > 0 || answered > 0 {
 		return res, nil
+	}
+	if len(errs) == 0 {
+		return res, ErrNoPeers
 	}
 	return res, errors.Join(errs...)
 }

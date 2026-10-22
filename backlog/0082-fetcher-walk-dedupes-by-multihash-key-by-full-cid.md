@@ -16,3 +16,4 @@ From the 0078 follow-up: `fetch.(*run).walk` dedupes visited objects by multihas
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (9f4bad6; merged). Full-CID dedupe in fetch.(*run).walk, proto/treewalk.go (server+client lockstep), collection deltaCatalog and CAR export. Tests: proto.TestTreeSameBytesRawAndDRISL, nutest.TestFetchSameBytesRawAndDRISL (tree + layer-1). Pre-v1 note: pre-fix and post-fix peers disagree on /nu/tree/1 for such trees (client drops the peer for that fetch); documented in docs/data.md, no protocol bump.

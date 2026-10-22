@@ -8,6 +8,181 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## First magic preview: automated NAT-lab exit (0029, 2026-10-22)
+
+**Automated data/interop checks pass, with an important network-change limitation:
+verified progress resumes after restarting both endpoint daemons, but the live
+inner connection did not survive. Real-network and fresh-user demonstrations are
+still pending; this is not a declaration that the entire preview gate is met.**
+
+Implementation: `node/swarm/magic_natlab_linux_test.go`,
+`scripts/magic-preview.sh`, and `interop/run.py --daemon`. Recorded against
+`beeb7a821716a418c5b9649d6ae2166a0843517c` plus the 0029 working-tree changes.
+Final one-command run started at **2026-10-22 02:31:10 UTC** on cloverleaf:
+Linux 5.15.0-176-generic x86_64, AMD EPYC 9684X (192 logical CPUs), Go 1.26.2,
+stock quic-go v0.64.1, Docker 29.4.1. This is a busy shared machine; timings are
+whole CLI operations including hashing/extraction/independent digest checks,
+**not throughput targets, wire TTFB, or field NAT success rates**.
+
+### Reproduce / CI
+
+```sh
+# Linux; iproute2 (ip/tc), nftables, util-linux (unshare/nsenter), Docker,
+# Python 3 and Go. Rootless user+network namespaces must be permitted.
+NU_SLOW=1 ./scripts/magic-preview.sh
+
+# NAT-lab alone (same default 10,000,000,000-byte acceptance size):
+NU_SLOW=1 go test -tags natlab ./node/swarm -run '^TestMagicPreview$' -v -count=1 -timeout=56m
+# Smaller development smoke ONLY; not the 10 GB acceptance result:
+NU_SLOW=1 NU_MAGIC_BYTES=268435456 go test -tags natlab ./node/swarm -run '^TestMagicPreview$' -v -count=1 -timeout=56m
+
+# Independently repeat the all-directions wire sanity on full daemon assembly:
+python3 interop/run.py transport --daemon --impl all --out interop/results/0029/transport
+python3 interop/run.py blackbox --daemon --client kubo --out interop/results/0029/kubo
+```
+
+The script forces the full acceptance size (ignores `NU_MAGIC_BYTES`), records
+environment/revision and runs NAT-lab followed by Docker, sequentially. It exits
+nonzero on any failed assertion/probe, namespace/tool failure or disk guard. The
+Go test requires both the `natlab` build tag **and** `slow.Skip`/`NU_SLOW=1`.
+The dedicated `magic-preview` job in `.github/workflows/natlab.yml` is opt-in via
+workflow dispatch's **magic_preview** boolean. It uploads logs and pinned-source
+JSON even on failure. Remote execution of that new job is **pending**, not claimed
+as observed CI success. A runner must have >=40 GiB available; the job does not
+prune other Docker images or silently downgrade the fixture size.
+
+### Topology and disk budget
+
+Four real `nu daemon` processes have separate repos, identities and network
+namespaces behind separate routers, plus one real public `nu relay` process with
+explicit full-service admission. Laptop configuration is **only `swarm.relays`**:
+listen addresses, mDNS, API/gateway, probe policy and peer configuration retain
+ordinary defaults. The initial pair is EIM/EIF (cone) ↔ EIM/EIF, then EIM/EIF ↔
+APDM/APDF (symmetric). No independently authorized disco destinations are granted,
+so these runs use relay fallback even for cone/cone; hard-NAT punching is not a
+prerequisite. The movement fixture switches the receiver from `10.2.0.2`/one
+router/WAN IP to `10.99.0.2`/a different APDM/APDF router/WAN IP, disables its old
+interface, and replaces its default route. It restores the original cone network
+before the cone/cone tree test.
+
+**There is no default public relay fleet yet (0039).** These are declared,
+admitted development relays, not evidence of zero-operator-configuration public
+service or production abuse/admission readiness.
+
+The 10 GB input is sparse with nonzero markers at the beginning, middle and end;
+`add --raw --nocopy` avoids a source-store copy. QUIC does not compress those
+bytes. Each full download is independently streamed through SHA-256 and its exact
+length checked, without a size-proportional heap allocation. The three providers
+are the original source and two independent daemon repos referencing the **same
+verified downloaded backing file** via `--nocopy`. The first recipient's owned
+store is removed *while stopped*, preserving key/config, before re-adding that
+backing file. This explicitly trades independent physical provider copies for
+disk safety; it is not a three-disk archival durability demonstration.
+
+`df -h` is recorded and statfs must show >=40 GiB free before each big run/retry.
+Final-run initial free space was about 66 GiB. End-of-case `du -sk` (at the peak
+fixture layout) measured **29,537,040 KiB = 30.246 GB = 28.169 GiB** for cone/cone
+including the three-peer receiver/output, and 19,695,480 KiB for cone/symmetric.
+Subtests are sequential and reclaim all sources, stores, partials, outboards and
+outputs before the next topology. No `TestMagicPreview*` temporary directories or
+interop containers remained afterwards. Small raw result logs and reusable Go /
+Docker build/source caches remain; no shared-machine global cache prune was run.
+
+### Recorded scenarios
+
+| Scenario | Result in final run |
+|---|---|
+| 1: unchanged cone ↔ cone, `nu add/share/get`, 10 GB | **PASS**, 10,000,000,000 bytes, 5m40.605s; relay path, independent SHA-256 matched |
+| 1: cone ↔ symmetric, same full file | **PASS**, 10,000,000,000 bytes, 11m36.762s; relay fallback, same SHA-256 |
+| 1: 10k-file tree on both topologies | **PASS**, 100 directories × 100 distinct files, every output path/content compared; cone/cone 1m46.732s, cone/symmetric 28.398s |
+| 2: 10 GB from three peers in one CLI get | **PASS**, 5m41.704s; all three providers sent >1 MiB in the same sampled 64 MiB-progress interval; sampled wire byte counters 3,619,618,824 / 3,599,984,054 / 3,626,141,021; final digest matched |
+| 3: Wi-Fi → hotspot, separate 512 MiB transfer | **PASS for durable progress/resumption with manual daemon/get retry; FAIL for seamless recovery / inner-connection preservation**. Changed at 135,282,688 verified bytes. Live get exited `unavailable`; after restarting both endpoints, persisted verified ranges totaled 138,018,816 bytes and first positive retry progress was 140,525,568. Completion size/digest verified. |
+| 4: same-file/same-CID | **PASS**, two real nodes independently add identical 10 GB bytes to the same blob CID; separately add same-named `same.txt` bytes/inferred MIME to identical file-node CIDs |
+| 5: full-daemon wire sanity | **PASS**, Go/Rust/JS QUIC transport in both directions (6/6), plus Kubo v0.40.0 authenticated connect/identify/libp2p ping |
+
+Full NAT-lab suite: **1678.720s**. File SHA-256:
+`803f3dd793d292ab61117b4ecd211864ac3b94050c99fdbb22069cdac6d624c7`.
+Blob CID: `bafkr4ibtidh7tnhzpqmko2g6wtc2q4zxpk62wm7tpkba4yivdgll6zgitq`.
+File-node CID: `bafyreid2ydjvcufa3t4hds3ojj5achuh5zlxzaqxswwr7v6ikrrj2conwe`.
+Tree CID: `bafyreicozbnv4eipriooariqyjpirmaohdctgjez3iwvz7j734aaoumjay`.
+
+Failures are not waived silently: several 256 MiB smoke iterations found that
+changing the interface/subnet loses the active transfer. A recipient-only restart
+also failed to resume in those iterations; restarting **both** endpoints recovered
+it without deleting the partial. The automated test explicitly logs this fallback
+and inspects durable held ranges with the receiver stopped before retrying. The
+initial progress callback can emit zero before opening the partial; the check
+uses the first positive verified-byte sample. This proves no loss of verified
+progress, not automatic migration or a satisfactory final network-change UX.
+The existing `physical_rebind=false` / socket-replacement limitation remains.
+A dedicated connection-preservation fix/measurement is still needed; this task
+does not alter the in-flux fetch/proto/store implementation.
+
+`--daemon` uses the actual `daemon.Start` assembly (not just the minimal 0011
+host): API, secured local gateway, store, serving/fetching, sessions, mDNS,
+magicsock, disco, AutoNAT and netmon, with assertions that data and core protocols
+are registered. It does not replace protocol handlers or disable network features.
+Public HTTPS, producer listeners, cluster membership and relay fleet are
+operator-configured features, not toggles invented for this probe. Builds include
+all daemon code. The pinned implementations/images remain those in
+[0011](../interop/README.md); no public Amino or Ethereum clients are required here.
+
+| Final full-daemon transport direction | Handshake + ping (ms) | Ping RTT (ms) |
+|---|---:|---:|
+| Nu → Go | 6.705 | 0.334 |
+| Go → Nu | 20.497 | 1.315 |
+| Nu → Rust | 5.305 | 0.245 |
+| Rust → Nu | 9.947 | 0.339 |
+| Nu → JS | 70.707 | 1.459 |
+| JS → Nu | 81.644 | 0 (integer JS clock; verified ping succeeds) |
+
+Kubo: authenticated Ed25519, agent `kubo/0.40.0/882b7d2`, identify succeeded,
+`/ipfs/ping/1.0.0` RTT 0.212 ms. Raw final local artifacts (ignored, reproduced by
+the script or uploaded by CI) are under `interop/results/0029-final/`:
+
+- `natlab.log`, SHA-256 `6c8d499bb8e19044d240df4a5263706635dbab18010ad87854c70ba01e73158a`.
+- `transport/results.json`, SHA-256 `83eb16025201963ab8669088e54b34ad9454916e4ee5852b0dd9cc629b8e15a4`.
+- `kubo/results.json`, SHA-256 `b0e72c9306e4bdf6ae482fea0c1ead2545b0b6c08535d8dcf410c9a90ebb9926`.
+
+Pre-commit: gofmt, `go vet ./...`, `staticcheck ./...`, and depguard passed;
+interop module vet/staticcheck/build also passed. The first default-parallel
+`go test ./...` had deadline failures in fetch (`TestMultiPeerWithCorruptPeer`),
+proto (`TestBlobRangesAndHave`), lookup (`TestCacheHintsRestartParallel`), and
+nutest (`TestPublishSeedWait`, `TestRestartMidTransfer`) on the busy host. No code
+in those areas was changed. Repeating the suite with
+`GOMAXPROCS=8 GOFLAGS=-p=1 go test ./...` passed, including all previously failing
+packages. The final exact `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` invocation also passed (test results cached from those
+successful runs). This is recorded as a test-environment limitation, not a
+hidden pass of the initial invocation.
+
+### Human demonstration checklist — PENDING (no evidence yet)
+
+- [ ] **Two actual home networks or home + phone hotspot:** record OS/build,
+  network/ISP/router types (NAT class only if measured), declared development
+  relay addresses and admission setup. Start fresh repos/ordinary daemons with
+  no accounts and only declared `swarm.relays`; explicitly say no default fleet.
+- [ ] **Scenarios 1/4:** add the same 10 GB file on both machines and compare blob
+  CIDs; compare file-node CIDs with identical name/MIME. Exchange `nu share`
+  links in normal chat. Recipient gets/verifies the file and 10k-file tree.
+  Record timings, paths, counts and independent digests, not just screenshots.
+- [ ] **Scenario 2:** use three admitted providers with a genuinely fresh
+  receiver; record contributions/overlap and the final 10 GB digest.
+- [ ] **Scenario 3:** during an incomplete transfer switch Wi-Fi → hotspot;
+  record verified bytes before/after, errors/retries and any necessary daemon
+  restarts. Verify final bytes. Record inner connection survival separately
+  (connection IDs/trace), never infer it from a successful resumed download.
+- [ ] **Fresh-user secured local gateway:** observe new users install/start,
+  add/share/get, then open the daemon's printed local gateway URL at
+  `/tree/<tree-cid>/`, navigate/download the shared tree, and distinguish
+  API/control from content. Check the per-CID `<cid>.localhost` site origin too.
+  Record browser/OS, whether help was needed, time-to-first-success and confusing
+  steps. No account, PDS or relay-console work should be silently done for them.
+- [ ] **Errors/usability:** observe missing relay configuration/admission,
+  offline holder and UDP-blocked failures; do users understand the action and
+  recover? Keep their wording/observations and defects, not an expert-only claim.
+  Public HTTPS serving is a separate 0043 exercise, not this local-gateway test.
+
 ## Real daemon relay sessions and failover (0020, 2026-10-22)
 
 Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport

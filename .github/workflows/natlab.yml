@@ -1,11 +1,44 @@
 name: natlab
 on:
   workflow_dispatch:
+    inputs:
+      magic_preview:
+        description: 'Run the 0029 10 GB/10k-file real-daemon exit (needs >=40 GiB free)'
+        type: boolean
+        default: false
 
 env:
   CGO_ENABLED: "0"
 
 jobs:
+  magic-preview:
+    name: '0029 / 10 GB + 10k files + 3 providers + network change + daemon interop'
+    if: inputs.magic_preview
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: namespace tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y iproute2 nftables util-linux
+          # Only this disposable GitHub runner: Ubuntu 24 AppArmor otherwise
+          # denies rootless user namespaces. Never part of the local script.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: real-daemon acceptance (explicit slow opt-in, guarded disk)
+        # Requires rootless user+network namespaces. Missing permissions or disk
+        # are failures, not silent skips. Do not run the Go toolchain as root.
+        run: NU_SLOW=1 ./scripts/magic-preview.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: magic-preview-0029
+          path: interop/results/0029/
+          if-no-files-found: error
+          retention-days: 30
+
   natlab:
     runs-on: ubuntu-latest
     timeout-minutes: 5

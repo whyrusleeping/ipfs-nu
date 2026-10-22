@@ -200,7 +200,16 @@ func (x *extraction) collides(full string) (string, error) {
 	if names[base] {
 		return "", nil // a pre-existing file of exactly this name: replaced, as documented
 	}
-	// Name the entry the filesystem resolved it to, when a single candidate is obvious.
+	// Name the entry the filesystem resolved it to: the listed name that is the same
+	// file (case folding, Unicode normalization or any other mapping), else a case-only
+	// match.
+	if fi, err := os.Lstat(full); err == nil {
+		for n := range names {
+			if other, err := os.Lstat(filepath.Join(dir, n)); err == nil && os.SameFile(fi, other) {
+				return n, nil
+			}
+		}
+	}
 	for n := range names {
 		if strings.EqualFold(n, base) {
 			return n, nil

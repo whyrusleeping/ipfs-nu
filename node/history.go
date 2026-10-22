@@ -641,6 +641,30 @@ func (n *Local) pruneImpact(ctx context.Context, name string, cands map[cid.CID]
 	return nil
 }
 
+// establishArchive records the live versions of a dataset with history as established
+// complete when the archive is ready over its live set (placement passes call it).
+func (n *Local) establishArchive(c *cluster.Cluster, name string) {
+	d, ok := c.View().Dataset(name)
+	if !ok || d.Policy.History == nil {
+		return
+	}
+	hs := histFor(c, name, d)
+	hc, err := cid.Parse(hs.head)
+	if err != nil {
+		return
+	}
+	if n.evalTarget(c, name, hc, &liveBind{id: hs.ret.ID, roots: hs.liveRoots()}).cs.State != cluster.ReadyReady {
+		return
+	}
+	var tids []string
+	for tid := range hs.ret.Live {
+		tids = append(tids, tid)
+	}
+	if m := n.replicaFor(c); m != nil {
+		m.Establish(name, tids)
+	}
+}
+
 // liveBind binds an evaluation to a live set (archive-wide readiness, E8).
 type liveBind struct {
 	id    string

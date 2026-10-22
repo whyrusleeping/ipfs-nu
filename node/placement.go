@@ -55,6 +55,7 @@ func (n *Local) replicaFor(c *cluster.Cluster) *replica.Manager {
 	}
 	cfg := replica.Config{Store: n.Store, Cluster: c, Self: n.PeerID(), Interval: ClusterInterval,
 		Ready: func(name string, target cid.CID) bool {
+			n.establishArchive(c, name)
 			return n.evalContent(c, name, target).cs.State == cluster.ReadyReady
 		},
 		Changed: func() {

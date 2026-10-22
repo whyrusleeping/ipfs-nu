@@ -1209,8 +1209,10 @@ and retransmit over the full ~40 ms path and its congestion controller sees ~4 %
 under the outer congestion controller, so nested congestion control is **not** removed.
 The 0019 acceptance text ("throughput and tail latency beat stream relaying at 2 %
 loss") is therefore not met as written and is not claimed; the measured benefit is the
-congested/loaded-latency case. The extension stays on by default; a loss-aware
-stream/datagram policy is open work.
+congested/loaded-latency case. Coordinator decision: the extension is **off by
+default** (`swarm.relay_datagram = "on"` opts in, both peers must be on); a loss-aware
+stream/datagram policy is open work. `TestSwarmDatagramRelayOffByDefault` shows an `on`
+dialer refused by an `off` target and no datagram leg at the relay.
 
 **Daemon NAT lab** (`go test -tags natlab -run TestDaemonPairAwarePeerRelay ./node/swarm`,
 ~8–10 s after a `go build` of `cmd/nu`): two real daemons behind NATs, a `nu relay` with

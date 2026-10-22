@@ -333,7 +333,11 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 				p.relay = rid
 				c.watch(id, p, p.leg)
 				leg := p.leg
-				c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
+				if c.s.cfg.RelayDatagram {
+					c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
+				} else {
+					c.setDatagram(p, "stream")
+				}
 			}
 		}
 		var conn *host.Conn

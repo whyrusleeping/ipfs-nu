@@ -3,6 +3,8 @@ package swarm
 import (
 	"context"
 	"io"
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -47,8 +49,13 @@ func relayAddr(t *testing.T, r *relay.Server) wire.Multiaddr {
 	return a
 }
 func testSwarm(t *testing.T, k *wire.NodeKey, relays ...wire.Multiaddr) *Swarm {
+	return testSwarmDatagram(t, k, false, relays...)
+}
+
+// testSwarmDatagram opts into the datagram relay extension (off by default).
+func testSwarmDatagram(t *testing.T, k *wire.NodeKey, datagram bool, relays ...wire.Multiaddr) *Swarm {
 	t.Helper()
-	s, err := Start(context.Background(), Config{Key: k, Relays: relays, Logger: discard})
+	s, err := Start(context.Background(), Config{Key: k, Relays: relays, Logger: testLogger(), RelayDatagram: datagram})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,4 +163,11 @@ func TestSwarmCircuitAssembly(t *testing.T) {
 			t.Fatal("virtual address published", addr)
 		}
 	}
+}
+
+func testLogger() *slog.Logger {
+	if os.Getenv("NU_TEST_LOG") != "" {
+		return slog.New(slog.NewTextHandler(os.Stderr, nil))
+	}
+	return discard
 }

@@ -492,7 +492,9 @@ remain relayed: safe relay sharing does not depend on hole punching. No ranges,
 prediction, DNS target resolution or blanket-true authorization are installed.
 
 `peer_relay_allow = ["<peerID>", ...]` (public mode only) makes this node a bounded
-circuit relay for exactly those peers; see [D11c §5](#5-relay-optimization).
+circuit relay for exactly those peers, and `relay_datagram = "off" | "on"` (default
+`off`) opts relayed legs into the Nu datagram relay extension on both the dialing and
+the accepting side; see [D11c §5](#5-relay-optimization).
 
 `dht = "auto" | "client" | "off"` (default `auto`) selects Amino participation, and
 `lookup_domain = "<peer domain>"` / `routing_url = "https://…"` add a dnsaddr and a
@@ -1072,14 +1074,21 @@ its own. Measured consequences (see [validation](validation.md#datagram-relay-ex
 under a congested bottleneck, datagram legs cut loaded tail latency by about a third at
 equal throughput; under **random** loss with the relay mid-path, hop-by-hop outer
 retransmission recovers in one leg RTT while end-to-end inner recovery needs the full
-path RTT, so datagram legs are slower there. The extension is enabled by default; a
-loss-aware policy is a follow-up, not a claim.
+path RTT, so datagram legs are slower there. The extension is therefore **off by
+default**: `[swarm] relay_datagram = "off" | "on"` (default `off`). `on` makes this
+node upgrade the relayed legs it dials and accept upgrades offered for it; `off` never
+requests and always refuses offers, so a pair uses datagrams only when **both** peers
+are `on` (an `on` dialer against an `off` target sees `PermissionDenied` and stays on
+the stream). Private/isolated modes have no relays, so the key is irrelevant there. A
+loss-aware automatic policy is the follow-up that would change the default.
 
 **Ownership.** `host.Conn` owns negotiation, channels, probes and echoes;
 `circuit.Server` owns relay admission/allocation/forwarding; `circuit.Client` owns the
 upgrade request and target offers; `magicsock.Relay.AttachPacketLeg` owns per-packet
-fallback; `node/swarm` owns the dialer's retry policy, the target's offer policy and
-status (`relay_mode`: `stream`, `datagram`, or `stream: <last upgrade error>`).
+fallback; `node/swarm` owns the opt-in (`relay_datagram`), the dialer's retry policy, the
+target's offer policy and status (`relay_mode`: `stream`, `datagram`, or
+`stream: <last upgrade error>`). Relayed byte counters (`/metrics` direct-vs-relayed)
+include datagram-leg bytes in both directions.
 
 #### Pair-aware relay choice (`/nu/relays/1`)
 

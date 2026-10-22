@@ -35,7 +35,10 @@ Default config: `api.listen = "127.0.0.1:5171"`, `gateway.listen = "127.0.0.1:81
 `store.gc_watermark = 0.9`, `store.state_reserve = "16M"` ([D17 A5](data.md#accounting-and-budgets); sizes take a
 K/M/G/T/P suffix or a bare byte count). The daemon refuses non-loopback API/gateway
 listeners until authentication exists. `[public]` (off by default) configures the
-[public listener](#public-listener-0043).
+[public listener](#public-listener-0043). Relay options in `[swarm]` (`relays`,
+`peer_relay_allow`, `relay_datagram = "off"|"on"`, default off) are documented in
+[networking D10/D11c](networking.md#v0-swarm-connectivity-configuration); `nu status`
+shows a relayed peer's `relay_mode` (`stream`/`datagram`) and `relay_choice`.
 
 ## Error envelope and exit categories
 

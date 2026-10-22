@@ -41,7 +41,7 @@ func TestSwarmDatagramRelayUpgrade(t *testing.T) {
 	defer cancel()
 	ka, kb := swarmKey(t), swarmKey(t)
 	r := relayFor(t, ka.Public().PeerID(), kb.Public().PeerID())
-	a, b := testSwarm(t, ka, relayAddr(t, r)), testSwarm(t, kb, relayAddr(t, r))
+	a, b := testSwarmDatagram(t, ka, true, relayAddr(t, r)), testSwarmDatagram(t, kb, true, relayAddr(t, r))
 	hints := circuitHints(t, ctx, b, 1)
 	if err := b.Host().Handle("/test/echo/1", 1, func(s *host.Stream) { io.Copy(s, s) }); err != nil {
 		t.Fatal(err)
@@ -107,8 +107,8 @@ func TestSwarmPairAwareRelayChoiceWithPeerRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := testSwarm(t, ka, relayAddr(t, far), seedAddr)
-	b := testSwarm(t, kb, relayAddr(t, far), seedAddr)
+	a := testSwarmDatagram(t, ka, true, relayAddr(t, far), seedAddr)
+	b := testSwarmDatagram(t, kb, true, relayAddr(t, far), seedAddr)
 	hints := circuitHints(t, ctx, b, 2)
 	var farHint wire.Multiaddr
 	for _, h := range hints {
@@ -136,6 +136,15 @@ func TestSwarmPairAwareRelayChoiceWithPeerRelay(t *testing.T) {
 	if !ok || after != before {
 		t.Fatal("inner connection replaced during relay switch")
 	}
+	// The inner-QUIC initiator (lower PeerID) runs the choice and records it.
+	initiator, other := a, b
+	if b.ID() < a.ID() {
+		initiator, other = b, a
+	}
+	choice, _ := pathStatus(initiator, other.ID())
+	if choice.Choice == "" {
+		t.Fatal("initiator recorded no relay choice", choice)
+	}
 	if seed.peerRelay.DatagramLegs() == 0 {
 		waitStatus(t, ctx, "datagram mode on the peer relay", func() bool { return seed.peerRelay.DatagramLegs() == 1 })
 	}
@@ -143,5 +152,30 @@ func TestSwarmPairAwareRelayChoiceWithPeerRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("re-homed from far relay to peer relay (seed) without replacing inner QUIC: %+v; inner RTT now %v", pa, rtt)
+	t.Logf("re-homed from far relay to peer relay (seed) without replacing inner QUIC: %+v; initiator choice %q; inner RTT now %v", pa, choice.Choice, rtt)
+}
+
+// Default off: no upgrade is attempted, and an "on" dialer cannot upgrade an
+// "off" target (the target's accept policy refuses the relay's offer).
+func TestSwarmDatagramRelayOffByDefault(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	ka, kb := swarmKey(t), swarmKey(t)
+	r := relayFor(t, ka.Public().PeerID(), kb.Public().PeerID())
+	a, b := testSwarmDatagram(t, ka, true, relayAddr(t, r)), testSwarm(t, kb, relayAddr(t, r))
+	datagramRetry[0] = 200 * time.Millisecond
+	t.Cleanup(func() { datagramRetry[0] = 30 * time.Second })
+	if err := a.Connect(ctx, b.ID(), circuitHints(t, ctx, b, 1)); err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, ctx, "dialer did not record the refused upgrade", func() bool {
+		pa, _ := pathStatus(a, b.ID())
+		return pa.Path == "relay" && len(pa.Mode) > len("stream: ")
+	})
+	pa, _ := pathStatus(a, b.ID())
+	pb, _ := pathStatus(b, a.ID())
+	if pb.Mode != "stream" || r.Circuit.DatagramLegs() != 0 || a.connectivity.socket.Stats().DatagramSent != 0 {
+		t.Fatal("off target accepted a datagram leg", pa, pb)
+	}
+	t.Logf("on→off pair stays on the stream: dialer %q target %q", pa.Mode, pb.Mode)
 }

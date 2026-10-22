@@ -20,3 +20,4 @@ Acceptance: UDP-blocked Nu↔Nu verified resumable transfer through declared adm
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Foundations merged (90a92a7, 7c4bb45; ac8239c): D8 WSS mapping (TLS WebSocket → Noise XX → yamux; Nu↔Nu inner QUIC via circuit + qpath), own p2p/noise, p2p/wss, p2p/yamux (no new modules; D18 updated), Host.DialWSS/AcceptWSS, WSS relay listener with limits; experiments interop with go-libp2p websocket+noise+yamux both directions; relay/wss_test.go. Remaining: home-relay UDP→WSS fallback, node/swarm integration + config/status, natlab UDP-blocked transfer (direct + CONNECT proxy), middlebox failure evidence, review.

@@ -611,9 +611,11 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		r.update(func(p *Progress) { p.Objects++ })
 		return nil
 	}
+	// A blob nobody serves does not stop the others: every available blob is stored
+	// (a later fetch, or a placement retry, then has only the missing ones to ask for).
 	errSmall := make(chan error, 1)
-	go func() { errSmall <- parallel(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
-	return errors.Join(parallel(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
+	go func() { errSmall <- parallelAll(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
+	return errors.Join(parallelAll(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
 }
 
 func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {
@@ -686,6 +688,39 @@ func children(c cid.CID, data []byte) ([]blobRef, error) {
 }
 
 // parallel runs fn over items with at most n at a time, stopping at the first error.
+// parallelAll is parallel without the cancellation: every item is attempted and the
+// errors are joined (ctx still stops it).
+func parallelAll[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
+	sem := make(chan struct{}, n)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	for _, it := range items {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := fn(ctx, it); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return ctx.Err()
+}
+
 func parallel[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
@@ -57,7 +58,13 @@ type Config struct {
 	Changed    func()
 	Interval   time.Duration // 0: DefaultInterval
 	StagingMax int           // 0: DefaultStagingMax
-	Logger     *slog.Logger
+	// Backoff is the delay before a failed placement fetch is retried (0: Interval); it
+	// doubles per consecutive failure of the same target up to BackoffMaxFactor times
+	// Backoff, and resets on success, a new target or a cluster state change. Without it
+	// a fast-failing fetch (owner unreachable) re-ran the reconcile pass tens of times
+	// a second, rewriting the state file each time.
+	Backoff time.Duration
+	Logger  *slog.Logger
 	// Evidence returns other members' reports for a dataset (release evidence, S2); nil:
 	// none, so nothing is ever released by evidence. Release returns the release
 	// settings (nil: release.auto off, defaults). See release.go.
@@ -123,6 +130,7 @@ type Manager struct {
 	wg     sync.WaitGroup
 
 	rmu      sync.Mutex // serializes Reconcile
+	passes   atomic.Int64
 	mu       sync.Mutex
 	state    map[string]*Protection
 	status   map[string]*Status
@@ -140,11 +148,17 @@ type fetching struct {
 	cancel context.CancelFunc
 }
 
-// fetchOutcome is the result of the last finished fetch of a dataset.
+// fetchOutcome is the result of the last finished fetch of a dataset, with the retry
+// backoff its failures earned.
 type fetchOutcome struct {
 	target cid.CID
 	err    error
+	fails  int
+	next   time.Time // no retry before
 }
+
+// BackoffMaxFactor bounds the exponential backoff at this multiple of Config.Backoff.
+const BackoffMaxFactor = 16
 
 // Open loads the manager's state; Start runs it.
 func Open(cfg Config) (*Manager, error) {
@@ -153,6 +167,9 @@ func Open(cfg Config) (*Manager, error) {
 	}
 	if cfg.StagingMax <= 0 {
 		cfg.StagingMax = DefaultStagingMax
+	}
+	if cfg.Backoff <= 0 {
+		cfg.Backoff = cfg.Interval
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -169,8 +186,19 @@ func Open(cfg Config) (*Manager, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	cfg.Cluster.OnChange(m.Kick)
+	cfg.Cluster.OnChange(func() { m.resetBackoff(); m.Kick() })
 	return m, nil
+}
+
+// resetBackoff forgets earned retry delays (a cluster state change may have made the
+// content reachable: a member returned, owners changed).
+func (m *Manager) resetBackoff() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for name, o := range m.fetched {
+		o.fails, o.next = 0, time.Time{}
+		m.fetched[name] = o
+	}
 }
 
 // Start runs the reconcile loop.
@@ -254,6 +282,7 @@ func pinWith(name string, c cid.CID, profile string) store.Pin {
 func (m *Manager) Reconcile() {
 	m.rmu.Lock()
 	defer m.rmu.Unlock()
+	m.passes.Add(1)
 	v := m.cfg.Cluster.View()
 	m.noteMembers(v)
 	changed := false
@@ -370,8 +399,9 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 		s.State = cluster.SyncSyncing
 		m.mu.Lock()
 		var err error
+		retryAt := time.Time{}
 		if o := m.fetched[name]; o.target == work {
-			err = o.err
+			err, retryAt = o.err, o.next
 		}
 		running := m.inflight[name] != nil
 		m.mu.Unlock()
@@ -390,7 +420,7 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 				s.Reason, s.Detail = "fetch", err.Error()
 			}
 		}
-		if !running && s.Mode == cluster.ModeOwned && (m.cfg.Fetch != nil || m.cfg.FetchProfile != nil) {
+		if !running && !time.Now().Before(retryAt) && s.Mode == cluster.ModeOwned && (m.cfg.Fetch != nil || m.cfg.FetchProfile != nil) {
 			m.startFetch(name, work, pl, v)
 		}
 	}
@@ -700,13 +730,28 @@ func (m *Manager) startFetch(name string, work cid.CID, pl *cluster.Placement, v
 		}
 		m.mu.Lock()
 		delete(m.inflight, name)
+		var delay time.Duration
 		if ctx.Err() == nil {
-			m.fetched[name] = fetchOutcome{target: work, err: err}
+			o := fetchOutcome{target: work, err: err}
+			if err != nil {
+				if prev := m.fetched[name]; prev.target == work {
+					o.fails = prev.fails
+				}
+				o.fails++
+				delay = BackoffMaxFactor * m.cfg.Backoff
+				if o.fails <= 8 {
+					delay = min(m.cfg.Backoff<<(o.fails-1), delay)
+				}
+				o.next = time.Now().Add(delay)
+			}
+			m.fetched[name] = o
 		}
 		m.mu.Unlock()
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			m.log.Debug("placement fetch failed", "dataset", name, "target", work, "err", err)
+			m.log.Debug("placement fetch failed", "dataset", name, "target", work, "err", err, "retry_in", delay)
+			time.AfterFunc(delay, m.Kick) // the retry, unless a change kicks earlier
+			return
 		}
 		m.Kick()
 	}()

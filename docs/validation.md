@@ -1505,6 +1505,11 @@ work, not initial validated operating limits. Establish supported pilot limits f
 and publish them before release. Promote sub-file reuse or placement changes only when
 representative workloads justify the cost and complexity.
 
+The workload matrix, per-gate pilot success criteria, intake and result templates, the
+seeded fixtures and runner, and the sub-file reuse and capacity-UX decision criteria are in
+[pilots.md](pilots.md) (templates awaiting real pilots). Synthetic runs are recorded under
+[harness smoke results](#harness-smoke-results-0034-not-pilot-evidence).
+
 ### Pilot candidates
 
 **Decentralized Sentinel Collaborative Ground Segment** (vmx, IPFS Foundation;

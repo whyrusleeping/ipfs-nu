@@ -206,7 +206,11 @@ type Node struct {
 	corrupt atomic.Bool
 	// CorruptServed counts /nu/bytes/1 responses served while corrupting.
 	CorruptServed atomic.Int64
-	lock          *repo.Lock
+	// Served counts the bytes this node wrote on /nu/bytes/1, /nu/have/1 and /nu/tree/1
+	// response streams since it was created: data-plane bytes served to peers, without
+	// QUIC/TLS overhead and without cluster-state sync.
+	Served atomic.Int64
+	lock   *repo.Lock
 }
 
 func (nw *Network) newNode(i int) *Node {
@@ -324,19 +328,22 @@ func (nd *Node) Start() {
 		}
 		nd.Local, nd.Swarm = l, sw
 	}
-	// Serve /nu/bytes/1 through a stream wrapper so Corrupt can flip bytes.
+	// Serve the data protocols through a stream wrapper that counts the bytes served and
+	// lets Corrupt flip /nu/bytes/1 bytes.
 	h := nd.Swarm.Host()
 	srv := nd.Swarm.Server()
-	h.RemoveHandler(proto.BytesID)
-	if err := h.Handle(proto.BytesID, srv.HandlerLimit(), func(st *host.Stream) {
-		if nd.corrupt.Load() {
-			nd.CorruptServed.Add(1)
-			srv.Serve(proto.BytesID, st.Conn().PeerID(), corruptStream{st})
-			return
+	for _, p := range []string{proto.BytesID, proto.HaveID, proto.TreeID} {
+		h.RemoveHandler(p)
+		if err := h.Handle(p, srv.HandlerLimit(), func(st *host.Stream) {
+			ss := servedStream{Stream: st, n: &nd.Served}
+			if p == proto.BytesID && nd.corrupt.Load() {
+				nd.CorruptServed.Add(1)
+				ss.corrupt = true
+			}
+			srv.Serve(p, st.Conn().PeerID(), ss)
+		}); err != nil {
+			t.Fatal(err)
 		}
-		srv.Serve(proto.BytesID, st.Conn().PeerID(), st)
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -527,14 +534,21 @@ func (nd *Node) describe() string {
 	return b.String()
 }
 
-// corruptStream flips the last byte of every sizeable write, so response headers stay
-// well-formed and the data fails verification.
-type corruptStream struct{ *host.Stream }
+// servedStream counts the bytes written into n; when corrupt it flips the last byte of
+// every sizeable write, so response headers stay well-formed and the data fails
+// verification.
+type servedStream struct {
+	*host.Stream
+	n       *atomic.Int64
+	corrupt bool
+}
 
-func (c corruptStream) Write(b []byte) (int, error) {
-	if len(b) > 512 {
+func (c servedStream) Write(b []byte) (int, error) {
+	if c.corrupt && len(b) > 512 {
 		b = bytes.Clone(b)
 		b[len(b)-1] ^= 0xff
 	}
-	return c.Stream.Write(b)
+	n, err := c.Stream.Write(b)
+	c.n.Add(int64(n))
+	return n, err
 }

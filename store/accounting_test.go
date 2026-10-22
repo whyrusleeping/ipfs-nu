@@ -214,7 +214,7 @@ func TestAccountingCounters(t *testing.T) {
 	}
 	for _, q := range []string{`DROP TRIGGER usage_blocks_i`, `DROP TRIGGER usage_blocks_d`, `DROP TRIGGER usage_blobs_i`,
 		`DROP TRIGGER usage_blobs_d`, `DROP TRIGGER usage_partials_i`, `DROP TRIGGER usage_partials_d`, `DROP TRIGGER usage_partials_u`,
-		`DROP TABLE usage`, `ALTER TABLE partials DROP COLUMN held`, `PRAGMA user_version = 2`} {
+		`DROP TABLE usage`, `ALTER TABLE partials DROP COLUMN held`, `ALTER TABLE blocks DROP COLUMN alt`, `PRAGMA user_version = 2`} {
 		if _, err := s.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

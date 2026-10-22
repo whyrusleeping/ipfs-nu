@@ -160,6 +160,23 @@ func TestSmallBlobsAndBlocks(t *testing.T) {
 			t.Fatalf("Has(%s) = %v %v %v", c, info, ok, err)
 		}
 	}
+	// Codec confusion (0077): bytes stored raw are not a DRISL node until stored as one;
+	// then both reads work.
+	drislOfSmall := cid.New(cid.DRISL, small.Multihash())
+	if _, ok, _ := s.Has(drislOfSmall); ok {
+		t.Fatal("raw bytes held as DRISL")
+	}
+	if _, err := s.Get(drislOfSmall); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get of raw bytes as DRISL: %v", err)
+	}
+	if err := s.Put(drislOfSmall, []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []cid.CID{small, drislOfSmall} {
+		if b, err := s.Get(c); err != nil || string(b) != "hi" {
+			t.Fatalf("Get(%s) after both puts: %q %v", c, b, err)
+		}
+	}
 	// PutBlob rejects wrong content for a known CID.
 	if _, err := s.PutBlob(sha, bytes.NewReader(make([]byte, 99999)), 99999); err == nil {
 		t.Fatal("PutBlob accepted wrong bytes")

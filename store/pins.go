@@ -140,7 +140,9 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 	}
 	var st WalkStats
-	seen := map[cid.Multihash]bool{}
+	// Keyed by full CID: the same bytes linked as raw and as DRISL are two objects (the
+	// DRISL one has links), 0077.
+	seen := map[cid.CID]bool{}
 	stack := []cid.CID{p.CID}
 	for len(stack) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -148,10 +150,10 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 		c := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if seen[c.Multihash()] {
+		if seen[c] {
 			continue
 		}
-		seen[c.Multihash()] = true
+		seen[c] = true
 		st.Objects++
 		info, ok, err := s.Has(c)
 		if err != nil {

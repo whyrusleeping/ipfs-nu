@@ -706,7 +706,10 @@ destination.**
   uses its own listener and configuration; `/api/` does not exist there.
 - **P2** Public serving is opt-in per root: only content explicitly published or marked
   public is served; a member's held cluster content is never implicitly public. A share
-  link mentions a public URL only when that URL serves the root now.
+  link mentions a public URL only when that URL serves the root now. The served set is
+  keyed by **full CID**: a published raw file's multihash under the DRISL codec is another
+  object (its bytes read as a node could link to anything held), and the store never
+  reads bytes stored only as a raw blob as a DRISL node (0077).
 - **P3** A members-only gateway is loopback/network-restricted or requires reader
   authentication (A8-style token or TLS client auth). "Not configured" means the daemon
   refuses the listener; libp2p membership gating never counts as HTTP protection.
@@ -825,6 +828,7 @@ required by the named task before it ships.
 | N39 | A8 | `api.producer.listen` without `trusted_network` or `hosts` | refuses to start, action names the key | gate: producer TLS (not part of 0043's content listener) |
 | N40 | P5/P1 | public `Host` is an IP literal, `localhost`, another domain, `<cid>.<other>`, `x.<cid>.<domain>`, or the domain with a foreign port; non-GET methods | 403; 400, no CORS | `gateway.TestPublicListener` |
 | N41 | P1 | public listener without cert/key and without `behind_proxy`; `behind_proxy` off loopback; `public.domain = localhost` | refuses to start, action names the key | `daemon.TestPublicListener` |
+| N42 | P2 | published small file whose bytes are a MASL file node naming an unpublished blob, requested as `<DRISL codec + file multihash>` on `/tree`, `/blob`, RASL and its site origin | 404; the store refuses the DRISL read of raw-stored bytes | `node.TestPublicCodecSwap`, `store.TestSmallBlobsAndBlocks` |
 
 ### Feature-entry gates
 

@@ -26,6 +26,7 @@ const (
 	NSDataset = "io.ipfs.nu.cluster.dataset"
 	NSHead    = "io.ipfs.nu.cluster.head"
 	NSHistory = "io.ipfs.nu.cluster.history"
+	NSVersion = "io.ipfs.nu.cluster.version"
 	NSDrop    = "io.ipfs.nu.cluster.drop"
 	NSConfig  = "io.ipfs.nu.cluster.config"
 )
@@ -204,9 +205,13 @@ func (Drop) DRISLType() string { return NSDrop }
 // MaxDropPaths bounds a drop record.
 const MaxDropPaths = 256
 
-// Source is where a dataset's target comes from; only local datasets exist so far.
+// Source is where a dataset's target comes from; only local datasets exist so far (name
+// and atproto sources are 0045 and 0054).
 type Source struct {
 	Local bool `drisl:"local"`
+	// Path is a writer-local absolute directory that `dataset update` without a target
+	// re-adds (docs/cluster.md "Presets").
+	Path string `drisl:"path,omitempty"`
 	// Ingest configures producer pushes into a collection (D22 "Ingest").
 	Ingest *Ingest `drisl:"ingest,omitempty"`
 }
@@ -241,6 +246,41 @@ type Policy struct {
 	All      bool                `drisl:"all,omitempty"`
 	Where    map[string][]string `drisl:"where,omitempty"`
 	Spread   string              `drisl:"spread,omitempty"`
+	// History enables version retention (archive preset); nil follows current state.
+	History *History `drisl:"history,omitempty"`
+}
+
+// History is a retention schedule (docs/cluster.md "Retention"): the KeepLast newest
+// versions, then the newest version in each of the first N hour, day, week (7 d), month
+// (30 d) and year (365 d) buckets measured back from the newest version (-1: every
+// bucket), plus labeled versions and the head's; MaxBytes (0: none) bounds the summed
+// newBytes of the live set by dropping the oldest unprotected versions.
+type History struct {
+	KeepLast int64 `drisl:"keep_last" json:"keep_last"`
+	Hourly   int64 `drisl:"hourly" json:"hourly"`
+	Daily    int64 `drisl:"daily" json:"daily"`
+	Weekly   int64 `drisl:"weekly" json:"weekly"`
+	Monthly  int64 `drisl:"monthly" json:"monthly"`
+	Yearly   int64 `drisl:"yearly" json:"yearly"`
+	MaxBytes int64 `drisl:"max_bytes,omitempty" json:"max_bytes,omitempty"`
+}
+
+// ArchiveHistory is the archive preset's schedule (provisional until pilot data, 0034).
+func ArchiveHistory() *History {
+	return &History{KeepLast: 10, Hourly: 24, Daily: 30, Weekly: 12, Monthly: 12, Yearly: -1}
+}
+
+// Validate checks the schedule's ranges.
+func (h *History) Validate() error {
+	for _, n := range []int64{h.KeepLast, h.Hourly, h.Daily, h.Weekly, h.Monthly, h.Yearly} {
+		if n < -1 || n > 1_000_000 {
+			return errors.New("history counts must be -1 (all) to 1000000")
+		}
+	}
+	if h.MaxBytes < 0 {
+		return errors.New("history max_bytes must not be negative")
+	}
+	return nil
 }
 
 // MaxWhere bounds a policy's tag filter (tags and values per tag).
@@ -256,6 +296,9 @@ func (p Policy) Validate() error {
 			return fmt.Errorf("bad where tag %q", k)
 		}
 	}
+	if p.History != nil {
+		return p.History.Validate()
+	}
 	return nil
 }
 
@@ -269,6 +312,84 @@ type Head struct {
 }
 
 func (Head) DRISLType() string { return NSHead }
+
+// Version is a version record `version/<name>.<tid>` (docs/cluster.md "Version tree").
+// Its identity is every field except the annotations Label, Note and HLC.
+type Version struct {
+	Root         string `drisl:"root"`
+	Kind         string `drisl:"kind"`
+	Parent       string `drisl:"parent,omitempty"`
+	Author       string `drisl:"author"`
+	Files        int64  `drisl:"files"`
+	Bytes        int64  `drisl:"bytes"`
+	NewBytes     int64  `drisl:"newBytes"`
+	RestoredFrom string `drisl:"restoredFrom,omitempty"`
+	Label        string `drisl:"label,omitempty"`
+	Note         string `drisl:"note,omitempty"`
+	HLC          string `drisl:"hlc"`
+
+	identity string         // hex SHA-256 of the record without annotations
+	raw      map[string]any // the decoded record (annotation copies keep unknown fields)
+}
+
+func (Version) DRISLType() string { return NSVersion }
+
+// Identity is the hex SHA-256 of the DRISL record without its annotations (set when
+// decoded from a record).
+func (v *Version) Identity() string { return v.identity }
+
+// Annotated returns a record with v's identity fields (unknown ones included) and the
+// given annotations, for a signer annotating a version.
+func (v *Version) Annotated(label, note string) RawRecord {
+	r := RawRecord{}
+	for k, x := range v.raw {
+		r[k] = x
+	}
+	if r["$type"] == nil {
+		r["$type"] = NSVersion
+	}
+	delete(r, "label")
+	delete(r, "note")
+	if label != "" {
+		r["label"] = label
+	}
+	if note != "" {
+		r["note"] = note
+	}
+	return r
+}
+
+// RawRecord is a record written as a generic DRISL map (with its $type).
+type RawRecord map[string]any
+
+func (r RawRecord) setHLC(h string) { r["hlc"] = h }
+
+// VersionKey is the record key of a version: <name>.<tid>.
+func VersionKey(name, tid string) string { return name + "." + tid }
+
+// SplitVersionKey splits a version record key.
+func SplitVersionKey(rkey string) (name, tid string, ok bool) {
+	i := strings.LastIndexByte(rkey, '.')
+	if i < 0 {
+		return "", "", false
+	}
+	return rkey[:i], rkey[i+1:], true
+}
+
+var labelRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+
+// ValidLabel reports whether s may label a version: it matches [a-z][a-z0-9._-]{0,63} and
+// does not parse as a TID or a time (so lookups stay unambiguous).
+func ValidLabel(s string) bool {
+	if !labelRE.MatchString(s) {
+		return false
+	}
+	if _, err := parseTID(s); err == nil {
+		return false
+	}
+	_, err := ParseVersionTime(s)
+	return err != nil
+}
 
 // Config is cluster-wide configuration.
 type Config struct {
@@ -289,7 +410,7 @@ type Record struct {
 	Collection, RKey string
 	HLC              HLC
 	Deleted          bool
-	// Value is *Key, *Member, *Invite, *Dataset, *Head, *Config or *Genesis; nil for
+	// Value is *Key, *Member, *Invite, *Dataset, *Head, *Version, *Config or *Genesis; nil for
 	// tombstones and for history/drop records (whose schemas belong to other tasks).
 	Value any
 	CID   cid.CID
@@ -406,6 +527,14 @@ func checkRKey(coll, rkey string) error {
 	case NSDataset, NSHead, NSHistory, NSDrop:
 		if !ValidName(rkey) {
 			return errors.New("record key must be a dataset name")
+		}
+	case NSVersion:
+		name, tid, ok := SplitVersionKey(rkey)
+		if !ok || !ValidName(name) {
+			return errors.New("record key must be <dataset>.<tid>")
+		}
+		if _, err := parseTID(tid); err != nil {
+			return errors.New("record key must end in a TID")
 		}
 	default:
 		return errors.New("unknown collection")
@@ -598,6 +727,43 @@ func decodeValue(r *Record, v any) error {
 			}
 		}
 		r.Value = &d
+	case NSVersion:
+		var ver Version
+		if err := drisl.Assign(v, &ver); err != nil {
+			return err
+		}
+		if _, err := cid.Parse(ver.Root); err != nil {
+			return fmt.Errorf("root: %v", err)
+		}
+		if !oneOf(ver.Kind, "tree", "file", "blob") || ver.Files < 0 || ver.Bytes < 0 || ver.NewBytes < 0 || len(ver.Note) > 1024 {
+			return errors.New("kind, sizes or note out of range")
+		}
+		if ver.Label != "" && !ValidLabel(ver.Label) {
+			return fmt.Errorf("bad label %q", ver.Label)
+		}
+		if _, err := parseP256(ver.Author); err != nil {
+			return fmt.Errorf("author: %v", err)
+		}
+		for _, t := range []string{ver.Parent, ver.RestoredFrom} {
+			if _, err := parseTID(t); t != "" && err != nil {
+				return fmt.Errorf("bad version reference %q", t)
+			}
+		}
+		m, _ := v.(map[string]any)
+		ver.raw = m
+		id := map[string]any{}
+		for k, x := range m {
+			if k != "label" && k != "note" && k != "hlc" {
+				id[k] = x
+			}
+		}
+		b, err := drisl.Marshal(id)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(b)
+		ver.identity = hex.EncodeToString(sum[:])
+		r.Value = &ver
 	case NSHistory:
 		// The schema belongs to version history (D20); only the envelope ($type, hlc) is
 		// checked here.

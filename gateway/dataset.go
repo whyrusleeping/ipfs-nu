@@ -1,0 +1,58 @@
+package gateway
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/node/target"
+)
+
+// DatasetContent resolves a dataset of this node (its head, or a version selected by TID,
+// label or time) to a root CID; content that implements it serves /c/ (0047).
+type DatasetContent interface {
+	ResolveDataset(ctx context.Context, name, version string) (string, error)
+}
+
+// dataset serves /c/<dataset>[@<version>]/<path> as a redirect to the immutable
+// /tree/<cid>/<path> URL of the resolved root, so a multi-file reader binds to one root
+// and the bare origin's non-active rules apply. The redirect itself is never cached. A
+// version that is not retained-complete is an error naming its availability, never a
+// fallback to another version.
+func (h *Handler) dataset(w http.ResponseWriter, r *http.Request) {
+	seg, p := r.PathValue("ds"), r.PathValue("path")
+	t, err := target.Parse(seg)
+	if err != nil || t.Kind != target.KindDataset || t.Path != "" {
+		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is not a dataset", seg).WithAction("use /c/<dataset>[@<version>]/<path>"))
+		return
+	}
+	if p != "" {
+		if err := validatePath(p); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	dc, ok := h.content.(DatasetContent)
+	if !ok || h.content == nil {
+		writeError(w, apiv0.NotImplemented("datasets on the gateway"))
+		return
+	}
+	root, err := dc.ResolveDataset(r.Context(), t.Dataset, t.Version)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	loc := "/tree/" + root + "/"
+	if p != "" {
+		var segs []string
+		for _, s := range strings.Split(p, "/") {
+			segs = append(segs, url.PathEscape(s))
+		}
+		loc += strings.Join(segs, "/")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Nu-Root", root)
+	http.Redirect(w, r, loc, http.StatusFound)
+}

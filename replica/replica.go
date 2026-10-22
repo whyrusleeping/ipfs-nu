@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,12 @@ type Protection struct {
 	Held     string   `json:"held,omitempty"`
 	Staged   []string `json:"staged,omitempty"`
 	Retained []string `json:"retained,omitempty"`
+	// Versions are the version roots (tid → root) pinned for retention (datasets with
+	// history); Complete the versions established complete (locally, or by an archive-ready
+	// evaluation); Pruned the versions released by an explicit prune.
+	Versions map[string]string `json:"versions,omitempty"`
+	Complete []string          `json:"complete,omitempty"`
+	Pruned   []string          `json:"pruned,omitempty"`
 }
 
 // Status is this member's sync state of one dataset.
@@ -82,6 +89,10 @@ type Status struct {
 	Reason, Detail   string
 	Need             int64 // bytes needed when paused for storage (S7)
 	Protection       Protection
+	// Live is the live-set identity of a dataset with history; LiveVersions its versions
+	// (tid → whether this member holds the version's structure and owned blobs).
+	Live         string
+	LiveVersions map[string]bool
 	// Reported is the report this status yields.
 	Reported cluster.Report
 }
@@ -336,6 +347,9 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 			m.startFetch(name, work, pl, v)
 		}
 	}
+	if d.Policy.History != nil {
+		m.history(v, name, d, s, st, pl, work)
+	}
 	changed := m.finish(name, s, prev)
 	if s.Complete && s.Mode == cluster.ModeOwned && m.cfg.Ready != nil && m.cfg.Ready(name, work) {
 		m.mu.Lock()
@@ -346,12 +360,164 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 			st.Ready = work.String()
 			_ = m.saveLocked()
 			if cur := m.status[name]; cur != nil {
-				cur.Protection = *st
+				cur.Protection = st.clone()
 			}
 		}
 		m.mu.Unlock()
 	}
 	return changed
+}
+
+// history pins and checks the live versions of a dataset with history (docs/cluster.md
+// "Retention"): every live version is an acquisition obligation, fetched once the work
+// target is complete, newest first; versions that left the live set without ever being
+// complete here are unpinned (skipped), complete ones stay pinned (release candidates,
+// released only by an explicit prune).
+func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *Status, st *Protection, pl *cluster.Placement, work cid.CID) {
+	hist := v.VersionHistory(name)
+	head, _ := v.Head(name)
+	ret := cluster.Retain(name, hist, d.Policy.History, cluster.HeadVersion(hist, head.Value.Target))
+	s.Live, s.LiveVersions = ret.ID, map[string]bool{}
+	full := s.Mode == cluster.ModeFull
+	local := m.cfg.Cluster.Mode() == cluster.ModeLocal
+	m.mu.Lock()
+	if st.Versions == nil {
+		st.Versions = map[string]string{}
+	}
+	m.mu.Unlock()
+	var fetchNext cid.CID
+	liveRoots := map[string]bool{}
+	for i := len(hist) - 1; i >= 0; i-- {
+		e := hist[i]
+		if _, ok := ret.Live[e.TID]; !ok {
+			continue
+		}
+		liveRoots[e.Root] = true
+		root, err := cid.Parse(e.Root)
+		if err != nil {
+			continue
+		}
+		var complete bool
+		if root == work {
+			complete = s.Complete
+		} else {
+			if err := m.cfg.Store.Pin(pinFor(name, root)); err != nil {
+				s.LiveVersions[e.TID] = false
+				continue
+			}
+			chk := m.check(root, 0, pl, full)
+			complete = chk.complete()
+			if !complete && !fetchNext.Defined() {
+				fetchNext = root
+			}
+		}
+		s.LiveVersions[e.TID] = complete
+		m.mu.Lock()
+		st.Versions[e.TID] = e.Root
+		// On the one-node cluster local completeness establishes a version; elsewhere an
+		// archive-ready evaluation does (Establish).
+		if complete && local && !contains(st.Complete, e.TID) {
+			st.Complete = append(st.Complete, e.TID)
+		}
+		st.Pruned = slices.DeleteFunc(st.Pruned, func(t string) bool { return t == e.TID })
+		m.mu.Unlock()
+	}
+	m.mu.Lock()
+	known := map[string]bool{}
+	for _, e := range hist {
+		known[e.TID] = true
+	}
+	for tid, root := range st.Versions {
+		if _, live := ret.Live[tid]; live {
+			continue
+		}
+		if !known[tid] { // compacted metadata
+			delete(st.Versions, tid)
+			continue
+		}
+		if contains(st.Complete, tid) || m.protectedLocked(st, root, liveRoots) {
+			continue
+		}
+		c, err := cid.Parse(root)
+		if err == nil && !local && m.check(c, 0, pl, full).complete() {
+			continue // this member's share is held: a release candidate, not skipped
+		}
+		// Skipped: never complete here and no longer selected.
+		if err == nil {
+			_, _ = m.cfg.Store.Unpin(pinFor(name, c))
+		}
+		delete(st.Versions, tid)
+	}
+	st.Complete = slices.DeleteFunc(st.Complete, func(t string) bool { return !known[t] })
+	_ = m.saveLocked()
+	running := m.inflight[name] != nil
+	m.mu.Unlock()
+	if fetchNext.Defined() && s.Complete && !running && !full && m.cfg.Fetch != nil {
+		m.startFetch(name, fetchNext, pl, v)
+	}
+}
+
+// protectedLocked reports whether root is protected for another reason than a version
+// (current, ready, held, staged or retained target, or a live version's root).
+func (m *Manager) protectedLocked(st *Protection, root string, liveRoots map[string]bool) bool {
+	return liveRoots[root] || root == st.Ready || root == st.Held || contains(st.Staged, root) || contains(st.Retained, root)
+}
+
+// Establish records versions as established complete (an archive-ready evaluation
+// covered them).
+func (m *Manager) Establish(name string, tids []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.state[name]
+	if st == nil {
+		return
+	}
+	changed := false
+	for _, t := range tids {
+		if !contains(st.Complete, t) {
+			st.Complete = append(st.Complete, t)
+			changed = true
+		}
+	}
+	if changed {
+		_ = m.saveLocked()
+	}
+}
+
+// Prune releases the pins of versions (tid → root) that are not protected: not the
+// head or any live version's root (headRoot, live) nor the ready, held, staged target.
+// Released versions are recorded as pruned. It returns the tids released.
+func (m *Manager) Prune(name string, versions map[string]string, headRoot string, live map[string]bool) ([]string, error) {
+	m.rmu.Lock() // not concurrently with a reconcile pass
+	defer m.rmu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.state[name]
+	if st == nil {
+		return nil, nil
+	}
+	var out []string
+	for tid, root := range versions {
+		if root == headRoot || live[root] || root == st.Ready || root == st.Held || contains(st.Staged, root) {
+			continue
+		}
+		c, err := cid.Parse(root)
+		if err != nil {
+			continue
+		}
+		if _, err := m.cfg.Store.Unpin(pinFor(name, c)); err != nil {
+			return out, err
+		}
+		delete(st.Versions, tid)
+		st.Retained = slices.DeleteFunc(st.Retained, func(r string) bool { return r == root })
+		st.Complete = slices.DeleteFunc(st.Complete, func(t string) bool { return t == tid })
+		if !contains(st.Pruned, tid) {
+			st.Pruned = append(st.Pruned, tid)
+		}
+		out = append(out, tid)
+	}
+	slices.Sort(out)
+	return out, m.saveLocked()
 }
 
 // heldLocked records that target is fully held: earlier staged heads are abandoned and
@@ -390,10 +556,21 @@ func (m *Manager) abandonLocked(name string, st *Protection, keep string) {
 
 func (m *Manager) finish(name string, s *Status, prev *Status) bool {
 	m.mu.Lock()
-	s.Protection = *m.state[name]
+	s.Protection = m.state[name].clone()
 	m.mu.Unlock()
 	s.Reported = cluster.Report{Name: name, Target: s.Target.String(), Mode: s.Mode, Policy: s.Policy, Epoch: s.Epoch, Complete: s.Complete,
-		Owned: s.Owned, State: s.State}
+		Owned: s.Owned, State: s.State, Live: s.Live}
+	if s.Live != "" {
+		for tid, ok := range s.LiveVersions {
+			if !ok {
+				s.Reported.Incomplete = append(s.Reported.Incomplete, tid)
+			}
+		}
+		slices.Sort(s.Reported.Incomplete)
+		if len(s.Reported.Incomplete) > cluster.MaxIncomplete {
+			s.Reported.Incomplete = s.Reported.Incomplete[:cluster.MaxIncomplete]
+		}
+	}
 	if !s.Complete {
 		miss := s.Missing
 		s.Reported.Missing = &miss
@@ -547,7 +724,9 @@ func (m *Manager) Status(name string) (Status, bool) {
 	if !ok {
 		return Status{}, false
 	}
-	return *s, true
+	out := *s
+	out.LiveVersions = maps.Clone(s.LiveVersions)
+	return out, true
 }
 
 // Reports returns this member's completion reports (seq unset).
@@ -600,6 +779,16 @@ func (m *Manager) Owners(name string, target cid.CID) (owners []wire.PeerID, pl 
 	return owners, pl, true
 }
 
+func (p *Protection) clone() Protection {
+	st := *p
+	st.Staged = slices.Clone(p.Staged)
+	st.Retained = slices.Clone(p.Retained)
+	st.Versions = maps.Clone(p.Versions)
+	st.Complete = slices.Clone(p.Complete)
+	st.Pruned = slices.Clone(p.Pruned)
+	return st
+}
+
 // Protected lists the targets a dataset keeps pinned: the last ready and held versions,
 // staged heads and retained release candidates (release.auto is off: nothing is
 // released, docs/operations.md S8).
@@ -607,9 +796,7 @@ func (m *Manager) Protected(name string) (st Protection) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s := m.state[name]; s != nil {
-		st = *s
-		st.Staged = slices.Clone(s.Staged)
-		st.Retained = slices.Clone(s.Retained)
+		st = s.clone()
 	}
 	return st
 }

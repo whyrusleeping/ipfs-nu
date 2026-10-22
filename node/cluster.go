@@ -670,6 +670,9 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 	if pol.All {
 		pol.Replicas = 0
 	}
+	if err := presetPolicy(req, &pol, &src, coll != nil); err != nil {
+		return nil, err
+	}
 	if err := pol.Validate(); err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
 	}
@@ -746,6 +749,7 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	if d.Value != nil {
 		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
 		out.All, out.Where, out.Spread = d.Value.Policy.All, d.Value.Policy.Where, d.Value.Policy.Spread
+		out.History, out.SourcePath = historyPolicy(d.Value.Policy.History), d.Value.Source.Path
 		if cp := d.Value.Collection; cp != nil {
 			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
 			for k, f := range cp.Facets {
@@ -773,6 +777,11 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 		out.Head = &apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: h.Signer, HLC: h.HLC.String()}
 		if t, err := cid.Parse(h.Value.Target); err == nil {
 			out.Content = n.evalContent(c, name, t).cs
+			if d.Value != nil && d.Value.Policy.History != nil {
+				hs := histFor(c, name, d.Value)
+				a := n.evalTarget(c, name, t, &liveBind{id: hs.ret.ID, roots: hs.liveRoots()}).cs
+				out.Archive = &a
+			}
 		}
 	}
 	return out

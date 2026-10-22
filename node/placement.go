@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,7 @@ func (n *Local) replicaFor(c *cluster.Cluster) *replica.Manager {
 	}
 	cfg := replica.Config{Store: n.Store, Cluster: c, Self: n.PeerID(), Interval: ClusterInterval,
 		Ready: func(name string, target cid.CID) bool {
+			n.establishArchive(c, name)
 			return n.evalContent(c, name, target).cs.State == cluster.ReadyReady
 		},
 		Changed: func() {
@@ -135,6 +137,12 @@ func confirmations(cs []cluster.Confirmation) []apiv0.Confirmation {
 // evalContent evaluates readiness of target for dataset name in c (E5–E8) as this node
 // sees it, with its own sync state and protected versions.
 func (n *Local) evalContent(c *cluster.Cluster, name string, target cid.CID) evalOut {
+	return n.evalTarget(c, name, target, nil)
+}
+
+// evalTarget is evalContent, archive-wide over a live set when live is set: the owner set
+// is the union over the live versions and reports must be bound to the live set (E8).
+func (n *Local) evalTarget(c *cluster.Cluster, name string, target cid.CID, live *liveBind) evalOut {
 	v := c.View()
 	out := evalOut{now: c.Now(), fresh: cluster.DefaultFresh, evidence: map[wire.PeerID]cluster.Evidence{}}
 	cs := apiv0.ContentState{Target: target.String(), Mode: cluster.ModeOwned, Confirmed: []apiv0.Confirmation{}, Missing: []apiv0.MissingOwner{},
@@ -164,6 +172,20 @@ func (n *Local) evalContent(c *cluster.Cluster, name string, target cid.CID) eva
 		return out
 	}
 	owners, pl, known := m.Owners(name, target)
+	key := c.ID.String() + "/" + name
+	if live != nil {
+		cs.Live, key = live.id, key+"#live"
+		for _, r := range live.roots {
+			o, _, k := m.Owners(name, r)
+			known = known && k
+			for _, id := range o {
+				if !slices.Contains(owners, id) {
+					owners = append(owners, id)
+				}
+			}
+		}
+		slices.Sort(owners)
+	}
 	cs.Epoch = pl.Epoch
 	var svc *cluster.Service
 	if c.Mode() != cluster.ModeLocal {
@@ -183,12 +205,14 @@ func (n *Local) evalContent(c *cluster.Cluster, name string, target cid.CID) eva
 	}
 	p := m.Protected(name)
 	cs.Release = &apiv0.ReleaseState{Ready: p.Ready, Held: p.Held, Staged: p.Staged, Candidates: p.Retained}
-	key := c.ID.String() + "/" + name
 	n.reps.mu.Lock()
 	mark, was := n.reps.ready[key]
 	n.reps.mu.Unlock()
 	in := cluster.ReadyInput{Target: target.String(), Mode: cluster.ModeOwned, Policy: d.PolicyHash(), Epoch: pl.Epoch, Feasibility: pl.Feasible(),
 		Owners: owners, OwnersKnown: known, Evidence: out.evidence, Now: out.now, Fresh: out.fresh, WasReady: was && mark.target == target.String()}
+	if live != nil {
+		in.Live = live.id
+	}
 	if c.Mode() != cluster.ModeLocal {
 		in.Members = v.IsMember
 	}
@@ -282,7 +306,22 @@ func (n *Local) DatasetUpdate(ctx context.Context, scope, name string, req apiv0
 	} else if kind != "tree" && kind != "file" && kind != "blob" {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "kind must be tree, file or blob")
 	}
-	w, err := c.Write(cluster.Op{Collection: cluster.NSHead, RKey: name, Value: &cluster.Head{Target: target.String(), Kind: kind, Size: size, Note: req.Note}})
+	return n.writeHead(ctx, c, name, d, target, kind, size, req.Note, "")
+}
+
+// writeHead writes a head record and, for a dataset with history, its version record in
+// the same commit (restoredFrom names the version a rollback restores).
+func (n *Local) writeHead(ctx context.Context, c *cluster.Cluster, name string, d *cluster.Dataset, target cid.CID, kind string, size int64, note, restoredFrom string) (*apiv0.Dataset, error) {
+	ops := []cluster.Op{{Collection: cluster.NSHead, RKey: name, Value: &cluster.Head{Target: target.String(), Kind: kind, Size: size, Note: note}}}
+	var tid string
+	if d.Policy.History != nil {
+		op, _, t, err := n.versionOp(ctx, histFor(c, name, d), ops[0], target, kind, note, restoredFrom)
+		if err != nil {
+			return nil, writeErr(err)
+		}
+		ops, tid = append(ops, op), t
+	}
+	w, err := c.Write(ops...)
 	if err != nil {
 		return nil, writeErr(err)
 	}
@@ -293,6 +332,10 @@ func (n *Local) DatasetUpdate(ctx context.Context, scope, name string, req apiv0
 	md := n.ack(ctx, c, w)
 	out := n.datasetInfo(c, name)
 	out.Metadata = md
+	if tid != "" {
+		vi := n.versionInfo(ctx, histFor(c, name, d), tid)
+		out.Version = &vi
+	}
 	return out, nil
 }
 
@@ -310,7 +353,8 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := c.View().Dataset(name); !ok {
+	d, ok := c.View().Dataset(name)
+	if !ok {
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q in the %s cluster", name, scope)
 	}
 	target, err := cid.Parse(req.Target)
@@ -332,9 +376,18 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "a held wait needs at least one --holder")
 		}
 	case apiv0.WaitArchive:
-		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "archive-ready waits need version history, which is not implemented yet")
+		if d.Policy.History == nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "dataset %q keeps no version history; wait for ready instead", name)
+		}
 	default:
-		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown condition %q", cond).WithAction("use metadata, held or ready")
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown condition %q", cond).WithAction("use metadata, held, ready or archive-ready")
+	}
+	// An archive-ready wait binds to the live set current at its start (W1: never
+	// retargeted by later versions).
+	var live *liveBind
+	if cond == apiv0.WaitArchive {
+		hs := histFor(c, name, d)
+		live = &liveBind{id: hs.ret.ID, roots: hs.liveRoots()}
 	}
 	if req.Timeout != "" {
 		if timeout, err = time.ParseDuration(req.Timeout); err != nil || timeout < 0 {
@@ -357,7 +410,7 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 		deadline = t.C
 	}
 	for {
-		res, fail := n.waitEval(c, name, target, cond, holders, acks, req.Mode)
+		res, fail := n.waitEval(c, name, target, cond, holders, acks, req.Mode, live)
 		switch {
 		case res.Satisfied:
 			return res, nil
@@ -376,9 +429,9 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 
 // waitEval is one evaluation of a wait (W6: the same evaluation as status). fail is
 // non-empty when the condition cannot be met without a state change.
-func (n *Local) waitEval(c *cluster.Cluster, name string, target cid.CID, cond string, holders []wire.PeerID, acks int, mode string) (*apiv0.WaitResult, string) {
+func (n *Local) waitEval(c *cluster.Cluster, name string, target cid.CID, cond string, holders []wire.PeerID, acks int, mode string, live *liveBind) (*apiv0.WaitResult, string) {
 	v := c.View()
-	ev := n.evalContent(c, name, target)
+	ev := n.evalTarget(c, name, target, live)
 	res := &apiv0.WaitResult{ContentState: ev.cs, Condition: cond}
 	ts := target.String()
 	observed := false
@@ -453,7 +506,7 @@ func (n *Local) waitEval(c *cluster.Cluster, name string, target cid.CID, cond s
 		res.Satisfied = len(res.Missing) == 0
 		return res, ""
 	}
-	// ready
+	// ready, archive-ready
 	res.Satisfied = res.State == cluster.ReadyReady
 	if res.State == cluster.ReadyUnsatisfied {
 		return res, strings.Join(res.Unmet, "; ")

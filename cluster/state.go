@@ -76,6 +76,9 @@ type View struct {
 	// Heads holds every authorized signer's head record per dataset (union-head hook);
 	// Head picks the LWW winner.
 	Heads map[string]map[string]Signed[Head]
+	// Versions holds every authorized signer's version records per dataset and TID
+	// (name → tid → signer); VersionHistory merges them.
+	Versions map[string]map[string]map[string]Signed[Version]
 	// History and Drop hold the LWW winners' record CIDs (history's schema is another
 	// task); Drops holds the decoded drop records.
 	History, Drop map[string]Signed[cid.CID]
@@ -272,7 +275,7 @@ func Evaluate(g Genesis, src Repos, now time.Time, maxFuture time.Duration) *Vie
 				} else {
 					v.Ignored++
 				}
-			case NSHead, NSHistory:
+			case NSHead, NSHistory, NSVersion:
 				// decided below, once datasets are merged
 			default:
 				v.Ignored++
@@ -285,14 +288,19 @@ func Evaluate(g Genesis, src Repos, now time.Time, maxFuture time.Duration) *Vie
 			datasets[c.r.RKey] = c.r.Value.(*Dataset)
 		}
 	}
+	v.Versions = map[string]map[string]map[string]Signed[Version]{}
 	for _, s := range all {
 		for _, r := range s.recs {
-			if (r.Collection != NSHead && r.Collection != NSHistory) || r.HLC > limit {
+			if (r.Collection != NSHead && r.Collection != NSHistory && r.Collection != NSVersion) || r.HLC > limit {
 				continue
+			}
+			ds, tid := r.RKey, ""
+			if r.Collection == NSVersion {
+				ds, tid, _ = SplitVersionKey(r.RKey)
 			}
 			ok := admin(s.role)
 			if !ok && s.role == RoleWriter {
-				if d := datasets[r.RKey]; d != nil && slices.Contains(d.Writers, s.did) {
+				if d := datasets[ds]; d != nil && slices.Contains(d.Writers, s.did) {
 					ok = true
 				}
 			}
@@ -301,6 +309,16 @@ func Evaluate(g Genesis, src Repos, now time.Time, maxFuture time.Duration) *Vie
 				continue
 			}
 			c := cand{r: r, signer: s.did}
+			if r.Collection == NSVersion {
+				if v.Versions[ds] == nil {
+					v.Versions[ds] = map[string]map[string]Signed[Version]{}
+				}
+				if v.Versions[ds][tid] == nil {
+					v.Versions[ds][tid] = map[string]Signed[Version]{}
+				}
+				v.Versions[ds][tid][s.did] = signed[Version](c)
+				continue
+			}
 			consider(c)
 			if r.Collection == NSHead {
 				if heads[r.RKey] == nil {

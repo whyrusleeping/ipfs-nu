@@ -959,6 +959,30 @@ Not yet covered: collection floor placement (`replicas` > 0 on collections), E8 
 real partition in nutest (the fake-clock table covers the rule), and the Linux isolated
 lab with placement traffic.
 
+## Version history and archives (0047)
+
+Scaled to the v0-era test policy: a few fast tests per acceptance bullet (Linux only).
+
+| Bullet / rule | Test | Shows |
+|---|---|---|
+| One-copy archive preset, two versions, exact old bytes without PDS or other nodes | `node.TestOneNodeArchive`, `cmd/nu.TestCLIArchive` (daemonless) | `--archive` writes the default schedule with `replicas: 1`; `--source` imports the first version; `update` re-adds; `cat`/`get -o` of `<ds>@<tid|label|time>` return the old bytes; `/c/<ds>@<label>/<path>` redirects to `/tree/<cid>/<path>` |
+| R9 (E6), E8 archive-wide | `node.TestOneNodeArchive`, `cluster_test.TestClusterArchive` | one node: content and archive state `ready`, `required: 1`, one confirmation; two members (`replicas: 1`): `wait --condition archive-ready` needs both owners' live-set reports (`required: 2`) |
+| New incomplete version vs established availability (E8) | `cluster_test.TestClusterArchive` | a head whose content exists nowhere makes the archive not ready while the older version stays `retained-complete`; reading the new version is `unavailable`; the old one lists through placement |
+| Rollback as a new head | `TestOneNodeArchive`, `TestClusterArchive` | new head and version with `restored_from`; the restored version's identity and label unchanged; metadata and content are separate results |
+| Incomplete/never-replicated/pruned never claim retrieval; skipped versions | `node.TestArchiveRetentionAvailability` | a head with unheld content is `observed`, superseded outside the live set it is `skipped`; a pruned version is `pruned`, reads (by TID or by a time selecting it) and rollback fail `unavailable` naming it, never a neighbour |
+| Shared references prevent unsafe deletion; dry-run | same | the dry run lists the candidate with free and shared bytes and changes nothing; after prune and GC the other dataset and the live version still read the shared file; networked prune is dry-run only |
+| Labels and held copies survive budget pressure | `node.TestArchiveBudgetPressure` | an import over `store.limit` fails `insufficient_storage`; after GC the labeled and held versions are `retained-complete` and read |
+| Explicit missing-version reacquisition | `TestArchiveRetentionAvailability` | labeling pruned content fails without `--reacquire`; with it the version is live and still not retrievable until its content is complete again |
+| Immutable identity vs annotations, collisions, compaction | `cluster.TestVersionMerge` | an annotation copy merges by (hlc, signer); a later self-authored redefinition of the same TID is a reported conflict, never merged; a winning tombstone compacts; label syntax excludes TIDs and times |
+| Retention schedule, lookup without fallback | `cluster.TestRetainAndSelect` | GFS buckets from the newest version, labels and head always live, `max_bytes` drops the oldest unprotected and reports protected excess; deterministic live-set identity; a time before history is an error; a duplicated label is ambiguous |
+| Crash consistency | `TestOneNodeArchive` (restart) | head and version are one signed commit; history, labels and availability survive a restart |
+
+Not covered: macOS/APFS crash, sleep, Unicode and case tests (no macOS runner here;
+extraction's case/normalization collision handling is X1–X6), process kill between the
+import and the head write (the import is unpinned and falls to GC after the grace),
+authenticated import-manifest export (needs 0042's manifests) and historical identity
+evidence for external sources (0045, 0054).
+
 ## Release evidence
 
 Index results for [milestone](../spec.md#milestones) exits, the [operational acceptance

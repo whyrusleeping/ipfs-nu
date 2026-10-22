@@ -321,7 +321,8 @@ acknowledgment never implies stored content (E10).
   plus `condition`, `satisfied`, `superseded_by`, `metadata`). An unsatisfied wait is the
   error `timeout` (exit 6) or `failed` (policy unsatisfiable, holder not a member), with
   the result in `details.result`. A target no head names yet is unmet
-  (`target_not_observed`), not a failure. `archive-ready` is `not_supported` until history.
+  (`target_not_observed`), not a failure. `archive-ready` (datasets with history) is E6
+  over the live set current when the wait starts; the result carries `live`.
 - **Policy:** `DatasetCreateRequest` takes `replicas` or `all`, `where` (tag → values) and
   `spread` (`--replicas k|all --where zone=eu-1|eu-2 --spread zone`). A networked dataset
   with `replicas` > 1 and no `spread` gets `spread: zone` only when every eligible member
@@ -330,6 +331,40 @@ acknowledgment never implies stored content (E10).
 Writing without a suitable key is `forbidden`; a second cluster
 or a dataset name already used in either cluster is `conflict`. In private and isolated
 mode the daemon disables mDNS and gates its host to members from start-up.
+
+## Version history (0047)
+
+`node.HistoryNode` (`node.Local`, `client.Client`) carries archives and versions
+([cluster.md "Version history"](cluster.md#version-history)); both scopes, local routes
+shown (`/cluster/datasets/…` for the networked cluster):
+
+```text
+GET  /datasets/{name}/versions             DatasetVersions {history, live, live_bytes, excess_bytes?, archive, versions}
+GET  /datasets/{name}/diff?from=&to=       DatasetDiff {added, removed, changed, truncated?}
+POST /datasets/{name}/label    VersionLabelRequest {version, label?, note?, remove?, reacquire?} → VersionLabel
+POST /datasets/{name}/rollback RollbackRequest {version, note?} → Dataset (version: the appended one)
+POST /datasets/{name}/prune    PruneRequest {dry_run?} → PruneReport {candidates, free_bytes, shared_bytes, pruned?}
+nu [cluster] dataset create <ds> --archive|--mirror [--history keep_last=10,daily=30,…] [--source <dir>]
+nu [cluster] dataset update <ds> [<cid> | <dir>]     # no target: re-add the --source directory
+nu [cluster] dataset versions|diff|label|rollback|prune <ds> …
+```
+
+- `DatasetCreateRequest` takes `archive`, `mirror`, `history` (`HistoryPolicy`, counts
+  with `-1` = all) and `source_path`; `Dataset` reports `history`, `source_path`,
+  `archive` (archive-wide `ContentState` with `live`) and, after a head write or
+  rollback, `version`. A head write on a dataset with history writes the version record
+  in the same commit. The CLI imports a directory with an unpinned `add -r` and then
+  writes the head (the dataset's pins keep it); API clients do the same two steps.
+- A version selector is a TID, a label or a time (RFC 3339, or `YYYY-MM-DD` = end of
+  that day UTC; the newest version at or before it). Unknown versions are `not_found`, a
+  label on two versions `conflict`. `VersionInfo.availability` is one of
+  `retained-complete`, `fetching`, `observed`, `degraded`, `unknown`, `skipped`,
+  `pruned`; reads (`<ds>@<v>` in `get`/`cat`/`ls`, gateway `/c/`), rollback and labels of
+  a version that is not `retained-complete` are `unavailable` with `details.version` and
+  `details.availability` (labels pass with `reacquire`). A rollback to the current head
+  is `conflict`; a dataset without history is `invalid_argument`.
+- `prune` releases only on the local cluster; on a networked cluster it is
+  `not_supported` unless `dry_run` (0048). Released bytes go at the next store GC.
 
 ## Collections (0057)
 
@@ -480,6 +515,11 @@ These are the mechanics of rules G1–G9 of the
   not linked. The MASL header allowlist (D21, G10) is not applied yet.
 - **`/at/` routes** serve held atproto snapshots as inert JSON and listings; see
   [atproto records, snapshots and CARs](#atproto-records-snapshots-and-cars-0053).
+- **Datasets (0047).** `GET /c/<dataset>[@<version>][/<path>]` answers `302` (with
+  `Cache-Control: no-store` and `X-Nu-Root`) to `/tree/<root>/<path>`, so every read binds
+  to one immutable root under the bare origin's non-active rules; an unavailable version
+  is an error naming its availability, never another version. On `<cid>.localhost`, `/c/`
+  is an ordinary tree path.
 - **RASL (0052).** `GET`/`HEAD /.well-known/rasl/<cid>` serves one held object's bytes as
   stored (raw blob or DRISL node) through `gateway.ObjectContent` (`node/content`):
   `application/octet-stream`, `Content-Disposition: attachment`, `ETag`, immutable
@@ -582,8 +622,10 @@ A `rasl://<cid>/?hint=host…` target (parsed by `rasl.Parse`; the legacy
 `web+rasl://<cid>;host,host/` form is accepted) yields a CID target whose hint hosts
 become an HTTPS source for `get`, `cat` and `ls` ([D21](dasl.md#rasl)); the path is
 ignored. A CID-length string that does not parse (for example a dag-pb CID) is
-`invalid_argument` naming the accepted forms; so is anything else. Forms this build
-cannot act on (names, datasets) are `not_supported` with an action.
+`invalid_argument` naming the accepted forms; so is anything else. A dataset target
+resolves on the node to its head's root, or for `@<version>` to that version's root
+([Version history](#version-history-0047)); `get` binds its operation target to the
+resolved CID. Names are `not_supported` with an action.
 
 ## CLI
 

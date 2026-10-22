@@ -22,10 +22,26 @@ import (
 )
 
 // Content reads trees, file nodes and blobs from a store.
-type Content struct{ st *store.Store }
+type Content struct {
+	st       *store.Store
+	datasets func(ctx context.Context, name, version string) (string, error)
+}
+
+// SetDatasets installs the dataset lookup the gateway's /c/ route uses (the node sets it).
+func (c *Content) SetDatasets(fn func(ctx context.Context, name, version string) (string, error)) {
+	c.datasets = fn
+}
 
 // New returns content served from st.
 func New(st *store.Store) *Content { return &Content{st: st} }
+
+// ResolveDataset implements gateway.DatasetContent through the node's lookup.
+func (g gw) ResolveDataset(ctx context.Context, name, version string) (string, error) {
+	if g.c.datasets == nil {
+		return "", apiv0.NotImplemented("datasets on the gateway")
+	}
+	return g.c.datasets(ctx, name, version)
+}
 
 // Node is a resolved object.
 type Node struct {

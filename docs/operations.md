@@ -202,6 +202,15 @@ per blob, decided locally by the member holding it, and only under all of the fo
   it. Evidence: [validation](validation.md#placement-and-readiness-0046).
 - **0047 (presets and history)**: E8 archive-wide readiness over the live-set root, R9,
   and version availability reported separately from readiness.
+  Implemented with these readings: the live-set root is the live-set identity of
+  [Retention](cluster.md#version-history) (a CID over the live versions' TIDs and roots),
+  carried as report `live` with `incomplete` TIDs; `complete` keeps covering the head, so
+  head readiness and archive-wide readiness (`Dataset.archive`, `wait --condition
+  archive-ready`, bound to the live set current when the wait starts) are separate
+  results. A version once covered by an archive-ready evaluation (or complete on a
+  one-node cluster) stays `retained-complete` while a newer version is incomplete, turns
+  `degraded` when a fresh owner report lists it incomplete and `unknown` when owner
+  evidence is stale. Evidence: [validation](validation.md#version-history-and-archives-0047).
 - **0048 (repair, handoff, audits)**: S1–S4, S6, S8 enabling `release.auto`; E9; R10–R14,
   R16, R18, R20 passing in nutest with partitions and a fake clock before automatic
   release ships. Until then every release is dry-run only.

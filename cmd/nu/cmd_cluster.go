@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/node/target"
 )
 
 // clusterNode returns the node as a node.ClusterNode (both the client and node.Local are).
@@ -150,8 +152,20 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 			fmt.Fprintf(w, "  writer head %s by %s\n", h.Target, h.Signer)
 		}
 	}
+	if d.History != nil {
+		printHistoryPolicy(w, d.History)
+	}
+	if d.SourcePath != "" {
+		fmt.Fprintf(w, "  source: %s\n", d.SourcePath)
+	}
+	if d.Version != nil {
+		printVersion(w, *d.Version)
+	}
 	printMetadata(w, d.Metadata)
 	printContent(w, d.Content)
+	if a := d.Archive; a != nil {
+		fmt.Fprintf(w, "archive-wide (live set %.16s): %s, %d of %d owner(s) confirmed\n", a.Live, a.State, len(a.Confirmed), a.Required)
+	}
 }
 
 // printContent prints a content status with its W3 fields.
@@ -210,7 +224,7 @@ func datasetCommands(scope string) []*command {
 		}
 		return e.clusterNet(ctx)
 	}
-	return []*command{
+	return append([]*command{
 		{
 			name:    "create",
 			args:    "<name> [--replicas k] [--writer did]... [--note text] [--collection --facets facets.toml [--expire facet=400d] [--merge union|lww] [--ingest-hosts h,…] [--ingest-attempts n] [--ingest-timeout 2h] [--ingest-max-size 1T]]",
@@ -250,6 +264,10 @@ func datasetCommands(scope string) []*command {
 				fs.Int64Var(&ingest.Attempts, "ingest-attempts", 0, "fetch attempts per item URL file (default 6)")
 				fs.StringVar(&ingest.Timeout, "ingest-timeout", "", "time limit per fetch attempt (default 2h)")
 				ingestMax := fs.String("ingest-max-size", "", "size limit per item URL file (default 1T)")
+				archive := fs.Bool("archive", false, "archive preset: keep versions under the default retention schedule (see --history)")
+				mirror := fs.Bool("mirror", false, "mirror preset: follow current state with the protected-version safeguard")
+				hist := fs.String("history", "", "retention schedule, e.g. keep_last=10,daily=30,monthly=12,yearly=all[,max_bytes=1T] (implies --archive)")
+				source := fs.String("source", "", "directory `"+nu.Name+" dataset update <name>` re-adds; imported now as the first version")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
@@ -290,9 +308,29 @@ func datasetCommands(scope string) []*command {
 				if len(ingest.Hosts) > 0 || ingest.MaxBytes != 0 || ingest.Attempts != 0 || ingest.Timeout != "" {
 					req.Ingest = &ingest
 				}
+				req.Archive, req.Mirror = *archive, *mirror
+				if *hist != "" {
+					if req.History, err = parseHistory(*hist); err != nil {
+						return usagef("--history: %v", err)
+					}
+				}
+				if *source != "" {
+					if req.SourcePath, err = filepath.Abs(*source); err != nil {
+						return err
+					}
+				}
 				d, err := c.DatasetCreate(ctx, scope, req)
 				if err != nil {
 					return err
+				}
+				if req.SourcePath != "" { // the first version
+					root, err := importSource(ctx, e, c, req.SourcePath)
+					if err != nil {
+						return err
+					}
+					if d, err = c.DatasetUpdate(ctx, scope, d.Name, apiv0.DatasetUpdateRequest{Target: root}); err != nil {
+						return err
+					}
 				}
 				return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 			},
@@ -325,8 +363,8 @@ func datasetCommands(scope string) []*command {
 		},
 		{
 			name:    "update",
-			args:    "<name> <cid> [--kind tree|file|blob] [--note text]",
-			summary: "write a dataset's head; reports metadata acknowledgment and content readiness separately",
+			args:    "<name> [<cid> | <dir>] [--kind tree|file|blob] [--note text]",
+			summary: "write a dataset's head (a CID, or a directory imported first; without one the dataset's --source); metadata and content are reported separately",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				kind := fs.String("kind", "", "head kind (default: detected from held content)")
@@ -334,14 +372,30 @@ func datasetCommands(scope string) []*command {
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
-				if fs.NArg() != 2 {
-					return usagef("dataset update needs a name and a target CID")
+				if fs.NArg() != 1 && fs.NArg() != 2 {
+					return usagef("dataset update needs a name and a target CID or directory")
 				}
 				c, err := get(e, ctx)
 				if err != nil {
 					return err
 				}
-				d, err := c.DatasetUpdate(ctx, scope, fs.Arg(0), apiv0.DatasetUpdateRequest{Target: fs.Arg(1), Kind: *kind, Note: *note})
+				tgt := fs.Arg(1)
+				if tgt == "" { // re-add the recorded source
+					cur, err := c.Dataset(ctx, scope, fs.Arg(0))
+					if err != nil {
+						return err
+					}
+					if cur.SourcePath == "" {
+						return usagef("dataset %s has no --source directory; give a CID or a directory", fs.Arg(0))
+					}
+					tgt = cur.SourcePath
+				}
+				if !target.IsCID(tgt) {
+					if tgt, err = importSource(ctx, e, c, tgt); err != nil {
+						return err
+					}
+				}
+				d, err := c.DatasetUpdate(ctx, scope, fs.Arg(0), apiv0.DatasetUpdateRequest{Target: tgt, Kind: *kind, Note: *note})
 				if err != nil {
 					return err
 				}
@@ -350,7 +404,7 @@ func datasetCommands(scope string) []*command {
 		},
 		{
 			name:    "wait",
-			args:    "<name> <cid> [--condition ready|held|metadata] [--holder peer]... [--acks n] [--timeout 10m]",
+			args:    "<name> <cid> [--condition ready|held|metadata|archive-ready] [--holder peer]... [--acks n] [--timeout 10m]",
 			summary: "wait for one condition on an exact target (exit 6 on timeout); the result names what is still missing",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
@@ -402,7 +456,7 @@ func datasetCommands(scope string) []*command {
 				return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 			},
 		},
-	}
+	}, historyCommands(scope, get)...)
 }
 
 var cmdDataset = &command{

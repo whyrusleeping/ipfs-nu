@@ -157,8 +157,11 @@ network source. The physical estimate excludes database/DRISL overhead and may o
 shared blobs. A Kubo repo is inventoried with `ipfs pin ls --type recursive --enc`; each
 selected root is exported using `ipfs dag export <root> > root.car` and imported as a separate
 operation. Nu does not directly open the Kubo repo or automate pinset enumeration in this
-version. Operation request/stage/result survive daemon restarts; interrupted CAR jobs replay
-from the CAR and reuse deterministic store objects. Production
+version. Operation request/stage/result survive daemon restarts. During conversion each original source
+block is verified and atomically checkpointed under the operation directory before it can be
+used; resumed CAR and Bitswap jobs revalidate and reuse these block checkpoints. A CAR archive
+is still parsed into a temporary index on each restart (so the archive file itself is reread),
+but verified source blocks are not requested from the CAR/Bitswap source again. Production
 Linux/macOS builds include the bridge; minimal builds expose an explicit unavailable-feature
 result.
 

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -47,6 +50,33 @@ func (s *sink) AddBlob(r io.Reader, size int64) (cid.CID, error) {
 	}
 	return c, e
 }
+func TestCheckpointSourceSurvivesRestartAndVerifies(t *testing.T) {
+	data := []byte("checkpoint")
+	digest := sha256.Sum256(data)
+	id := IPFSCID{Version: 1, Codec: codecRaw, Hash: hashSHA256, Digest: digest}
+	dir := t.TempDir()
+	upstream := memBlocks{id: data}
+	first := CheckpointSource{Dir: dir, Upstream: upstream}
+	if got, err := first.GetBlock(context.Background(), id); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("first fetch: %q %v", got, err)
+	}
+	second := CheckpointSource{Dir: dir} // restarted job has no need to reread/refetch this block
+	if got, err := second.GetBlock(context.Background(), id); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("resume: %q %v", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, checkpointFilename(id)), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.GetBlock(context.Background(), id); err == nil {
+		t.Fatal("corrupt cache accepted without upstream")
+	}
+}
+
+func checkpointFilename(id IPFSCID) string {
+	key := sha256.Sum256(id.Bytes())
+	return hex.EncodeToString(key[:]) + ".block"
+}
+
 func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	blocks := memBlocks{}
 	add := func(codec uint64, b []byte) IPFSCID {

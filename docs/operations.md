@@ -773,6 +773,11 @@ required by the named task before it ships.
   the site-origin and unheld cases), DID documents and PDS endpoints go through the
   `httpsrc` policy (`atproto.TestFetch` refuses a private PDS address). Independent
   review pending.
+- **0054 (atproto archives)**: P2/P4 for atrepo datasets as [D21](dasl.md#atproto-accounts-as-archive-datasets)
+  decides: third-party history private by default, current state only while active,
+  `publish_history`/own-account override recorded on the dataset. Implemented at
+  `share` and `public add` (`node.TestAtrepoArchiveDataset`); no public `/at/` route
+  exists, so no atrepo content is public in this build.
 - **0055 (MASL bundles)**: G10 in full, N27, bundle rendering only on site origins,
   `.tile` headers through the same allowlist.
 - **First name route** (names track): G5 label encoding and N26 before any name path

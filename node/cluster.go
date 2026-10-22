@@ -676,6 +676,16 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 	if err := presetPolicy(req, &pol, &src, coll != nil); err != nil {
 		return nil, err
 	}
+	if req.SourceAt != "" {
+		if coll != nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "an atproto source is not a collection")
+		}
+		if err := n.atrepoSource(ctx, req, &src); err != nil {
+			return nil, err
+		}
+	} else if req.Blobs || req.PublishHistory || len(req.NSIDs) > 0 {
+		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "--nsids, --blobs and --publish-history apply to --source at://<account>")
+	}
 	if err := pol.Validate(); err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err)
 	}
@@ -706,6 +716,16 @@ func (n *Local) DatasetCreate(ctx context.Context, scope string, req apiv0.Datas
 			return nil, writeErr(err)
 		}
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "cannot write the dataset record: %v", err)
+	}
+	if src.Atrepo != "" {
+		// The first version now (like --source <dir>); a failure leaves the dataset for
+		// the poll loop and is reported, not fatal.
+		dd, _ := c.View().Dataset(req.Name)
+		n.refreshAtrepo(ctx, c, req.Name, dd)
+		if s := n.atrepoGet(req.Name); s.err != "" {
+			warnings = append(warnings, "initial fetch failed: "+s.err)
+		}
+		n.names.wake()
 	}
 	d := n.datasetInfo(c, req.Name)
 	d.Metadata = n.ack(ctx, c, w)
@@ -756,6 +776,9 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 		if d.Value.Source.Name != "" {
 			out.Source, out.SourceName = "name", d.Value.Source.Name
 		}
+		if d.Value.Source.Atrepo != "" {
+			out.Source, out.Atrepo = "atrepo", n.atrepoInfo(c, name, d.Value)
+		}
 		if cp := d.Value.Collection; cp != nil {
 			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
 			for k, f := range cp.Facets {
@@ -776,11 +799,12 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 		if h.Deleted {
 			continue
 		}
-		out.Heads = append(out.Heads, apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: did, HLC: h.HLC.String()})
+		out.Heads = append(out.Heads, datasetHead(h.Value, did, h.HLC.String()))
 	}
 	slices.SortFunc(out.Heads, func(a, b apiv0.DatasetHead) int { return cmpStr(a.Signer, b.Signer) })
 	if h, ok := v.Head(name); ok {
-		out.Head = &apiv0.DatasetHead{Target: h.Value.Target, Kind: h.Value.Kind, Signer: h.Signer, HLC: h.HLC.String()}
+		out.Head = new(apiv0.DatasetHead)
+		*out.Head = datasetHead(h.Value, h.Signer, h.HLC.String())
 		t, err := cid.Parse(h.Value.Target)
 		if d.Value != nil && d.Value.Collection != nil {
 			// Collection readiness binds to the merged catalog root (floor placement).
@@ -799,6 +823,14 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 				out.Archive = &a
 			}
 		}
+	}
+	return out
+}
+
+func datasetHead(h *cluster.Head, signer, hlc string) apiv0.DatasetHead {
+	out := apiv0.DatasetHead{Target: h.Target, Kind: h.Kind, Signer: signer, HLC: hlc, Status: h.Status}
+	if h.Observed != nil {
+		out.Rev = h.Observed.Rev
 	}
 	return out
 }

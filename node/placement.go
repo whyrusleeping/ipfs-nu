@@ -322,6 +322,22 @@ func (n *Local) DatasetUpdate(ctx context.Context, scope, name string, req apiv0
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q is a collection: its heads come from item pushes", name).
 			WithAction("push items (`" + nu.Name + " cluster collection put`)")
 	}
+	if d.Source.Atrepo != "" {
+		if req.Target != "" {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%q archives %s: its heads are verified commits from the PDS", name, d.Source.Atrepo).
+				WithAction("run `" + nu.Name + " dataset update " + name + "` without a target to fetch now")
+		}
+		n.refreshAtrepo(ctx, c, name, d)
+		out := n.datasetInfo(c, name)
+		if s := n.atrepoGet(name); s.err != "" {
+			return out, apiv0.Errorf(apiv0.CodeUnavailable, "update of %s failed: %s", d.Source.Atrepo, s.err)
+		}
+		if hs := histFor(c, name, d); hs.headTID != "" {
+			vi := n.versionInfo(ctx, hs, hs.headTID)
+			out.Version = &vi
+		}
+		return out, nil
+	}
 	target, err := cid.Parse(req.Target)
 	if err != nil {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "bad target %q: %v", req.Target, err)

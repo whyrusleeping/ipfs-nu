@@ -34,16 +34,19 @@ const (
 // the live set and why, and its availability as this node sees it. Conflicts lists
 // records that tried to redefine the version (never merged into it).
 type VersionInfo struct {
-	TID          string            `json:"tid"`
-	Time         time.Time         `json:"time"`
-	Root         string            `json:"root"`
-	Kind         string            `json:"kind"`
-	Parent       string            `json:"parent,omitempty"`
-	Author       string            `json:"author"`
-	Files        int64             `json:"files"`
-	Bytes        int64             `json:"bytes"`
-	NewBytes     int64             `json:"new_bytes"`
-	RestoredFrom string            `json:"restored_from,omitempty"`
+	TID          string    `json:"tid"`
+	Time         time.Time `json:"time"`
+	Root         string    `json:"root"`
+	Kind         string    `json:"kind"`
+	Parent       string    `json:"parent,omitempty"`
+	Author       string    `json:"author"`
+	Files        int64     `json:"files"`
+	Bytes        int64     `json:"bytes"`
+	NewBytes     int64     `json:"new_bytes"`
+	RestoredFrom string    `json:"restored_from,omitempty"`
+	// Rev and Commit are an observed version's source commit (names, atrepo).
+	Rev          string            `json:"rev,omitempty"`
+	Commit       string            `json:"commit,omitempty"`
 	Label        string            `json:"label,omitempty"`
 	Note         string            `json:"note,omitempty"`
 	AnnotatedBy  string            `json:"annotated_by,omitempty"`

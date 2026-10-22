@@ -53,11 +53,25 @@ func (c *Content) Snapshots(did string) ([]Snapshot, error) {
 	}
 	prefix := SnapshotPinName(did, "")
 	var out []Snapshot
+	seen := map[cid.CID]bool{}
 	for _, p := range pins {
-		if p.Mode != store.Recursive || !strings.HasPrefix(p.Profile, "atrepo") || !strings.HasPrefix(p.Name, prefix) {
+		if p.Mode != store.Recursive || !strings.HasPrefix(p.Profile, "atrepo") || seen[p.CID] {
 			continue
 		}
-		out = append(out, Snapshot{DID: did, Rev: strings.TrimPrefix(p.Name, prefix), Commit: p.CID, Profile: p.Profile})
+		switch {
+		case strings.HasPrefix(p.Name, prefix):
+			seen[p.CID] = true
+			out = append(out, Snapshot{DID: did, Rev: strings.TrimPrefix(p.Name, prefix), Commit: p.CID, Profile: p.Profile})
+		case strings.HasPrefix(p.Name, "dataset/"):
+			// An atrepo dataset's head or retained version (0054): the commit names its
+			// account and rev.
+			if data, err := c.st.Get(p.CID); err == nil {
+				if com, err := atrepo.DecodeCommit(data); err == nil && com.DID == did {
+					seen[p.CID] = true
+					out = append(out, Snapshot{DID: did, Rev: com.Rev, Commit: p.CID, Profile: p.Profile})
+				}
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Rev > out[j].Rev })
 	return out, nil
@@ -167,9 +181,29 @@ func RecordJSON(data []byte) ([]byte, error) {
 	return drisl.ToJSON(v)
 }
 
-// gateway.AtContent.
+// gateway.AtContent and AtDatasetContent.
 
-var _ gateway.AtContent = gw{}
+var (
+	_ gateway.AtContent        = gw{}
+	_ gateway.AtDatasetContent = gw{}
+)
+
+// AtLocation redirects /c/ of an atrepo dataset root to /at/<did>@<rev>/ (0054).
+func (g gw) AtLocation(ctx context.Context, root string) (string, bool) {
+	c, err := cid.Parse(root)
+	if err != nil || c.Codec() != cid.DRISL {
+		return "", false
+	}
+	data, err := g.c.st.Get(c)
+	if err != nil {
+		return "", false
+	}
+	com, err := atrepo.DecodeCommit(data)
+	if err != nil {
+		return "", false
+	}
+	return "/at/" + com.DID + "@" + com.Rev + "/", true
+}
 
 func (g gw) AtSnapshot(ctx context.Context, did, rev string) (*gateway.AtSnapshot, error) {
 	s, err := g.c.Snapshot(did, rev)

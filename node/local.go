@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,8 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/atproto"
+	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/gateway"
@@ -283,6 +286,13 @@ func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
 	if isAt(t) {
 		return n.atCat(ctx, t)
 	}
+	if pt, root, r, d, ok := n.atrepoTarget(ctx, t); ok {
+		js, err := n.atrepoRecord(r, root, d, pt.Path)
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(bytes.NewReader(js)), nil
+	}
 	nd, _, _, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
 		return nil, err
@@ -296,6 +306,13 @@ func (n *Local) Cat(ctx context.Context, t string) (io.ReadCloser, error) {
 func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
 	if isAt(t) {
 		return n.atLs(ctx, t)
+	}
+	if pt, root, r, d, ok := n.atrepoTarget(ctx, t); ok {
+		label := pt.Dataset + "@" + r.Head.Rev
+		if pt.Path != "" {
+			label += "/" + pt.Path
+		}
+		return n.atrepoListing(r, root, d, pt.Path, label)
 	}
 	nd, root, p, err := n.resolveOrFetch(ctx, t)
 	if err != nil {
@@ -318,12 +335,44 @@ func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
 	return l, nil
 }
 
+// atrepoTarget resolves a dataset target whose root is an atproto commit (an atrepo
+// dataset's head or version) for browsing by <collection>/<rkey> (0054).
+func (n *Local) atrepoTarget(ctx context.Context, t string) (target.Target, cid.CID, *atrepo.Repo, *cluster.Dataset, bool) {
+	pt, err := target.Parse(t)
+	if err != nil || pt.Kind != target.KindDataset {
+		return pt, cid.CID{}, nil, nil, false
+	}
+	d := n.datasetOf(pt.Dataset)
+	if d == nil || d.Source.Atrepo == "" {
+		return pt, cid.CID{}, nil, nil, false
+	}
+	root, err := n.resolveDataset(ctx, pt)
+	if err != nil {
+		return pt, cid.CID{}, nil, nil, false
+	}
+	r, ok := n.atrepoRoot(root)
+	return pt, root, r, d, ok
+}
+
 // pinFor is the explicit pin of c: recursive under the nu-tree profile for structure,
 // direct for a raw blob.
 func pinFor(c cid.CID, name string) store.Pin {
 	p := store.Pin{CID: c, Mode: store.Recursive, Profile: "nu-tree", Source: store.SourceExplicit, Name: name}
 	if c.Codec() == cid.Raw {
 		p.Mode = store.Direct
+	}
+	return p
+}
+
+// pinOf is pinFor with the walk profile detected from the held root block: an atproto
+// commit walks under atrepo (records are leaves; blobs are not required), everything
+// else under nu-tree.
+func (n *Local) pinOf(c cid.CID) store.Pin {
+	p := pinFor(c, "")
+	if c.Codec() == cid.DRISL {
+		if data, err := n.Store.Get(c); err == nil && detectProfile(c, data) == apiv0.ProfileAtrepo {
+			p.Profile = apiv0.ProfileAtrepo
+		}
 	}
 	return p
 }

@@ -324,6 +324,33 @@ head:   { target: "<commit cid>", kind: "atrepo", rev, … }
 - Records and repositories are untrusted input. Budgets bound records, MST node count and
   depth, blob bytes and request rates per account and per PDS host.
 
+Decided in 0054 (mechanics in [api.md](api.md#atproto-accounts-as-datasets-0054)):
+
+- Updates are polling only (startup, `follow.poll`, on demand): Nu does not consume
+  Jetstream or a firehose for dataset ingest. Each update asks `getRepoStatus` first, then
+  applies `getRepo?since=<held rev>` with `ApplySince`; any failure to apply the diff
+  (missing block, unknown rev, migration) falls back to a full export, and a signature
+  failure re-resolves the identity once (key rotation) before giving up.
+- A version is the verified commit (`kind: atrepo`, `observed: {rev, commit}`) under the
+  dataset's retention schedule; `nsids` scope which record changes make a version and
+  what `ls`/`diff` show, while the stored commit is always the whole verified repository
+  (a partial MST is not verifiable). Blobs (`blobs: true`) are taken from the changed
+  records' refs; oversized and failed ones are counted in status, never fatal, and never
+  make a version incomplete (completeness is structure and records).
+- Account status lives on the head (`status`), written by the fetching admin so every
+  member applies the same rule: `redistribution` is `unrestricted` for an account the
+  operator is logged in to at create time (`own`) or with the recorded
+  `publish_history` override, `current-only` for an active third-party account and
+  `private` once it is deactivated, taken down, suspended or deleted. Enforced at `share`
+  and `public add`; the loopback gateway, `/nu/bytes/1` to members and CAR export are
+  local or cluster use and stay available. Public serving of an atrepo head needs a
+  public `/at/` route, which does not exist yet (P4), so nothing of an atrepo dataset is
+  public in this build.
+- Not yet: cluster replication of atrepo datasets over `/nu/tree/1` (members other than
+  the fetching admin hold only what `/nu/bytes/1` brings them block by block; the
+  protocol walks nu-tree only), firehose `#commit` application, per-collection
+  retention.
+
 ## Details still to specify
 
 - Whether oversized atproto blobs (video) need an archive path. The 8 MiB whole-object

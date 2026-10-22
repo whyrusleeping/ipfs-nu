@@ -3,6 +3,7 @@ package atproto
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/car"
 	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/httpsrc"
 )
 
@@ -211,6 +213,74 @@ func (c *Client) GetRepo(ctx context.Context, id *Identity, st atrepo.Store, pro
 	return &Snapshot{DID: id.DID, Handle: id.Handle, PDS: id.PDS, Commit: root, Rev: repo.Head.Rev, Repo: repo, Stats: stats, Bytes: count.n}, nil
 }
 
+// RepoStatus is com.atproto.sync.getRepoStatus: whether the account is active on its
+// PDS, its status when not (deactivated, takendown, suspended, deleted) and the PDS's
+// current rev (0054 account status handling).
+type RepoStatus struct {
+	DID    string `json:"did"`
+	Active bool   `json:"active"`
+	Status string `json:"status,omitempty"`
+	Rev    string `json:"rev,omitempty"`
+}
+
+// RepoStatus fetches id's account status from its PDS. A PDS that no longer knows the
+// account (RepoNotFound) reports it deleted.
+func (c *Client) RepoStatus(ctx context.Context, id *Identity) (*RepoStatus, error) {
+	release, err := c.acquire(ctx, id.PDS)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	body, err := c.get(ctx, xrpc(id.PDS, "com.atproto.sync.getRepoStatus", url.Values{"did": {id.DID}}), 4096, nil)
+	var se *httpsrc.StatusError
+	if errors.As(err, &se) && (se.Code == 400 || se.Code == 404) {
+		return &RepoStatus{DID: id.DID, Status: "deleted"}, nil
+	}
+	if err != nil {
+		return nil, pdsError(id, "getRepoStatus", err)
+	}
+	var st RepoStatus
+	if err := json.Unmarshal(body, &st); err != nil || st.DID != id.DID {
+		return nil, verifyError(id, "repository status", fmt.Errorf("malformed getRepoStatus answer"))
+	}
+	if !st.Active && st.Status == "" {
+		st.Status = "deactivated"
+	}
+	return &st, nil
+}
+
+// GetRepoSince fetches com.atproto.sync.getRepo?since=<rev> and applies it to the held
+// verified tree prevData (atrepo.ApplySince): the new commit is verified and every
+// changed node and record validated; the used diff blocks are written to st. A broken
+// chain (the diff lacks a block the held tree needs) is returned as atrepo.ErrChainBreak
+// so the caller can fall back to GetRepo.
+func (c *Client) GetRepoSince(ctx context.Context, id *Identity, since string, st atrepo.Store, prevData cid.CID) (*atrepo.Applied, error) {
+	release, err := c.acquire(ctx, id.PDS)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	var buf bytes.Buffer
+	if _, err := c.http.Fetch(ctx, xrpc(id.PDS, "com.atproto.sync.getRepo", url.Values{"did": {id.DID}, "since": {since}}),
+		func(int64) (io.Writer, error) { buf.Reset(); return &buf, nil },
+		httpsrc.Options{MaxBytes: c.cfg.Limits.RepoBytes, Timeout: c.cfg.Limits.RepoTimeout, IdleTimeout: c.cfg.Limits.Timeout}); err != nil {
+		return nil, pdsError(id, "getRepo?since", err)
+	}
+	a, err := atrepo.ApplySince(st, prevData, bytes.NewReader(buf.Bytes()), atrepo.VerifyOptions{DID: id.DID, Key: id.Key, Now: c.cfg.Now()})
+	if errors.Is(err, mst.ErrNotFound) {
+		return nil, fmt.Errorf("%w: %v", atrepo.ErrChainBreak, err)
+	}
+	if err != nil {
+		return nil, verifyError(id, "repository diff since "+since, err)
+	}
+	for _, b := range a.Blocks {
+		if err := st.Put(b.CID, b.Data); err != nil {
+			return nil, err
+		}
+	}
+	return a, nil
+}
+
 type countingWriter struct {
 	w        io.Writer
 	n        int64
@@ -272,7 +342,8 @@ func pdsError(id *Identity, method string, err error) error {
 
 func verifyError(id *Identity, what string, err error) error {
 	return apiv0.Errorf(apiv0.CodeFailed, "%s of %s from %s does not verify: %v", what, id.DID, id.PDS, err).
-		WithAction("the PDS served data that does not match the DID document's signing key or the repository structure; nothing was trusted")
+		WithAction("the PDS served data that does not match the DID document's signing key or the repository structure; nothing was trusted").
+		WithCause(err)
 }
 
 // Limits returns the effective limits.

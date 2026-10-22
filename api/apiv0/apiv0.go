@@ -128,7 +128,18 @@ type Error struct {
 	Message string         `json:"message"`
 	Action  string         `json:"action,omitempty"`
 	Details map[string]any `json:"details,omitempty"`
+
+	cause error // in-process only: errors.Is/As see through the envelope
 }
+
+// WithCause returns a copy of e that unwraps to cause (never serialized).
+func (e *Error) WithCause(cause error) *Error {
+	c := *e
+	c.cause = cause
+	return &c
+}
+
+func (e *Error) Unwrap() error { return e.cause }
 
 // Envelope is the JSON body of every error response: {"error": {...}}.
 type Envelope struct {

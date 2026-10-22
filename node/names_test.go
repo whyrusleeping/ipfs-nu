@@ -191,6 +191,35 @@ func TestNamesPublishResolveFollow(t *testing.T) {
 		t.Fatalf("follows after unfollow: %+v", fs)
 	}
 
+	// Quota stop preserves the held view: a follow with max_size holds a small blob;
+	// a larger publication (by its size claim) pauses it with `quota`, the held root
+	// stays, and a publication back within the quota resumes.
+	small, _ := add(t, n, apiv0.AddRequest{Path: writeTemp(t, []byte("abc")), Raw: true})
+	if _, err := n.Publish(ctx, apiv0.PublishRequest{Name: "blob", Target: small.CID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := n.Follow(ctx, apiv0.FollowRequest{Target: atfix.PubDID + "/blob", Dataset: "blob", MaxSize: 4}); err != nil {
+		t.Fatal(err)
+	}
+	*fl = waitFollow("held", small.CID)
+	big, _ := add(t, n, apiv0.AddRequest{Path: writeTemp(t, []byte("abcdefghij")), Raw: true})
+	if _, err := n.Publish(ctx, apiv0.PublishRequest{Name: "blob", Target: big.CID}); err != nil {
+		t.Fatal(err)
+	}
+	fs, _ = n.FollowRefresh(ctx, apiv0.FollowRefreshRequest{Dataset: "blob"})
+	if fs[0].State != "paused" || !strings.Contains(fs[0].Detail, "quota") || fs[0].Held == nil || fs[0].Held.Target != small.CID {
+		t.Fatalf("quota pause: %+v", fs[0])
+	}
+	if _, err := n.Publish(ctx, apiv0.PublishRequest{Name: "blob", Target: small.CID}); err != nil {
+		t.Fatal(err)
+	}
+	if fs, _ = n.FollowRefresh(ctx, apiv0.FollowRefreshRequest{Dataset: "blob"}); fs[0].State != "held" {
+		t.Fatalf("after resume: %+v", fs[0])
+	}
+	if _, err := n.Unfollow(ctx, "blob"); err != nil {
+		t.Fatal(err)
+	}
+
 	// Node registration and devices.
 	nr, err := n.NodeRegister(ctx, apiv0.NodeRegisterRequest{Label: "laptop", Seed: true})
 	if err != nil || !nr.Self || nr.Peer != n.PeerID().Base36() {
@@ -199,6 +228,9 @@ func TestNamesPublishResolveFollow(t *testing.T) {
 	dl, err := n.Devices(ctx, "")
 	if err != nil || len(dl.Devices) != 1 || dl.Devices[0].Label != "laptop" || !dl.Devices[0].Self || len(dl.Devices[0].Roles) != 2 {
 		t.Fatalf("devices: %+v %v", dl, err)
+	}
+	if _, err := n.Unpublish(ctx, "blob", ""); err != nil {
+		t.Fatal(err)
 	}
 	names, err := n.Names(ctx, "")
 	if err != nil || len(names.Names) != 0 {

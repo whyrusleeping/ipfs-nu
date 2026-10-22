@@ -9,6 +9,8 @@ package extract
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"iter"
@@ -71,13 +73,48 @@ const (
 // reused. Any symlink met while descending into dest is an error, so a hostile tree or a
 // previously extracted tree cannot redirect writes outside dest. A walk whose root
 // entry (Path "") is a file is written to dest itself, which must not be a directory.
+//
+// The walk is iterated twice: once to validate every path (X1: a tree with any unsafe
+// path is refused before anything is written), then to write. Every write goes through
+// an os.Root at dest, so a symlink swapped into the destination while the extraction
+// runs still cannot redirect a write outside it (0077).
 func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 	dest, err := filepath.Abs(dest)
 	if err != nil {
 		return nil, err
 	}
 	rep := &Report{}
-	rootPrepared := false
+	for e, err := range walk {
+		if err != nil {
+			return rep, err
+		}
+		if err := ctx.Err(); err != nil {
+			return rep, err
+		}
+		if _, err := safeRelPath(e.Path); err != nil {
+			return rep, err
+		}
+	}
+	var root *os.Root
+	defer func() {
+		if root != nil {
+			root.Close()
+		}
+	}()
+	openDest := func() error {
+		if root != nil {
+			return nil
+		}
+		if err := ensureDir(nil, dest, true); err != nil {
+			return err
+		}
+		r, err := os.OpenRoot(dest)
+		if err != nil {
+			return err
+		}
+		root = r
+		return nil
+	}
 	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}}
 	for e, err := range walk {
 		if err != nil {
@@ -94,14 +131,19 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			// The root entry.
 			switch e.Kind {
 			case KindDir:
-				if err := ensureDir(dest, true); err != nil {
+				if err := openDest(); err != nil {
 					return rep, err
 				}
-				rootPrepared = true
 				rep.Dirs++
 				continue
 			case KindFile:
-				if err := writeFile(ctx, dest, e, rep); err != nil {
+				parent, err := os.OpenRoot(filepath.Dir(dest))
+				if err != nil {
+					return rep, err
+				}
+				err = writeFile(ctx, parent, filepath.Base(dest), e, rep)
+				parent.Close()
+				if err != nil {
 					return rep, err
 				}
 				continue
@@ -110,22 +152,19 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 				continue
 			}
 		}
-		if !rootPrepared {
-			if err := ensureDir(dest, true); err != nil {
-				return rep, err
-			}
-			rootPrepared = true
+		if err := openDest(); err != nil {
+			return rep, err
 		}
-		full := filepath.Join(dest, filepath.FromSlash(rel))
+		name := filepath.FromSlash(rel)
 		if parent := x.underSkipped(rel); parent != "" {
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "inside skipped directory " + parent})
 			continue
 		}
-		if err := checkNoSymlinks(dest, filepath.Dir(full)); err != nil {
+		if err := checkNoSymlinks(root, filepath.Dir(name)); err != nil {
 			return rep, err
 		}
 		if e.Kind == KindDir || e.Kind == KindFile {
-			other, err := x.collides(full)
+			other, err := x.collides(root, name)
 			if err != nil {
 				return rep, err
 			}
@@ -139,16 +178,16 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		}
 		switch e.Kind {
 		case KindDir:
-			if err := ensureDir(full, false); err != nil {
+			if err := ensureDir(root, name, false); err != nil {
 				return rep, err
 			}
-			x.wrote(full)
+			x.wrote(name)
 			rep.Dirs++
 		case KindFile:
-			if err := writeFile(ctx, full, e, rep); err != nil {
+			if err := writeFile(ctx, root, name, e, rep); err != nil {
 				return rep, err
 			}
-			x.wrote(full)
+			x.wrote(name)
 		case KindSymlink:
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "symlinks are not extracted (target " + e.Target + ")"})
 		default:
@@ -162,32 +201,38 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 // detected: a path that exists although this run never wrote it, and whose exact name is
 // absent from its directory's listing, has been mapped by the filesystem onto another
 // entry (APFS/NTFS case folding, HFS+ NFD normalization). Writing it would silently
-// replace or merge content, so it is reported instead.
+// replace or merge content, so it is reported instead. Names are relative to the root.
 type extraction struct {
-	written     map[string]bool            // absolute paths written by this run
+	written     map[string]bool            // names written by this run
 	listed      map[string]map[string]bool // directory → names present (lazily read)
 	skippedDirs []string                   // tree-relative prefixes ("a/b/") whose contents are skipped
 }
 
-func (x *extraction) wrote(full string) {
-	x.written[full] = true
-	if names := x.listed[filepath.Dir(full)]; names != nil {
-		names[filepath.Base(full)] = true
+func (x *extraction) wrote(name string) {
+	x.written[name] = true
+	if names := x.listed[filepath.Dir(name)]; names != nil {
+		names[filepath.Base(name)] = true
 	}
 }
 
-// collides returns the existing entry name that full would map onto, or "".
-func (x *extraction) collides(full string) (string, error) {
-	if x.written[full] {
+// collides returns the existing entry name that name would map onto, or "".
+func (x *extraction) collides(root *os.Root, name string) (string, error) {
+	if x.written[name] {
 		return "", nil
 	}
-	if _, err := os.Lstat(full); err != nil {
+	fi, err := root.Lstat(name)
+	if err != nil {
 		return "", nil // absent (or unreadable: the write reports that)
 	}
-	dir, base := filepath.Dir(full), filepath.Base(full)
+	dir, base := filepath.Dir(name), filepath.Base(name)
 	names := x.listed[dir]
 	if names == nil {
-		entries, err := os.ReadDir(dir)
+		d, err := root.Open(dir)
+		if err != nil {
+			return "", err
+		}
+		entries, err := d.ReadDir(-1)
+		d.Close()
 		if err != nil {
 			return "", err
 		}
@@ -203,11 +248,9 @@ func (x *extraction) collides(full string) (string, error) {
 	// Name the entry the filesystem resolved it to: the listed name that is the same
 	// file (case folding, Unicode normalization or any other mapping), else a case-only
 	// match.
-	if fi, err := os.Lstat(full); err == nil {
-		for n := range names {
-			if other, err := os.Lstat(filepath.Join(dir, n)); err == nil && os.SameFile(fi, other) {
-				return n, nil
-			}
+	for n := range names {
+		if other, err := root.Lstat(filepath.Join(dir, n)); err == nil && os.SameFile(fi, other) {
+			return n, nil
 		}
 	}
 	for n := range names {
@@ -257,19 +300,17 @@ func unsafe(p, why string) error {
 		WithAction("the tree contains an entry that cannot be written safely; extract it with a tool that handles it, or report the tree")
 }
 
-// checkNoSymlinks walks from dest down to dir and fails on any symlink component.
-func checkNoSymlinks(dest, dir string) error {
-	rel, err := filepath.Rel(dest, dir)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return apiv0.Errorf(apiv0.CodeInvalidArgument, "unsafe path: %s is outside %s", dir, dest)
-	}
-	cur := dest
-	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+// checkNoSymlinks walks from the root down to dir (relative) and fails on any symlink
+// component. The os.Root already refuses to leave dest; this keeps X2's stricter rule
+// (no symlink at all on the way) with a clear error.
+func checkNoSymlinks(root *os.Root, dir string) error {
+	cur := ""
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
 		if seg == "." || seg == "" {
 			continue
 		}
 		cur = filepath.Join(cur, seg)
-		fi, err := os.Lstat(cur)
+		fi, err := root.Lstat(cur)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil // nothing below exists yet; it will be created by us
 		}
@@ -277,50 +318,59 @@ func checkNoSymlinks(dest, dir string) error {
 			return err
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return apiv0.Errorf(apiv0.CodeInvalidArgument, "unsafe path: %s is a symlink", cur).
-				WithAction("remove the symlink from the destination or extract somewhere else")
+			return symlinkErr(filepath.Join(root.Name(), cur))
 		}
 		if !fi.IsDir() {
-			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is not a directory", cur)
+			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is not a directory", filepath.Join(root.Name(), cur))
 		}
 	}
 	return nil
 }
 
-// ensureDir creates dir (not its parents unless parentsOK) and refuses symlinks.
-func ensureDir(dir string, parentsOK bool) error {
-	fi, err := os.Lstat(dir)
+func symlinkErr(p string) error {
+	return apiv0.Errorf(apiv0.CodeInvalidArgument, "unsafe path: %s is a symlink", p).
+		WithAction("remove the symlink from the destination or extract somewhere else")
+}
+
+// ensureDir creates dir (not its parents unless parentsOK) and refuses symlinks. With a
+// root, dir is relative to it; without (the destination itself), it is absolute.
+func ensureDir(root *os.Root, dir string, parentsOK bool) error {
+	lstat, mkdir, mkdirAll, show := os.Lstat, os.Mkdir, os.MkdirAll, dir
+	if root != nil {
+		lstat, mkdir, mkdirAll, show = root.Lstat, root.Mkdir, root.MkdirAll, filepath.Join(root.Name(), dir)
+	}
+	fi, err := lstat(dir)
 	switch {
 	case err == nil:
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return apiv0.Errorf(apiv0.CodeInvalidArgument, "unsafe path: %s is a symlink", dir).
-				WithAction("remove the symlink from the destination or extract somewhere else")
+			return symlinkErr(show)
 		}
 		if !fi.IsDir() {
-			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is not a directory", dir)
+			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is not a directory", show)
 		}
 		return nil
 	case errors.Is(err, os.ErrNotExist):
 		if parentsOK {
-			return os.MkdirAll(dir, DirMode)
+			return mkdirAll(dir, DirMode)
 		}
-		return os.Mkdir(dir, DirMode)
+		return mkdir(dir, DirMode)
 	}
 	return err
 }
 
-// writeFile writes e's bytes to full atomically.
-func writeFile(ctx context.Context, full string, e Entry, rep *Report) error {
+// writeFile writes e's bytes to name under root atomically (temp file + rename, both
+// inside the root).
+func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Report) error {
 	if e.Open == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path)
 	}
-	if fi, err := os.Lstat(full); err == nil {
+	show := filepath.Join(root.Name(), name)
+	if fi, err := root.Lstat(name); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return apiv0.Errorf(apiv0.CodeInvalidArgument, "unsafe path: %s is a symlink", full).
-				WithAction("remove the symlink from the destination or extract somewhere else")
+			return symlinkErr(show)
 		}
 		if fi.IsDir() {
-			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is a directory", full)
+			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is a directory", show)
 		}
 	}
 	src, err := e.Open(ctx)
@@ -332,11 +382,14 @@ func writeFile(ctx context.Context, full string, e Entry, rep *Report) error {
 	if e.Mode&0o111 != 0 {
 		mode = ExecMode
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(full), ".nu-extract-*")
+	var rnd [8]byte
+	_, _ = rand.Read(rnd[:])
+	tmpName := filepath.Join(filepath.Dir(name), ".nu-extract-"+hex.EncodeToString(rnd[:]))
+	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer root.Remove(tmpName)
 	n, err := io.Copy(tmp, src)
 	if err == nil {
 		err = tmp.Chmod(mode)
@@ -350,7 +403,7 @@ func writeFile(ctx context.Context, full string, e Entry, rep *Report) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), full); err != nil {
+	if err := root.Rename(tmpName, name); err != nil {
 		return err
 	}
 	rep.Files++

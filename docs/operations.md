@@ -779,9 +779,12 @@ are bounded in total and per client address (`503` + `Retry-After`).
 ### X. Extraction (`nu get -o`)
 
 - **X1** Tree paths must be relative, with no empty, `.`, `..`, NUL or backslash segment
-  and names ≤ 255 bytes; a violation is `invalid_argument` and nothing is written.
+  and names ≤ 255 bytes; a violation is `invalid_argument` and nothing is written: the
+  whole walk is validated before the first write (0077).
 - **X2** Every existing component under the destination is `Lstat`ed; a symlink on the
-  way, or in place of a file being written, aborts the extraction.
+  way, or in place of a file being written, aborts the extraction. All writes go through
+  an `os.Root` opened at the destination, so a symlink swapped in after the checks still
+  cannot redirect a write outside it.
 - **X3** Symlink entries are never created; they are reported as skipped with their target.
 - **X4** A name the filesystem maps onto an existing entry this run did not write (case
   folding, Unicode normalization) is reported as skipped naming the entry it collides
@@ -847,6 +850,7 @@ required by the named task before it ships.
 | N44 | P2/P4 | `/c/<dataset>…` and `/nu/<handle>/<name>…` on the public listener | 404 like any route that does not exist there, no `X-Nu-Root`, no lookup | `gateway.TestPublicListener` |
 | N45 | P3 | `cluster init`/`join` of a private or isolated cluster while the public listener runs | conflict, action names `public.listen`; no membership | `node.TestPublicListenerRefusesPrivateCluster` |
 | N46 | G12/G9 | `Range` with 17 parts; a directory larger than one page; listing `If-None-Match`; a public client that stops reading | 200 whole body; paged with `?from=`, per-page ETag; 304; write cut off after the stall timeout | `gateway.TestPublicBounds`, `node.TestPublicCodecSwap` (MST paging) |
+| N47 | X1/X2 | unsafe path (`z\..\evil`) after good entries; a directory swapped for a symlink while a file in it is being written | invalid_argument and the destination not even created; the write fails, nothing outside | `extract.TestExtractSafety` |
 
 ### Feature-entry gates
 

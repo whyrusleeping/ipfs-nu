@@ -1,7 +1,7 @@
 ---
 id: "0034"
 title: 'Pilot workloads and product validation: first magic plus smaller archive/mirror teams'
-status: in_progress
+status: in_review
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-22"

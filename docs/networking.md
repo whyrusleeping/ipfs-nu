@@ -40,10 +40,29 @@ lookup alpha=3 and at most 16 rounds. Server defaults are 32 concurrent requests
 4 per authenticated peer and 4096 provider records. Provider records expire after
 48 h; `ProvideAndRepublish` refreshes local announcements every 22 h. Client APIs
 are `FindNode`, `FindProviders`, `Provide`, `ProvidePinned`, plus `Service.Lookup`
-for the lookup.Source hook; `fetch.Kademlia` adapts GET_PROVIDERS. The owner must
-pass only pinned blob/file-node/tree-root CIDs to `ProvidePinned` (never interior
-shards) and supply usable advertised addresses. Node/CLI wiring and automatic pin
-enumeration are not installed yet; hint/LAN/private lookup remains independent.
+for the lookup.Source hook; `fetch.Kademlia` adapts GET_PROVIDERS. Lookups stop when
+the K closest known peers have been asked; a provider lookup returns as soon as a round
+yields providers. Servers learn inbound peers only when their identify snapshot
+advertises `/ipfs/kad/1.0.0` at usable addresses (`Config.ServerAddrs`).
+
+**Daemon wiring (0072, `node/swarm/dht.go`).** Public-mode swarms run the service
+according to `swarm.dht`: `auto` (default) runs it when a non-loopback address is bound
+(a loopback-only socket cannot reach Amino), `client` always, `off` never; private and
+isolated swarms never construct it. Bootstrap resolves the deployed `bootstrap.libp2p.io`
+peers, then does a self lookup; the table is refreshed every 5 minutes and re-bootstrapped
+when it holds fewer than K peers. Server mode follows the connectivity owner's AutoNAT
+verdict (`reach == "public"` → handler registered; anything else → client). The service
+is a lookup source (D13 step 7) beside optional `swarm.lookup_domain` (dnsaddr) and
+`swarm.routing_url` (routing/v1) sources, and `fetch.Kademlia` is a fetch provider source
+beside connected peers (which are now limited to peers whose identify advertises a `/nu`
+data protocol). Providing follows D15: on every pin and every 22 h the daemon announces
+each pin's root plus, for recursive nu-tree pins, every file node and blob beneath it
+(never directory shards), at most 4096 keys per cycle, with the publication address set
+(confirmed/public interface addresses and known relay circuits; nothing is announced,
+and status says so, when that set is empty). `--no-announce` roots are recorded in
+`$NU_PATH/no-announce.json` and skipped. `nu status`/`doctor` and `GET /status`
+(`network.dht`) show mode, routing-table size, last bootstrap and last provide.
+Hint/LAN/private lookup remains independent of all of this.
 
 Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, Helia and
 Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus

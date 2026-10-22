@@ -350,7 +350,10 @@ file announces both wrapper and blob; providing scales with files/roots rather t
 chunks. Provider records do not say which transfer protocol the provider serves. See
 [validation](validation.md#q2-amino-provider-keys-and-citizenship-bounded-live-results-incomplete-swarm-run).
 Hint/LAN/explicit-member retrieval does not depend on Amino; a routing fallback is not a second
-content model.
+content model. *Implementation (0072):* the daemon announces on pin and every 22 h
+(`node/swarm/dht.go`); `--no-announce` roots are remembered in `$NU_PATH/no-announce.json`
+and never enumerated (an announced pin or unpin of the root clears the mark). Follow pins
+currently announce their root only; the swarm key is not yet provided.
 
 ## D17. Store and replication
 

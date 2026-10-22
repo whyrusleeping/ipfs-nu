@@ -21,6 +21,7 @@ import (
 	"github.com/whyrusleeping/nu/node/swarm"
 	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
+	"github.com/whyrusleeping/nu/store"
 )
 
 var cmdVersion = &command{
@@ -30,8 +31,13 @@ var cmdVersion = &command{
 		if err := parseFlags(e.flags(), args); err != nil {
 			return err
 		}
-		return e.emit(map[string]string{"name": nu.Name, "version": nu.Version}, func(w io.Writer) {
+		// Format versions this build writes (docs/operations.md "Upgrades and compatibility").
+		formats := map[string]int{"repo_layout": repo.LayoutVersion, "store_schema": store.SchemaVersion,
+			"content_export": node.ExportBundleVersion, "authority_backup": node.BackupVersion}
+		return e.emit(map[string]any{"name": nu.Name, "version": nu.Version, "formats": formats}, func(w io.Writer) {
 			fmt.Fprintf(w, "%s %s\n", nu.Name, nu.Version)
+			fmt.Fprintf(w, "formats: repo layout %d, store schema %d, content export %d, authority backup %d\n",
+				repo.LayoutVersion, store.SchemaVersion, node.ExportBundleVersion, node.BackupVersion)
 		})
 	},
 }

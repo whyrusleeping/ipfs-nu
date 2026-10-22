@@ -1,7 +1,7 @@
 ---
 id: "0021"
 title: '0b+: Port prediction + guard-railed birthday spraying for hard NATs'
-status: in_progress
+status: todo
 priority: 3
 created: "2026-09-24"
 updated: "2026-10-22"

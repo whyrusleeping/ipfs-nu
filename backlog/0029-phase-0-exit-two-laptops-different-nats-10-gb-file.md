@@ -33,3 +33,4 @@ The public different-NAT first-magic preview gate, distinct from earlier direct/
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Automated NAT-lab exit (c1c5453, 5542b77; merged f3335c2): NU_SLOW=1 ./scripts/magic-preview.sh. PASS: cone↔cone and cone↔symmetric (relay) 10 GB + 10k-file trees, 3-provider verified 10 GB download, same-bytes-same-CID, full-daemon interop 6/6 + Kubo. Scenario 3 initially FAILED (network switch killed the get; both daemons needed restarts) — addressed by 0024's fixes (transient send errors, immediate re-probe, re-identify) whose real-daemon hotspot-switch-mid-get test now passes without restarts; re-run the 0029 512 MiB network-change scenario to confirm. Pending human: real home-network/hotspot demo, fresh-user browsing/usability evidence, observing CI remotely.

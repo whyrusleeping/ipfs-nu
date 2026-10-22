@@ -1,10 +1,10 @@
 ---
 id: "0070"
 title: 'Upstream quic-go: CID issue/retire callback so Nu-path stops paying qlog construction cost'
-status: todo
+status: in_progress
 priority: 3
 created: "2026-10-21"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0015"
 spec_refs:

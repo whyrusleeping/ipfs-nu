@@ -16,6 +16,9 @@ func printConnectivity(w io.Writer, c *apiv0.ConnectivityStatus) {
 		return
 	}
 	fmt.Fprintf(w, "reachability: %s\n", c.Reachability)
+	if n := c.NAT; n != nil {
+		fmt.Fprintf(w, "nat:        mapping %s, filtering %s (%s); %s\n", n.Mapping, n.Filtering, n.Source, n.Detail)
+	}
 	if c.Home != "" || c.Backup != "" {
 		fmt.Fprintf(w, "relays:     home %s; backup %s\n", c.Home, c.Backup)
 	}

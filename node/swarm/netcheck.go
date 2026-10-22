@@ -3,7 +3,9 @@ package swarm
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/portmap"
@@ -109,6 +111,54 @@ func (c *connectivity) netcheckObservers(ctx context.Context) ([]netcheck.Observ
 		return nil, errors.Join(append([]error{netcheck.ErrNoObservers}, errs...)...)
 	}
 	return out, nil
+}
+
+// netcheckNATProfiler adapts the wire-oriented report to the public diagnostics
+// schema without changing Swarm.NATProfile's typed report API for path selection.
+// A missing measurement must remain nil, not a measured "unknown" profile, so
+// diagnostics can use identify observations until the first netcheck result.
+type netcheckNATProfiler struct{ s *Swarm }
+
+var _ NATProfiler = netcheckNATProfiler{}
+
+func (p netcheckNATProfiler) NATProfile() *apiv0.NATProfile {
+	r, ok, err := p.s.NATProfile()
+	if !ok {
+		return nil
+	}
+	mapping := "unknown"
+	switch r.Profile.Mapping {
+	case netcheck.MappingNone:
+		mapping = "none"
+	case netcheck.MappingEndpointIndependent:
+		mapping = "endpoint-independent"
+	case netcheck.MappingAddressDependent:
+		mapping = "address-dependent"
+	case netcheck.MappingAddressPortDependent:
+		mapping = "address-and-port-dependent"
+	case netcheck.MappingEndpointDependent:
+		mapping = "endpoint-dependent"
+	}
+	filtering := "unknown"
+	switch r.Profile.Filtering {
+	case netcheck.FilterEndpointIndependent:
+		filtering = "endpoint-independent"
+	case netcheck.FilterAddressDependent:
+		filtering = "address-dependent"
+	case netcheck.FilterAddressPortDependent:
+		filtering = "address-and-port-dependent"
+	}
+	// Keep allocation, lifetime bounds, hairpin, IPv6 and portmap results visible
+	// in the existing detail field. Unknown probe results are never filled from
+	// the (less authoritative) identify estimate.
+	detail := r.Profile.String()
+	if !r.Started.IsZero() {
+		detail += "; measured " + r.Started.UTC().Format(time.RFC3339)
+	}
+	if err != nil {
+		detail += "; last probe error: " + err.Error()
+	}
+	return &apiv0.NATProfile{Mapping: mapping, Filtering: filtering, Source: "netcheck", Observers: int(r.Profile.Observers), Detail: detail}
 }
 
 // NATProfile returns the latest local NAT report (ok=false before the first

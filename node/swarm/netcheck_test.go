@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,13 @@ import (
 // 0018 seam: a public-mode daemon profiles against its configured relay's
 // netcheck observer once connected, and serves the profile to peers.
 func TestSwarmNATProfile(t *testing.T) {
+	// No observers: the default adapter has no measurement, so status must
+	// continue to show the explicitly labelled observation estimate.
+	unmeasured := testSwarm(t, swarmKey(t))
+	if n := unmeasured.ConnectivityStatus().NAT; n == nil || n.Source != "observations" {
+		t.Fatalf("unmeasured fallback: %+v", n)
+	}
+	unmeasured.Close()
 	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +51,10 @@ func TestSwarmNATProfile(t *testing.T) {
 			t.Fatalf("no NAT profile: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	n := s.ConnectivityStatus().NAT
+	if n == nil || n.Source != "netcheck" || n.Mapping != "none" || n.Observers != 1 || !strings.Contains(n.Detail, "udp=ok") || !strings.Contains(n.Detail, "allocation=") {
+		t.Fatalf("status did not use measured NAT profile: %+v", n)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

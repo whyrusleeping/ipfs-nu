@@ -819,9 +819,15 @@ retry after 1 minute. Observers come from the owner. `nu relay --netcheck <ip:po
 [--netcheck-alt-port <port>] [--netcheck-alt-ip <ip>]` serves them (literal IPs, one set
 per family; not yet a `[relay]` config key). A public-mode daemon profiles against its
 connected configured relays that serve `/nu/netcheck/1`, registers `Monitor.Hook` at the
-`RestartProbing` stage, serves `/nu/natprofile/1` and exposes `Swarm.NATProfile()` for
-status/`nu doctor`; private/isolated mode starts none of this. Public Nu peers running
-observers and disco's use of remote profiles are not wired yet.
+`RestartProbing` stage and serves `/nu/natprofile/1`. `Swarm.NATProfile()` exposes
+the typed report; the default `swarm.Config.NAT` adapter uses it for status/`nu doctor`
+with `source: netcheck`, RFC 4787 mapping/filtering names, observer count and the
+full measured profile in `detail` (including allocation and lifetime bounds).
+Before the first report or without netcheck observers, diagnostics fall back to the
+explicitly labelled identify estimate (`source: observations`). An explicit
+`Config.NAT` overrides the default; returning nil still requests that fallback.
+Private/isolated mode starts none of this. Public Nu peers running observers and
+disco's use of remote profiles are not wired yet.
 
 **Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
 

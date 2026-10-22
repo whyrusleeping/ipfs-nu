@@ -257,10 +257,16 @@ survives" is made. An earlier draft of the disco observer took the connectivity 
 under the disco lock; relay-matrix gets then took 0.7–6.7 s and one run stalled past
 its deadline. The observer now touches only atomics and a leaf history lock, and the
 matrix is back to ~80 ms gets (8–9 s for all three rows). Lock-order edges into the
-connectivity owner from protocol callbacks are a measured hazard, not a theoretical one. The NAT profile shown by
-doctor is the observation-based estimate (`source: observations`, two observers), not
-a probe-based RFC 4787 classification; the profiler package plugs into
-`swarm.Config.NAT`. Direct re-upgrade after a switch depends on exact probe grants
+connectivity owner from protocol callbacks are a measured hazard, not a theoretical one.
+In this original run doctor showed the observation-based estimate (`source:
+observations`, two observers). The subsequent netcheck diagnostics integration now
+installs the built-in profiler as the default `swarm.Config.NAT`: status/doctor show
+`source: netcheck` when a measured report exists, otherwise the observation estimate.
+`TestSwarmNATProfile` verifies both fallback without observers and measured loopback
+classification against a real netcheck-serving relay (0.213 s), plus the peer profile
+exchange. Mapping/filtering are translated to RFC 4787 names and the full profile
+(allocation, lifetime bounds, hairpin, IPv6, portmap) remains in `detail`.
+Direct re-upgrade after a switch depends on exact probe grants
 covering the new external endpoint (the test grants both). macOS network-change
 behaviour is not covered.
 

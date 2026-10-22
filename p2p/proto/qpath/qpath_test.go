@@ -81,6 +81,7 @@ type setup struct {
 	ac, bc         *circuit.Client
 	relayA, relayB *magicsock.Relay
 	virtualA       wire.Multiaddr
+	sessions       *host.Sessions
 }
 
 func makeSetup(t *testing.T, ctx context.Context, ua, ub, ur *net.UDPConn) *setup {
@@ -153,6 +154,7 @@ func (x *setup) stream(t *testing.T, ctx context.Context) *host.Stream {
 	sessions, err := host.NewSessions(x.a, host.SessionConfig{Cache: cache, Peers: map[wire.PeerID][]wire.Multiaddr{x.b.ID(): {x.virtualA}}})
 	check(t, err)
 	t.Cleanup(func() { sessions.Close() })
+	x.sessions = sessions
 	session, err := sessions.Connect(ctx, x.b.ID())
 	check(t, err)
 	if len(cache.Addresses(x.b.ID())) != 0 {

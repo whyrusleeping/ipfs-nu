@@ -240,7 +240,9 @@ func (c *connectivity) optimizeOnce(ctx context.Context, id wire.PeerID, p *path
 	if err != nil {
 		return err
 	}
-	return c.switchRelay(ctx, id, p, leg, route)
+	err = c.switchRelay(ctx, id, p, leg, route)
+	c.s.log.Info("swarm: pair-aware relay switch", "peer", id.Base36(), "from", current.Base36(), "to", best.Base36(), "combined_rtt", sum, "err", err)
+	return err
 }
 
 // switchRelay closes the current stream leg and re-dials through route. The

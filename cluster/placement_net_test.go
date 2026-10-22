@@ -36,7 +36,7 @@ func storageCluster(t *testing.T, nodes ...*nutest.Node) {
 			t.Fatal(err)
 		}
 	}
-	nutest.Eventually(t, "membership", func() bool {
+	eventually(t, "membership", func() bool {
 		for _, nd := range nodes {
 			if len(nd.Local.NetCluster().View().MemberIDs()) != len(nodes) {
 				return false
@@ -100,7 +100,8 @@ func waitCode(err error) apiv0.Code {
 
 // Placement and readiness on three routed private-mode storage members (0046): a head
 // write's metadata acknowledgment is not content readiness (R1); members fetch their own
-// blobs by placement and the target becomes ready only from every owner's fresh report;
+// blobs by placement and the target becomes ready once every blob has k confirmed copies
+// (the writer's full copy counts);
 // a wait stays on its exact target when the head moves (R3); an infeasible policy fails a
 // ready wait fast (R6); held waits name holders.
 func TestPlacementReadiness(t *testing.T) {
@@ -129,14 +130,21 @@ func TestPlacementReadiness(t *testing.T) {
 		t.Fatalf("ready wait on unavailable content: %+v, %v", res, err)
 	}
 
-	// Content held by the writer: every owner fetches its blobs and reports; ready.
+	// Content held by the writer: owners fetch their blobs and report; ready once every
+	// blob has two confirmed copies.
 	t1 := addDir(t, n, a, 16)
 	if _, err := a.Local.DatasetUpdate(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetUpdateRequest{Target: t1.String()}); err != nil {
 		t.Fatal(err)
 	}
-	res, err = c.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t1.String(), Timeout: "10s"})
-	if err != nil || !res.Satisfied || res.State != cluster.ReadyReady || len(res.Confirmed) != res.Required || res.Required < 2 {
+	res, err = c.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t1.String(), Timeout: "40s"})
+	if err != nil || !res.Satisfied || res.State != cluster.ReadyReady || res.Required != 2 || len(res.Confirmed) < 2 ||
+		res.Copies == nil || res.Copies.Below != 0 || res.Copies.Min < 2 || res.Copies.Units != 16 {
 		t.Fatalf("ready wait: %+v, %v", res, err)
+	}
+	// held: b's and c's reports are complete for t1 (their owned blobs).
+	if res, err := a.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t1.String(), Condition: apiv0.WaitHeld,
+		Holders: []string{b.ID.String(), c.ID.String()}, Mode: cluster.ModeOwned, Timeout: "40s"}); err != nil || !res.Satisfied {
+		t.Fatalf("held wait: %+v, %v", res, err)
 	}
 	// Each member holds the structure and exactly the blobs it owns (k=2).
 	v := b.Local.NetCluster().View()
@@ -152,11 +160,6 @@ func TestPlacementReadiness(t *testing.T) {
 				t.Fatalf("%s: owns %v, holds %v blob %s", nd.Name, own, holds(nd, bl), bl)
 			}
 		}
-	}
-	// held: b's report is complete for t1.
-	if res, err := a.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t1.String(), Condition: apiv0.WaitHeld,
-		Holders: []string{b.ID.String()}, Timeout: "10s"}); err != nil || !res.Satisfied {
-		t.Fatalf("held wait: %+v, %v", res, err)
 	}
 	if _, err := a.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t1.String(), Condition: apiv0.WaitHeld,
 		Holders: []string{outsider.ID.String()}}); waitCode(err) != apiv0.CodeFailed {
@@ -174,19 +177,25 @@ func TestPlacementReadiness(t *testing.T) {
 		err error
 	}
 	done := make(chan out, 1)
+	wctx, stop := context.WithCancel(ctx(t))
+	defer stop()
 	go func() {
-		r, err := b.Local.DatasetWait(context.Background(), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t2.String(), Timeout: "3s"})
+		r, err := b.Local.DatasetWait(wctx, node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t2.String()})
 		done <- out{r, err}
 	}()
 	t3 := addDir(t, n, a, 4)
 	if _, err := a.Local.DatasetUpdate(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetUpdateRequest{Target: t3.String()}); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := a.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t3.String(), Timeout: "10s"}); err != nil || !r.Satisfied {
+	if r, err := b.Local.DatasetWait(ctx(t), node.ScopeCluster, "photos", apiv0.DatasetWaitRequest{Target: t3.String(), Timeout: "40s"}); err != nil || !r.Satisfied {
 		t.Fatalf("new head not ready: %+v, %v", r, err)
 	}
+	// t3 is ready on b, where the t2 wait still runs: give it a few polls to see the new
+	// head, then end it and check what it saw.
+	time.Sleep(5 * node.WaitPoll)
+	stop()
 	o := <-done
-	if waitCode(o.err) != apiv0.CodeTimeout || o.res.Satisfied || o.res.Target != t2.String() || o.res.SupersededBy != t3.String() {
+	if !errors.Is(o.err, context.Canceled) || o.res.Satisfied || o.res.Target != t2.String() || o.res.SupersededBy != t3.String() {
 		t.Fatalf("superseded wait: %+v, %v", o.res, o.err)
 	}
 

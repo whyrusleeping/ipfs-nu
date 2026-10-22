@@ -178,5 +178,23 @@
         "12D3KooWAaYVakMyznsMrUbM1TPKUnduj2tCfQiM6zujqQmepeqr"
       ]
     }
+  ],
+  "items": [
+    {
+      "root": "bafyreihveaopkvphwe7a3qoyyasua7qnfwlowvzi2sn6m7bjx3g4d3sexi",
+      "multihash": "bciqpkia46vk6pmj6bxa5rqbfib7a2lmw5nlsrve34z6ctpwnyhxejoq",
+      "owners_k2": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWENTLiCwwoVwYNbKFEfmNdyHG1jxNn9oPB29JeeZXWjAb"
+      ]
+    },
+    {
+      "root": "bafyreifmvxngbkdnk3udnm67gpal2mqf27qpb75re4z3isdgsf2yekdm3y",
+      "multihash": "bciqkzlo2mcug2vxig2z56m6axuzalv7a6d73cjztwregnelvqiugzxq",
+      "owners_k2": [
+        "12D3KooWGjSE7eCu5f1Pa8pGxscmoEcdQ5BRMGqbyMvL2dhrPCS5",
+        "12D3KooWKcs31iJqYLZbNpqPHri8vWeLmNhRDpVuR7gJQf6v95Xo"
+      ]
+    }
   ]
 }

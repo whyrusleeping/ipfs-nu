@@ -9,7 +9,8 @@ import (
 )
 
 // The readiness evaluation (E3–E8) on a fake clock: one row per negative-matrix case
-// that does not need a network (docs/operations.md R4–R8).
+// that does not need a network (docs/operations.md R4–R8), counting confirmed copies per
+// unit (k-of-n).
 func TestReadyMatrix(t *testing.T) {
 	a, b, c, d := fixedPeer(t, 40), fixedPeer(t, 41), fixedPeer(t, 42), fixedPeer(t, 43)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -20,7 +21,7 @@ func TestReadyMatrix(t *testing.T) {
 	ev := func(r Report, age time.Duration) Evidence { return Evidence{Report: r, Received: now.Add(-age)} }
 	ok := Feasibility{OK: true}
 	base := func() ReadyInput {
-		return ReadyInput{Target: T, Mode: ModeOwned, Policy: P, Epoch: E, Feasibility: ok, Owners: []wire.PeerID{a, b}, OwnersKnown: true, Now: now,
+		return ReadyInput{Target: T, Policy: P, Epoch: E, Feasibility: ok, K: 2, Groups: []OwnerGroup{{Owners: []wire.PeerID{a, b}, Units: 3}}, OwnersKnown: true, Now: now,
 			Evidence: map[wire.PeerID]Evidence{a: ev(rep(T, E, true), time.Second), b: ev(rep(T, E, true), 3*time.Second)}}
 	}
 	reasons := func(r ReadyResult) map[wire.PeerID]string {
@@ -41,7 +42,7 @@ func TestReadyMatrix(t *testing.T) {
 
 	t.Run("ready", func(t *testing.T) {
 		r := Ready(base())
-		if r.State != ReadyReady || r.Required != 2 || len(r.Confirmed) != 2 || r.EvidenceAge != 3*time.Second {
+		if r.State != ReadyReady || r.Required != 2 || len(r.Confirmed) != 2 || r.EvidenceAge != 3*time.Second || r.Copies != (Copies{"blob", 3, 0, 2}) || len(r.Unmet) != 0 {
 			t.Fatalf("%+v", r)
 		}
 	})
@@ -49,7 +50,7 @@ func TestReadyMatrix(t *testing.T) {
 		in := base()
 		in.Evidence[b] = ev(rep(T, E1, true), time.Second)
 		r := Ready(in)
-		if r.State == ReadyReady || reasons(r)[b] != ReasonEpoch || len(r.Confirmed) != 1 {
+		if r.State == ReadyReady || reasons(r)[b] != ReasonEpoch || len(r.Confirmed) != 1 || r.Copies.Below != 3 || r.Copies.Min != 1 {
 			t.Fatalf("%+v", r)
 		}
 		in.Evidence[b] = ev(Report{Name: "ds", Target: T, Mode: ModeOwned, Policy: "other", Epoch: E, Complete: true}, 0)
@@ -89,22 +90,37 @@ func TestReadyMatrix(t *testing.T) {
 			t.Fatalf("%+v", r)
 		}
 	})
-	t.Run("R7 owners complete, surplus holder incomplete", func(t *testing.T) {
+	t.Run("R7 k-of-n: a full holder covers a stale owner", func(t *testing.T) {
 		in := base()
-		in.Evidence[c] = ev(rep(T, E, false), 0)
-		in.Evidence[d] = ev(Report{Name: "ds", Target: T, Mode: ModeFull, Complete: true}, 0)
+		in.Groups = []OwnerGroup{{Owners: []wire.PeerID{a, b}, Units: 2}, {Owners: []wire.PeerID{b, c}, Units: 1}}
+		in.Evidence[b] = ev(rep(T, E, true), DefaultFresh+time.Second)
+		in.Evidence[c] = ev(rep(T, E, true), 0)
 		r := Ready(in)
-		if r.State != ReadyReady || !slices.Equal(peers(r.Confirmed), peers([]Confirmation{{Peer: a}, {Peer: b}})) || len(r.Extra) != 1 || r.Extra[0].Peer != d {
+		if r.State == ReadyReady || r.Copies.Below != 3 || r.Copies.Min != 1 {
+			t.Fatalf("without the full holder: %+v", r)
+		}
+		in.Evidence[d] = ev(Report{Name: "ds", Target: T, Mode: ModeFull, Policy: P, Epoch: E, Complete: true}, 0)
+		r = Ready(in)
+		if r.State != ReadyReady || !slices.Equal(peers(r.Confirmed), peers([]Confirmation{{Peer: a}, {Peer: c}, {Peer: d}})) ||
+			reasons(r)[b] != ReasonStale || len(r.Unmet) != 0 || r.Copies != (Copies{"blob", 3, 0, 2}) {
 			t.Fatalf("%+v", r)
 		}
 	})
-	t.Run("R8 surplus complete, owners not", func(t *testing.T) {
+	t.Run("incomplete surplus holder", func(t *testing.T) {
+		in := base()
+		in.Evidence[c] = ev(Report{Name: "ds", Target: T, Mode: ModeFull, Policy: P, Epoch: E}, 0)
+		r := Ready(in)
+		if r.State != ReadyReady || len(r.Confirmed) != 2 || len(r.Extra) != 0 {
+			t.Fatalf("%+v", r)
+		}
+	})
+	t.Run("R8 non-owner holdings complete, owners not", func(t *testing.T) {
 		in := base()
 		in.Evidence[a] = ev(rep(T, E, false), 0)
 		delete(in.Evidence, b)
-		in.Evidence[c] = ev(Report{Name: "ds", Target: T, Mode: ModeFull, Complete: true}, 0)
+		in.Evidence[c] = ev(rep(T, E, true), 0) // owns no unit: confirms nothing
 		r := Ready(in)
-		if r.State == ReadyReady || len(r.Extra) != 1 || len(r.Confirmed) != 0 || reasons(r)[b] != ReasonAbsent {
+		if r.State == ReadyReady || len(r.Extra) != 1 || r.Extra[0].Peer != c || len(r.Confirmed) != 0 || reasons(r)[b] != ReasonAbsent || r.Copies.Min != 0 {
 			t.Fatalf("%+v", r)
 		}
 	})

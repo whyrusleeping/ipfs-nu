@@ -155,6 +155,9 @@ func printItem(w io.Writer, it *apiv0.CollectionItem) {
 	if it.Copies != nil {
 		fmt.Fprintf(w, "  copies %d (fresh complete holders), %d with stale heartbeats\n", *it.Copies, *it.Unknown)
 	}
+	if len(it.Owners) > 0 {
+		fmt.Fprintf(w, "  floor owners %s\n", strings.Join(it.Owners, ", "))
+	}
 	if it.Local != "" {
 		fmt.Fprintf(w, "  this node: %s\n", it.Local)
 	}
@@ -215,6 +218,13 @@ func printCollectionStatus(w io.Writer, st *apiv0.CollectionStatus) {
 		}
 	}
 	fmt.Fprintf(w, "  this node: %d rule(s), holdings %v, %d B, shortfall %d B, log %s:%d\n", st.Rules, st.Local, st.LocalBytes, st.Shortfall, st.LogEpoch, st.LogSeq)
+	if f := st.Floor; f != nil {
+		if f.Eligible {
+			fmt.Fprintf(w, "  floor (epoch %.16s): owns %d item(s), %d complete, %d B; %d surplus item(s) kept\n", f.Epoch, f.Owned, f.Complete, f.Bytes, f.Surplus)
+		} else {
+			fmt.Fprintf(w, "  floor (epoch %.16s): not eligible here; %d surplus item(s) kept\n", f.Epoch, f.Surplus)
+		}
+	}
 	if ix := st.Index; ix != nil {
 		fmt.Fprintf(w, "  index: %d unheld item(s), copies %v\n", ix.Unheld, ix.Copies)
 		for _, m := range ix.Members {

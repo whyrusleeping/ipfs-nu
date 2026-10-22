@@ -305,12 +305,16 @@ acknowledgment never implies stored content (E10).
   `degraded`, `policy_unsatisfiable`, `paused`, `error`; clients must treat any state
   other than `ready` as not ready. It carries the [W3](operations.md#w-exact-target-waits)
   fields `target`, `mode`, `epoch`, `policy`, `confirmed: [{peer, seq, age_ms}]`,
-  `required`, `missing: [{peer, reason}]`, `extra`, `evidence_age_ms`, `unmet`, plus
+  `required` (confirmed copies per unit), `copies: {unit, units, below, min}`,
+  `missing: [{peer, reason}]`, `extra`, `evidence_age_ms`, `unmet`, plus
   `last_ready` (E8), `local` (this node's own sync: target, observed head when staging is
   full, mode, state, owned/missing counts, pause reason and bytes needed) and `release`
   (`auto: false`; last ready, last held, staged and candidate versions, all still pinned).
-  Collections report `policy_unsatisfiable` with `replicas: 0` (no guaranteed copies) and
-  `unknown` otherwise until floor placement is run for them.
+  Collections report `policy_unsatisfiable` with `replicas: 0` (no guaranteed copies);
+  with floor placement the target is the merged catalog root and the unit `item`.
+  `CollectionItem.owners` (single-item query) lists an item's floor owners and
+  `CollectionStatus.floor {eligible, epoch, owned, complete, bytes, surplus}` this node's
+  floor holdings.
 - **Head writes:** `POST /datasets/{name}/head` and `/cluster/datasets/{name}/head`
   (`DatasetUpdateRequest {target, kind?, note?}`, `nu [cluster] dataset update <ds> <cid>`)
   write the head record; `kind` is detected from held content. The `Dataset` result has

@@ -54,6 +54,9 @@ const MaxIncomplete = 256
 // LiveComplete reports whether the report says the live set is complete.
 func (r Report) LiveComplete() bool { return r.Complete && len(r.Incomplete) == 0 }
 
+// Same reports whether two reports say the same thing (ignoring seq).
+func (r Report) Same(o Report) bool { return r.same(o) }
+
 // same reports whether two reports say the same thing (ignoring seq).
 func (r Report) same(o Report) bool {
 	if (r.Missing == nil) != (o.Missing == nil) || (r.Missing != nil && *r.Missing != *o.Missing) {
@@ -105,18 +108,60 @@ const (
 	ReadyUnsatisfied = "policy_unsatisfiable"
 )
 
+// OwnerGroup is a number of placement units (blobs; for collections, items) that have
+// the same owners.
+type OwnerGroup struct {
+	Owners []wire.PeerID
+	Units  int64
+}
+
+// GroupSet accumulates owner groups.
+type GroupSet struct{ m map[string]*OwnerGroup }
+
+// Add counts n units owned by owners.
+func (g *GroupSet) Add(owners []wire.PeerID, n int64) {
+	if g.m == nil {
+		g.m = map[string]*OwnerGroup{}
+	}
+	o := slices.Clone(owners)
+	slices.Sort(o)
+	key := ""
+	for _, id := range o {
+		key += string(id) + "\x00"
+	}
+	if e := g.m[key]; e != nil {
+		e.Units += n
+		return
+	}
+	g.m[key] = &OwnerGroup{Owners: o, Units: n}
+}
+
+// List returns the groups in a deterministic order.
+func (g *GroupSet) List() []OwnerGroup {
+	out := make([]OwnerGroup, 0, len(g.m))
+	for _, e := range g.m {
+		out = append(out, *e)
+	}
+	slices.SortFunc(out, func(a, b OwnerGroup) int { return slices.CompareFunc(a.Owners, b.Owners, cmpPeer) })
+	return out
+}
+
 // ReadyInput is what the E5–E8 evaluation needs; it is a pure function of it.
 type ReadyInput struct {
-	Target, Mode, Policy, Epoch string
+	Target, Policy, Epoch string
 	// Live, when set, evaluates archive-wide readiness (E8): reports must also be bound to
 	// this live set and say it is complete.
 	Live        string
 	Feasibility Feasibility
-	// Owners is the owner set of Target in Epoch; OwnersKnown is false when this node
-	// cannot compute it (it lacks the target's structure).
-	Owners      []wire.PeerID
+	// K is the number of confirmed copies every unit needs (replicas; the eligible count
+	// for replicas: all). Groups are Target's units by owner set in Epoch; OwnersKnown is
+	// false when this node cannot compute them (it lacks the target's structure). Unit
+	// names the unit ("blob", or "item" for collections).
+	K           int
+	Groups      []OwnerGroup
 	OwnersKnown bool
-	// Members restricts extra evidence to current members (nil: all).
+	Unit        string
+	// Members restricts evidence to current members (nil: all).
 	Members  func(wire.PeerID) bool
 	Evidence map[wire.PeerID]Evidence
 	Now      time.Time
@@ -138,26 +183,61 @@ type MissingOwner struct {
 	Reason string
 }
 
-// ReadyResult is the evaluation (E6–E8): State, the counted confirmations, the owners
-// still missing, extra fresh complete reports from non-owners (never counted) and the
-// age of the oldest counted report.
+// Copies summarises confirmed copies per unit (E7): Units counted, Below of them with
+// fewer than K confirmed copies, and Min, the fewest confirmed copies of any unit.
+type Copies struct {
+	Unit  string
+	Units int64
+	Below int64
+	Min   int
+}
+
+// ReadyResult is the evaluation (E6–E8): State; the counted confirmations; Required, the
+// copies each unit needs; the owners without a counted report; extra fresh complete
+// reports that confirm no unit; the per-unit copy summary; and the age of the oldest
+// counted report.
 type ReadyResult struct {
 	State       string
 	Confirmed   []Confirmation
 	Required    int
 	Missing     []MissingOwner
 	Extra       []Confirmation
+	Copies      Copies
 	EvidenceAge time.Duration
 	Unmet       []string
 }
 
-// Ready reports whether the input's evidence makes Target ready (E5–E8).
+// reportReason classifies one member's evidence for the input's binding ("" counts).
+func (in *ReadyInput) reportReason(ev Evidence, ok bool, fresh time.Duration) string {
+	r := ev.Report
+	switch {
+	case !ok:
+		return ReasonAbsent
+	case in.Now.Sub(ev.Received) > fresh:
+		return ReasonStale
+	case r.Target != in.Target || (in.Live != "" && r.Live != in.Live):
+		return ReasonAbsent
+	case r.Epoch != in.Epoch || r.Policy != in.Policy || (r.Mode != ModeOwned && r.Mode != ModeFull):
+		return ReasonEpoch
+	case !r.Complete || (in.Live != "" && !r.LiveComplete()):
+		return ReasonIncomplete
+	}
+	return ""
+}
+
+// Ready evaluates E5–E8 by confirmed copies per unit: a counted report (fresh, bound to
+// the target, live set, policy and epoch, complete) in mode owned confirms the units its
+// sender owns, in mode full every unit. Target is ready when every unit has at least K
+// confirmed copies.
 func Ready(in ReadyInput) ReadyResult {
 	fresh := in.Fresh
 	if fresh <= 0 {
 		fresh = DefaultFresh
 	}
-	res := ReadyResult{Required: len(in.Owners)}
+	res := ReadyResult{Required: in.K, Copies: Copies{Unit: in.Unit}}
+	if res.Copies.Unit == "" {
+		res.Copies.Unit = "blob"
+	}
 	if !in.Feasibility.OK {
 		res.State, res.Unmet = ReadyUnsatisfied, slices.Clone(in.Feasibility.Unmet)
 		return res
@@ -167,52 +247,92 @@ func Ready(in ReadyInput) ReadyResult {
 		res.Unmet = []string{"owner set unknown: this node does not hold the target's structure"}
 		return res
 	}
-	owner := map[wire.PeerID]bool{}
-	contradicted := false
-	for _, id := range in.Owners {
-		owner[id] = true
-		ev, ok := in.Evidence[id]
-		age := in.Now.Sub(ev.Received)
-		reason := ""
-		switch r := ev.Report; {
-		case !ok:
-			reason = ReasonAbsent
-		case age > fresh:
-			reason = ReasonStale
-		case r.Target != in.Target || (in.Live != "" && r.Live != in.Live):
-			reason = ReasonAbsent
-		case r.Epoch != in.Epoch || r.Policy != in.Policy || r.Mode != in.Mode:
-			reason = ReasonEpoch
-		case !r.Complete || (in.Live != "" && !r.LiveComplete()):
-			reason = ReasonIncomplete
-		}
-		if reason == "" {
-			res.Confirmed = append(res.Confirmed, Confirmation{Peer: id, Seq: ev.Report.Seq, Age: max(age, 0)})
-			res.EvidenceAge = max(res.EvidenceAge, age)
+	counted := map[wire.PeerID]bool{}
+	var full []wire.PeerID
+	for id, ev := range in.Evidence {
+		if (in.Members != nil && !in.Members(id)) || in.reportReason(ev, true, fresh) != "" {
 			continue
 		}
-		if reason != ReasonStale {
+		counted[id] = true
+		if ev.Report.Mode == ModeFull {
+			full = append(full, id)
+		}
+	}
+	owner, short := map[wire.PeerID]bool{}, map[wire.PeerID]bool{}
+	res.Copies.Min = -1
+	for _, g := range in.Groups {
+		n := 0
+		for _, o := range g.Owners {
+			owner[o] = true
+			if counted[o] {
+				n++
+			}
+		}
+		for _, f := range full {
+			if !slices.Contains(g.Owners, f) {
+				n++
+			}
+		}
+		res.Copies.Units += g.Units
+		if res.Copies.Min < 0 || n < res.Copies.Min {
+			res.Copies.Min = n
+		}
+		if n < in.K {
+			res.Copies.Below += g.Units
+			for _, o := range g.Owners {
+				short[o] = true
+			}
+		}
+	}
+	res.Copies.Min = max(res.Copies.Min, 0)
+	conf := func(id wire.PeerID) Confirmation {
+		ev := in.Evidence[id]
+		age := max(in.Now.Sub(ev.Received), 0)
+		return Confirmation{Peer: id, Seq: ev.Report.Seq, Age: age}
+	}
+	for id := range counted {
+		if owner[id] || slices.Contains(full, id) {
+			c := conf(id)
+			res.Confirmed = append(res.Confirmed, c)
+			res.EvidenceAge = max(res.EvidenceAge, c.Age)
+		} else {
+			res.Extra = append(res.Extra, conf(id))
+		}
+	}
+	contradicted := false
+	owners := make([]wire.PeerID, 0, len(owner))
+	for id := range owner {
+		owners = append(owners, id)
+	}
+	slices.SortFunc(owners, cmpPeer)
+	for _, id := range owners {
+		if counted[id] {
+			continue
+		}
+		ev, ok := in.Evidence[id]
+		reason := in.reportReason(ev, ok, fresh)
+		if reason == "" { // fresh and complete, but not a current member
+			reason = ReasonAbsent
+		}
+		if reason != ReasonStale && short[id] {
 			contradicted = true
 		}
 		res.Missing = append(res.Missing, MissingOwner{Peer: id, Reason: reason})
-		res.Unmet = append(res.Unmet, fmt.Sprintf("owner %s: %s", id, reason))
-	}
-	for id, ev := range in.Evidence {
-		r := ev.Report
-		age := in.Now.Sub(ev.Received)
-		if owner[id] || age > fresh || !r.Complete || r.Target != in.Target || (in.Members != nil && !in.Members(id)) ||
-			(in.Live != "" && (r.Live != in.Live || !r.LiveComplete())) {
-			continue
+		if short[id] {
+			res.Unmet = append(res.Unmet, fmt.Sprintf("owner %s: %s", id, reason))
 		}
-		res.Extra = append(res.Extra, Confirmation{Peer: id, Seq: r.Seq, Age: max(age, 0)})
 	}
 	sortConf := func(cs []Confirmation) {
 		slices.SortFunc(cs, func(a, b Confirmation) int { return cmpPeer(a.Peer, b.Peer) })
 	}
 	sortConf(res.Confirmed)
 	sortConf(res.Extra)
+	if res.Copies.Below > 0 {
+		res.Unmet = append(res.Unmet, fmt.Sprintf("%d of %d %ss below %d confirmed copies (fewest: %d)",
+			res.Copies.Below, res.Copies.Units, res.Copies.Unit, in.K, res.Copies.Min))
+	}
 	switch {
-	case len(res.Missing) == 0:
+	case res.Copies.Below == 0 && len(in.Groups) > 0:
 		res.State = ReadyReady
 	case in.WasReady && contradicted:
 		res.State = ReadyDegraded

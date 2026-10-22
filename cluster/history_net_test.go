@@ -24,7 +24,8 @@ func versionsOf(t *testing.T, nd *nutest.Node, ds string) map[string]apiv0.Versi
 
 // An archive on a two-member cluster uses ordinary placement (0047, E8): members fetch
 // their owned blobs of every live version and report the live set; archive-wide
-// readiness waits for every owner's live-set report; a new version that cannot complete
+// readiness counts confirmed copies per blob over the live set (the writer's full copy
+// covers k=1); a new version that cannot complete
 // makes the archive not ready without changing the established availability of the
 // older complete version; rollback's head write and its readiness are separate results.
 func TestClusterArchive(t *testing.T) {
@@ -40,11 +41,11 @@ func TestClusterArchive(t *testing.T) {
 		t.Fatalf("update %+v %v", d, err)
 	}
 	v1 := d.Version.TID
-	w, err := b.Local.DatasetWait(ctx(t), node.ScopeCluster, "logs", apiv0.DatasetWaitRequest{Target: v1root.String(), Condition: apiv0.WaitArchive, Timeout: "20s"})
-	if err != nil || !w.Satisfied || w.Required != 2 || len(w.Confirmed) != 2 || w.Live == "" {
+	w, err := b.Local.DatasetWait(ctx(t), node.ScopeCluster, "logs", apiv0.DatasetWaitRequest{Target: v1root.String(), Condition: apiv0.WaitArchive, Timeout: "40s"})
+	if err != nil || !w.Satisfied || w.Required != 1 || len(w.Confirmed) == 0 || w.Live == "" || w.Copies == nil || w.Copies.Below != 0 {
 		t.Fatalf("archive-ready wait: %+v %v", w, err)
 	}
-	nutest.Eventually(t, "v1 established on b", func() bool {
+	eventually(t, "v1 established on b", func() bool {
 		return versionsOf(t, b, "logs")[v1].Availability == apiv0.AvailComplete
 	})
 
@@ -54,7 +55,7 @@ func TestClusterArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nutest.Eventually(t, "b sees v2", func() bool { return len(versionsOf(t, b, "logs")) == 2 })
+	eventually(t, "b sees v2", func() bool { return len(versionsOf(t, b, "logs")) == 2 })
 	vs, err := b.Local.DatasetVersions(ctx(t), node.ScopeCluster, "logs")
 	if err != nil {
 		t.Fatal(err)

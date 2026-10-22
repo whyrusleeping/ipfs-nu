@@ -62,7 +62,7 @@ func TestIsolatedNoEgress(t *testing.T) {
 	c := n.Nodes[1].AddBytes(n.RandBytes(1024))
 	_ = a.Local.Fetcher.Fetch(fctx, c, []link.Provider{{Peer: outsider.Public().PeerID(), Addrs: []wire.Multiaddr{addr}}}, nil)
 	// Several heartbeat/anti-entropy rounds.
-	nutest.Eventually(t, "heartbeat rounds", func() bool {
+	eventually(t, "heartbeat rounds", func() bool {
 		p := a.Local.ClusterService().Peers()[n.Nodes[2].ID]
 		return p.Heartbeat != nil && p.Heartbeat.Seq >= 5
 	})

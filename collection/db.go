@@ -52,6 +52,9 @@ var schema = []string{
 		PRIMARY KEY (ds, path)) WITHOUT ROWID;
 	CREATE INDEX pushes_seq ON pushes (ds, seq);
 	CREATE INDEX pushes_work ON pushes (state, next_ms);`,
+	// 0046: floor placement (the placement epoch and policy last evaluated).
+	`ALTER TABLE coll ADD COLUMN floor TEXT NOT NULL DEFAULT '';
+	CREATE INDEX holdings_src ON holdings (ds, src, state);`,
 }
 
 func openDB(path string) (*sql.DB, string, error) {

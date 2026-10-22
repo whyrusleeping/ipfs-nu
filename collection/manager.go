@@ -43,6 +43,11 @@ const (
 	SrcRescue = "rescue"
 	SrcManual = "manual"
 	SrcWriter = "writer"
+	// SrcFloor holds an item this member owns by floor placement (replicas > 0);
+	// SrcSurplus a complete floor holding it no longer owns, kept until release
+	// evidence (docs/operations.md S; release.auto is off).
+	SrcFloor   = "floor"
+	SrcSurplus = "surplus"
 )
 
 // Config configures a Manager.
@@ -66,6 +71,8 @@ type Config struct {
 	Workers      int           // concurrent item fetches
 	// GC sweeps released content (a store GC); nil disables sweeping.
 	GC func(ctx context.Context)
+	// Changed is called (without locks) when this node's floor completion reports change.
+	Changed func()
 	// HTTP fetches item URL files (nil: pushes with URL files are refused); IngestDir
 	// keeps partial URL downloads across restarts; IngestWorkers bounds concurrent pushes
 	// being stored and IngestBackoff is the first retry delay (doubling to 10 min).
@@ -105,6 +112,9 @@ type Manager struct {
 	ikick  chan struct{}
 	// ownKeys overrides heldKeys in tests.
 	ownKeys func() map[string]bool
+	// repMu guards reports, this node's floor completion reports by collection.
+	repMu   sync.Mutex
+	reports map[string]cluster.Report
 }
 
 // Open opens (creating) the collection database. Start runs the background work.
@@ -145,7 +155,7 @@ func Open(cfg Config) (*Manager, error) {
 	}
 	m := &Manager{cfg: cfg, db: db, epoch: epoch, log: cfg.Logger.With("component", "collections"),
 		kick: make(chan struct{}, 1), fkick: make(chan struct{}, 1), inflight: map[string]bool{}, lastFlush: map[string]time.Time{},
-		pushCh: make(chan struct{}), ikick: make(chan struct{}, 1)}
+		pushCh: make(chan struct{}), ikick: make(chan struct{}, 1), reports: map[string]cluster.Report{}}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	return m, nil
 }
@@ -228,9 +238,11 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: catalog: %w", name, err))
 		}
-		if err := m.evaluate(name, d, changed); err != nil {
-			errs = append(errs, fmt.Errorf("%s: selection: %w", name, err))
+		evalErr := m.evaluate(name, d, changed)
+		if evalErr != nil {
+			errs = append(errs, fmt.Errorf("%s: selection: %w", name, evalErr))
 		}
+		m.updateReport(name, evalErr == nil)
 		if m.indexOn(name) {
 			m.pullIndex(ctx, name, v)
 			if err := m.rescue(name); err != nil {
@@ -238,6 +250,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			}
 		}
 	}
+	m.dropReports(v)
 	m.kickFetch()
 	return errors.Join(errs...)
 }
@@ -715,6 +728,13 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 	for _, p := range changed {
 		set[p] = true
 	}
+	// A placement epoch or policy change re-decides every item's floor owners.
+	fl := m.floor(d)
+	floorKey, lastFloor := "", ""
+	if fl != nil {
+		floorKey = fl.Epoch + "/" + d.PolicyHash()
+	}
+	_ = m.db.QueryRow(`SELECT floor FROM coll WHERE ds = ?`, name).Scan(&lastFloor)
 	add := func(q string, args ...any) error {
 		rows, err := m.db.Query(q, args...)
 		if err != nil {
@@ -730,7 +750,7 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 		}
 		return rows.Err()
 	}
-	full := row.evalGen != row.rulesGen
+	full := row.evalGen != row.rulesGen || floorKey != lastFloor
 	if full {
 		if err := add(`SELECT path FROM items WHERE ds = ? AND deleted = 0`, name); err != nil {
 			return err
@@ -755,8 +775,9 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 	keys := m.heldKeys()
 	released := false
 	for _, p := range paths {
-		r, err := m.evalItem(name, p, rules, now, keys)
+		r, err := m.evalItem(name, p, rules, now, keys, fl)
 		if err != nil {
+			_, _ = m.db.Exec(`UPDATE coll SET floor = '' WHERE ds = ?`, name) // re-decide everything next pass
 			return err
 		}
 		released = released || r
@@ -764,7 +785,7 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 	if released {
 		m.scheduleGC()
 	}
-	_, err = m.db.Exec(`UPDATE coll SET eval_ms = ?, eval_gen = ? WHERE ds = ?`, now.UnixMilli(), row.rulesGen, name)
+	_, err = m.db.Exec(`UPDATE coll SET eval_ms = ?, eval_gen = ?, floor = ? WHERE ds = ?`, now.UnixMilli(), row.rulesGen, floorKey, name)
 	return err
 }
 
@@ -773,8 +794,9 @@ type want struct {
 	rule int
 }
 
-// evalItem decides one item's holding and applies it; it reports a release.
-func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys map[string]bool) (bool, error) {
+// evalItem decides one item's holding and applies it; it reports a release. fl is the
+// collection's floor placement (nil: replicas 0).
+func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys map[string]bool, fl *cluster.Placement) (bool, error) {
 	it, err := m.item(name, path)
 	if err != nil {
 		return false, err
@@ -783,7 +805,13 @@ func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys 
 	if err != nil {
 		return false, err
 	}
+	// A complete floor holding stays as surplus when its item leaves this member's
+	// ownership or the catalog (S: never released without evidence; release.auto off).
+	keep := cur != nil && (cur.src == SrcFloor || cur.src == SrcSurplus) && cur.state == StateComplete
 	if it == nil || it.deleted {
+		if keep {
+			return false, m.toSurplus(name, path, cur)
+		}
 		return m.release(name, path, cur)
 	}
 	ruleIdx := Select(rules, path, it.facets, now)
@@ -796,6 +824,10 @@ func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys 
 	_ = m.db.QueryRow(`SELECT 1 FROM manual WHERE ds = ? AND path = ?`, name, path).Scan(&manual)
 	var w *want
 	switch {
+	case fl != nil && fl.Owns(m.cfg.Self, ItemUnit(it.entry)):
+		w = &want{SrcFloor, -1}
+	case keep && cur.entry == it.entry:
+		w = &want{SrcSurplus, -1}
 	case manual:
 		w = &want{SrcManual, -1}
 	case keys[it.writer]:
@@ -814,8 +846,13 @@ func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, keys 
 }
 
 func pinSource(src string) string {
-	if src == SrcManual {
+	switch src {
+	case SrcManual:
 		return store.SourceCollectionManual
+	case SrcFloor:
+		return store.SourceCluster
+	case SrcSurplus:
+		return store.SourceClusterSurplus
 	}
 	return store.SourceCollectionSelect
 }
@@ -1031,6 +1068,9 @@ func (m *Manager) fetchItem(name, path string, entry cid.CID) {
 		return
 	}
 	_ = m.appendLog(name, path, entry, StateComplete, cur.src, cur.bytes)
+	if cur.src == SrcFloor {
+		m.updateReport(name, true)
+	}
 }
 
 // splitPath validates an item path.

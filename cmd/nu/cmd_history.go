@@ -181,7 +181,7 @@ func historyCommands(scope string, get func(*env, context.Context) (node.Cluster
 						fmt.Fprintf(w, "  warning: protected versions exceed max_bytes by %d B\n", vs.Excess)
 					}
 					if a := vs.Archive; a != nil {
-						fmt.Fprintf(w, "  archive-wide: %s, %d of %d owner(s) confirmed\n", a.State, len(a.Confirmed), a.Required)
+						fmt.Fprintf(w, "  archive-wide: %s, %s\n", a.State, copiesText(*a))
 					}
 					for _, v := range vs.Versions {
 						printVersion(w, v)

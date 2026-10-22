@@ -23,3 +23,4 @@ Acceptance: a hinted get with an unreachable DHT bootstrap starts transferring w
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (0f0e8c5..4693898; merged). Fetch runs provider discovery in the background and starts on the first usable peer (TestFetchStartsBeforeSlowSourcesFinish: hinted fetch beside a stalled source completes in ~0.2 s); blob stage attempts every blob instead of cancel-on-first-error; replica bounded exponential backoff with reset on state change (TestFailedFetchBackoff); Host.Dial waits for the responder's post-handshake verdict so a refused dial never reports transient success (TestRefusedDialNeverLooksConnected; TestPrivateCluster asserts Connect fails).

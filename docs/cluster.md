@@ -715,7 +715,9 @@ Neither mode sends any traffic, even encrypted, through third parties.
   circuit reservations, AutoNAT, port mapping, nu-path or hole punching. Members dial the
   addresses in member records and heartbeats. `nu cluster status` and `nu doctor` report a
   pair of members that cannot connect as a configuration error, not a condition to work
-  around. mDNS uses a service name derived from the cluster ID and can be disabled.
+  around. mDNS uses a service name derived from the cluster ID
+  (`_p2p-<first 5 bytes of sha256(cluster ID) hex>._udp.local.`) and can be disabled with
+  `swarm.mdns = false`; peers it finds are still gated to members.
 - **Egress safety:** at startup, isolated mode refuses configuration that names a non-member
   endpoint, including bootstrap, relay, lookup, PDS or telemetry endpoints, and compiled-in
   defaults are inactive. Private mode applies the same check to everything except the

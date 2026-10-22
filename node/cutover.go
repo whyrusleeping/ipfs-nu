@@ -49,7 +49,7 @@ func (n *Local) ImportCutover(ctx context.Context, req apiv0.ImportCutoverReques
 	if err != nil {
 		return nil, err
 	}
-	out := &apiv0.ImportCutoverResult{Dataset: req.Dataset, Scope: scope, Notes: cutoverNotes}
+	out := &apiv0.ImportCutoverResult{Dataset: req.Dataset, Scope: scope, Notes: append([]string(nil), cutoverNotes...)}
 	hs := histFor(c, req.Dataset, d)
 	if hs.head == "" {
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "dataset %q has no head yet", req.Dataset).
@@ -85,6 +85,9 @@ func (n *Local) ImportCutover(ctx context.Context, req apiv0.ImportCutoverReques
 			why = err.Error()
 		}
 		out.Missing = append(out.Missing, "the dataset policy is not ready: "+why)
+	}
+	if res.Required <= 1 {
+		out.Notes = append(out.Notes, "the dataset policy keeps a single copy: retiring the IPFS source leaves no second replica (raise --replicas first if that matters)")
 	}
 	out.Recommend = len(out.Missing) == 0
 	return out, nil

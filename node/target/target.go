@@ -141,14 +141,11 @@ func IsCID(s string) bool {
 
 // Supported returns nil when this build can act on the target, else a not_supported error
 // saying what to do. CID targets, CID share links, rasl:// and at:// targets are
-// supported, and dataset targets (resolved by the node); names are not yet.
+// supported, and dataset and public-name targets (resolved by the node).
 func (t Target) Supported() error {
 	switch t.Kind {
-	case KindCID, KindLink, KindAtproto, KindRASL, KindDataset:
+	case KindCID, KindLink, KindAtproto, KindRASL, KindDataset, KindName:
 		return nil
-	case KindName:
-		return &apiv0.Error{Code: apiv0.CodeNotSupported, Message: "public names (" + t.Authority + "/" + t.Name + ") are not supported yet",
-			Action: "names arrive after v0; ask the publisher for the CID and use that"}
 	}
 	return invalid("%q is not a valid target", t.Raw)
 }

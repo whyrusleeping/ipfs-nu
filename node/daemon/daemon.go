@@ -16,6 +16,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api"
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/atproto"
 	"github.com/whyrusleeping/nu/gateway"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
@@ -37,6 +38,8 @@ type Options struct {
 	NoNetwork, NoMDNS bool
 	Swarm             func(*swarm.Config)
 	Logger            *slog.Logger
+	// Atproto replaces the node's atproto client configuration (tests: fixtures).
+	Atproto *atproto.Config
 }
 
 // Daemon is a running daemon.
@@ -58,6 +61,7 @@ type Daemon struct {
 	maintainStop context.CancelFunc
 	maintainDone chan struct{}
 
+	followDone chan struct{}
 	// The producer listener (api.producer.*, rule A8), when configured.
 	prodLn  net.Listener
 	prodSrv *http.Server
@@ -109,6 +113,9 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 	if err != nil {
 		lock.Release()
 		return nil, err
+	}
+	if opts.Atproto != nil {
+		n.Atproto = atproto.New(*opts.Atproto)
 	}
 	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 4)}
 	if !opts.NoNetwork {
@@ -194,6 +201,12 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		defer close(d.maintainDone)
 		n.Maintain(d.maintainCtx, log.Info)
 	}()
+	// Follows (0045): re-resolve on startup, then the poll backstop.
+	d.followDone = make(chan struct{})
+	go func() {
+		defer close(d.followDone)
+		n.FollowLoop(d.maintainCtx)
+	}()
 	log.Info("daemon started", "version", nu.Version, "repo", opts.Repo.Root(), "api", d.Node.API, "gateway", d.Node.Gateway, "peer", n.PeerID().Base36())
 	return d, nil
 }
@@ -246,6 +259,9 @@ func (d *Daemon) Close() error {
 	if d.maintainStop != nil {
 		d.maintainStop()
 		<-d.maintainDone
+		if d.followDone != nil {
+			<-d.followDone
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer cancel()

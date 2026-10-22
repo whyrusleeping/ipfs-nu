@@ -25,6 +25,20 @@ import (
 type Content struct {
 	st       *store.Store
 	datasets func(ctx context.Context, name, version string) (string, error)
+	names    func(ctx context.Context, authority, name string, held bool) (string, string, error)
+}
+
+// SetNames installs the public-name lookup the gateway's /nu/ route uses (0045).
+func (c *Content) SetNames(fn func(ctx context.Context, authority, name string, held bool) (string, string, error)) {
+	c.names = fn
+}
+
+// ResolveName implements gateway.NameContent through the node's lookup.
+func (g gw) ResolveName(ctx context.Context, authority, name string, held bool) (string, string, error) {
+	if g.c.names == nil {
+		return "", "", apiv0.NotImplemented("names on the gateway")
+	}
+	return g.c.names(ctx, authority, name, held)
 }
 
 // SetDatasets installs the dataset lookup the gateway's /c/ route uses (the node sets it).

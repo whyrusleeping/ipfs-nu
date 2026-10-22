@@ -684,8 +684,9 @@ func (c *Client) Call(ctx context.Context, s *Session, method, nsid string, q ur
 type WriteResult struct {
 	URI string `json:"uri"`
 	CID string `json:"cid"`
-	// Rev is the repository commit's rev after the write ("" if the PDS omits it).
-	Rev string `json:"rev,omitempty"`
+	// Rev and Commit identify the repository commit after the write ("" if omitted).
+	Rev    string `json:"rev,omitempty"`
+	Commit string `json:"commit,omitempty"`
 }
 
 type writeResponse struct {
@@ -710,7 +711,7 @@ func (c *Client) PutRecord(ctx context.Context, s *Session, collection, rkey str
 	}
 	res := &WriteResult{URI: w.URI, CID: w.CID}
 	if w.Commit != nil {
-		res.Rev = w.Commit.Rev
+		res.Rev, res.Commit = w.Commit.Rev, w.Commit.CID
 	}
 	return res, nil
 }

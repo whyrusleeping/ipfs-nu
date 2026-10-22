@@ -750,6 +750,9 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 		out.Replicas, out.Writers, out.Note = d.Value.Policy.Replicas, d.Value.Writers, d.Value.Note
 		out.All, out.Where, out.Spread = d.Value.Policy.All, d.Value.Policy.Where, d.Value.Policy.Spread
 		out.History, out.SourcePath = historyPolicy(d.Value.Policy.History), d.Value.Source.Path
+		if d.Value.Source.Name != "" {
+			out.Source, out.SourceName = "name", d.Value.Source.Name
+		}
 		if cp := d.Value.Collection; cp != nil {
 			out.Collection = &apiv0.DatasetCollection{Merge: cp.MergeMode(), Facets: map[string]apiv0.FacetDecl{}}
 			for k, f := range cp.Facets {

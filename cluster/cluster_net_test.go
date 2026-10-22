@@ -173,12 +173,18 @@ func TestPrivateCluster(t *testing.T) {
 	})
 	eventually(t, "b disconnected", func() bool { return !a.ConnectedTo(b.ID) && !c.ConnectedTo(b.ID) })
 
-	// Non-members (the outsider, the removed b) cannot open streams or even connect.
-	if err := outsider.Swarm.Connect(ctx(t), a.ID, a.Addrs()); err == nil {
-		t.Fatal("a non-member connected to a private member")
-	}
-	if err := b.Swarm.Connect(ctx(t), a.ID, a.Addrs()); err == nil {
-		t.Fatal("a removed member connected")
+	// Non-members (the outsider, the removed b) cannot open streams or even connect: a
+	// never registers their connection. The dialer's QUIC handshake can complete before
+	// a's post-handshake refusal arrives, so its Connect may return before the
+	// connection is torn down; it never survives.
+	for _, nd := range []*nutest.Node{outsider, b} {
+		err := nd.Swarm.Connect(ctx(t), a.ID, a.Addrs())
+		if a.ConnectedTo(nd.ID) {
+			t.Fatalf("a private member registered a connection from non-member %s", nd.Name)
+		}
+		if err == nil {
+			eventually(t, "non-member "+nd.Name+" dropped", func() bool { return !nd.ConnectedTo(a.ID) })
+		}
 	}
 	// While a secret invite is live, a non-member gets only the join exchange.
 	if _, err := a.Local.ClusterInvite(ctx(t), apiv0.ClusterInviteRequest{}); err != nil {

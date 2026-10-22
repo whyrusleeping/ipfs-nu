@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,14 +39,27 @@ import (
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/node/swarm"
+	_ "github.com/whyrusleeping/nu/nutest/tmpdir" // stores on tmpfs when available
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
 	"github.com/whyrusleeping/nu/store"
 )
 
-// Timeout bounds every wait in the harness.
-const Timeout = 10 * time.Second
+// Timeout bounds every wait in the harness: a ceiling that only catches hangs (a
+// correct run never approaches it), so it is generous rather than tight. It is 20 s
+// scaled by NU_TEST_TIMEOUT_SCALE (a float, default 1) for slow or loaded machines; tests
+// that want the same knob use Scale.
+var Timeout = Scale(20 * time.Second)
+
+// Scale multiplies d by NU_TEST_TIMEOUT_SCALE (default 1). Use it for every wall-clock
+// ceiling in a test so one knob stretches them all on a slow machine.
+func Scale(d time.Duration) time.Duration {
+	if f, err := strconv.ParseFloat(os.Getenv("NU_TEST_TIMEOUT_SCALE"), 64); err == nil && f > 0 {
+		return time.Duration(float64(d) * f)
+	}
+	return d
+}
 
 // Options configure a Network.
 type Options struct {

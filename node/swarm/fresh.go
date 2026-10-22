@@ -33,8 +33,12 @@ func startFresh(ctx context.Context, dir string) (node.FreshFetcher, error) {
 		_ = st.Close()
 		return nil, err
 	}
+	// The check retrieves from this node and its cluster members by hint only: no DHT,
+	// whose bootstrap would otherwise gate the fetch (fetch waits for every provider
+	// source before walking).
 	cfg := Config{Key: key, Store: st, Logger: slog.New(slog.DiscardHandler),
-		Listen: []string{"/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"}}
+		Listen: []string{"/ip4/0.0.0.0/udp/0/quic-v1", "/ip6/::/udp/0/quic-v1"},
+		DHT:    DHTConfig{Mode: "off"}}
 	sw, err := Start(ctx, cfg)
 	if err != nil { // no IPv6 here
 		cfg.Listen = cfg.Listen[:1]

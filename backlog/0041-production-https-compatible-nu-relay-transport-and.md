@@ -1,10 +1,10 @@
 ---
 id: "0041"
 title: Production HTTPS-compatible Nu relay transport and reach
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-22"
 depends_on:
     - "0013"
 spec_refs:

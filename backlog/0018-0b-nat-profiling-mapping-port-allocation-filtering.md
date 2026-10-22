@@ -1,10 +1,10 @@
 ---
 id: "0018"
 title: '0b+: NAT profiling (mapping, port allocation, filtering, lifetime, hairpin, IPv6)'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-22"
 depends_on:
     - "0012"
     - "0013"

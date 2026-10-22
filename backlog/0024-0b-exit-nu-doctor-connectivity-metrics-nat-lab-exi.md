@@ -1,10 +1,10 @@
 ---
 id: "0024"
 title: '0b exit: `nu doctor`, connectivity metrics, NAT-lab exit scenarios in CI'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-22"
 depends_on:
     - "0020"
     - "0014"

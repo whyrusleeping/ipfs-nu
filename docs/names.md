@@ -134,7 +134,11 @@ nu://<cid>[/<path>][?peer=<base36 peerid>[&addr=<multiaddr>]…[&via=<did>]]
   none of them can supply the address.
 
 HTTPS share links require an explicitly serving public seed/gateway with configured TLS;
-they are not automatic uploads or a project hosting guarantee. Nu-aware links carry provider
+they are not automatic uploads or a project hosting guarantee. *(0043)* `nu share` prints,
+after the `nu://` link, `https://<domain>/tree/<cid>/<path>` (or `/blob/<cid>`), the site
+origin `https://<cid>.<domain>/<path>/` for a directory and `rasl://<cid>/?hint=<domain>`
+only when the daemon answering runs the [public listener](api.md#public-listener-0043)
+and the root is marked public (`nu public add`); a daemonless `share` never prints them. Nu-aware links carry provider
 hints; conventional browser links trust that gateway. Followed-name browser links can serve
 a held snapshot, so expose its CID and immutable snapshot link. CLI/API default name reads
 resolve a target; an explicit held/offline selection is a separate mode.

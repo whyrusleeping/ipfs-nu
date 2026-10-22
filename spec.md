@@ -111,6 +111,7 @@ nu get <cid-or-link> [-o path]
 nu ls <tree-cid>[/sub/path]
 nu pin add|rm|ls <cid>
 nu share <cid>                       # short link with peer hints; HTTPS/rasl:// link when a public seed serves it
+nu public add|rm|ls <cid>            # opt a held root into this node's public HTTPS seed ([public] config)
 
 nu dag get <cid>[/path] | dag put    # DRISL ↔ atproto-style JSON ($link/$bytes)
 nu car import|export <cid|file> [--profile nu-tree|atrepo|drisl]

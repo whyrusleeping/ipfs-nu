@@ -3,6 +3,11 @@
 # variants of scripts/browser-check/ (two root CIDs = two site origins) and, for B8, a
 # tree with names differing only by case, then prints what to open. Needs `nu daemon`
 # running on the default ports and `nu` on PATH (or NU=path/to/nu).
+#
+# Public seed (0043): with PUBLIC=<public.domain> set, the daemon must also run the
+# public listener for that domain; both check trees are marked public (`nu public add`)
+# and the public URLs are printed so the same rows (plus B9) run against
+# https://<cid>.<domain>/ from a machine without Nu.
 set -eu
 cd "$(dirname "$0")/.."
 NU=${NU:-nu}
@@ -30,5 +35,18 @@ site B:  http://$b.localhost:$port/
 B7:      http://127.0.0.1:$port/tree/$a/index.html  (must download)
          http://127.0.0.1:$port/tree/$a/            (listing renders)
 B8:      $b8
-Record results in docs/validation.md "Browser origin-isolation checks".
 EOF
+if [ -n "${PUBLIC:-}" ]; then
+	$NU public add "$a" >/dev/null
+	$NU public add "$b" >/dev/null
+	cat <<EOF
+public seed (0043), from a machine without Nu:
+site A:  https://$a.$PUBLIC/        (paste B into the page: $b)
+site B:  https://$b.$PUBLIC/
+B7:      https://$PUBLIC/tree/$a/index.html  (must download)
+         https://$PUBLIC/tree/$a/            (listing renders; "open as site" links to site A)
+B9:      runs on site A (RASL read cross-origin + SHA-256 check)
+unmark afterwards: $NU public rm $a; $NU public rm $b
+EOF
+fi
+echo 'Record results in docs/validation.md "Browser origin-isolation checks".'

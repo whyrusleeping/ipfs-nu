@@ -817,6 +817,7 @@ default ports (edit the page's constants otherwise).
 | B6 | Page sets a cookie with `domain=localhost`, a host-only cookie and a `localStorage` key; then open `http://<cidB>.localhost:8171/` and `http://localhost:8171/` | Site B and the bare origin show none of A's values. A `domain=localhost` cookie that leaks is a finding to record (the gateway never reads cookies, so it is not a daemon risk, but it bounds what site content may trust). |
 | B7 | Open `http://127.0.0.1:8171/tree/<cidA>/index.html` and `/tree/<cidA>/` | The HTML is a download (never rendered); the listing renders with an "open as site" link. The gateway root `/` renders. |
 | B8 | macOS (case-insensitive APFS) only: `nu get <cid> -o out` of a tree holding `a.txt` and `A.txt` (the script builds it when the local filesystem allows; otherwise add it on Linux and fetch by share link) | `nu get` prints `skipped A.txt … maps onto existing entry a.txt`; `out/` holds one file with `a.txt`'s content. |
+| B9 | Public seed only: the page on `https://<cidA>.<domain>/` fetches `https://<domain>/.well-known/rasl/<cidA>` cross-origin and hashes it | Readable (CORS `*` on RASL only) and the SHA-256 digest equals the CID's; B2 on the same page still reports the bare origin's `/tree/` as blocked. |
 
 Browsers to cover before the 0028 evidence is complete: Chromium (Linux or macOS),
 Firefox (Linux or macOS); Safari on macOS is required before 0043. Record the browser
@@ -825,6 +826,28 @@ version, OS, the pasted result block, and anything that needed a hosts-file entr
 | Browser | OS | Version | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | (none yet) | | | | | | | | | | | |
+
+**Public seed rerun (0043).** The same page runs against a real public domain: deploy a
+seed per the [runbook](operations.md#public-seed-deployment-runbook) (wildcard DNS and
+certificate, or Caddy on-demand TLS), then `PUBLIC=<domain> scripts/browser-check.sh` on
+the seed (it marks both trees public and prints the `https://` URLs) and open site A from
+a machine **without Nu** in Chromium, Firefox and Safari. The page detects the public
+origin: B2 reads `https://<domain>/tree/<cidA>/`, B3/B5 still target the visitor's own
+`127.0.0.1:5171` (a public page must not reach a visitor's local daemon; run them on a
+machine that *does* run a daemon too), B4/B6 use `<cidB>.<domain>`, B7 is the bare
+`https://<domain>/tree/<cidA>/index.html` download, and B9 is added. Also record: the
+listing's "open as site" link lands on `https://<cidA>.<domain>/`; `https://<domain>/`
+with `Host` games (`curl -H 'Host: evil.example' https://<ip>/ -k`) is `403`; a held but
+unmarked CID is `404` on `/tree/`, `/blob/`, RASL and its site origin; `nu public rm`
+makes the site `404` on reload. Automated coverage of those rows:
+`gateway.TestPublicListener`, `daemon.TestPublicListener` (TLS with a test CA, real
+daemon, client that trusts the CA and resolves the domain to the listener). **Status:
+not yet run against a public domain** — no domain, certificate or browser is available to
+the agents; this is the human step that gates 0043's browser claim.
+
+| Browser | OS | Version | Domain/TLS | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B9 | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| (none yet) | | | | | | | | | | | | |
 
 ## Release evidence
 

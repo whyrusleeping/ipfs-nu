@@ -463,6 +463,45 @@ destination.**
 - **P6** Browsers trust the gateway/TLS; Nu-aware clients verify CIDs/proofs themselves.
   No document claims an ordinary browser performs Bao verification.
 
+*State (0043):* implemented as the **public listener** (`[public]` in config.toml;
+mechanics in [api.md](api.md#public-listener-0043)). It is a separate `http.Server` on
+its own address with the gateway handler in public mode: no `/api/` (P1); `Host` must be
+`public.domain` or `<cid>.<domain>`; only roots marked with `nu public add` (a pin with
+source `public`) and the objects under them are served, and any other CID, held or not,
+is the same `404` (P2/P4); `/at/` does not exist there; RASL answers carry
+`Access-Control-Allow-Origin: *` on this listener only (P5); `nu share` adds the
+`https://` and `rasl://` links only while this process's listener serves the root (P2).
+The daemon refuses the listener on a member of a private or isolated cluster (P3, no
+reader authentication in this build), without TLS (cert/key files, or `behind_proxy` on
+a loopback address), or with a `localhost`/IP-literal domain (P5). Concurrent requests
+are bounded in total and per client address (`503` + `Retry-After`).
+
+#### Public seed deployment (runbook)
+
+1. DNS: `A`/`AAAA` for `seed.example` and a wildcard `*.seed.example` to the host (the
+   wildcard gives every published tree its own origin; without it only the bare
+   `https://seed.example/tree/<cid>/` download/listing form works).
+2. Certificate for both names. Wildcards need a DNS-01 ACME challenge, which this build
+   does not perform; use certbot/lego/acme.sh with your DNS provider and point
+   `public.cert`/`public.key` at the resulting full chain and key (the daemon re-reads
+   them within a minute of a renewal), **or** terminate TLS in Caddy/nginx (Caddy's
+   on-demand TLS issues per-`<cid>` certificates without a wildcard) and set
+   `public.behind_proxy = true` with `public.listen = "127.0.0.1:8080"`. The proxy must
+   pass `Host` through unchanged.
+3. Config: `nu config set public.listen :443` (or a high port plus a port forward; ports
+   below 1024 need `CAP_NET_BIND_SERVICE` or the proxy), `public.domain seed.example`
+   (append `:port` when it is not 443), then restart the daemon and check
+   `nu status` (`daemon.public`).
+4. Publish: `nu public add <cid>` per root; `nu public ls` shows the URLs; `nu share <cid>`
+   now prints them. `nu public rm` stops serving at once. Nothing is public by default,
+   and a public root is also GC-protected.
+5. Do not run a public listener on a node that holds members-only cluster content; the
+   daemon refuses private/isolated members, but a public-mode cluster member with
+   members-only datasets must still only mark roots it may publish.
+6. Limits: `public.max_requests` (256) and `public.per_ip` (32) bound concurrency; put
+   bandwidth shaping and request logging in the proxy or OS. Behind a proxy the per-IP
+   bound sees the proxy's address (no `X-Forwarded-For` trust in this build).
+
 ### X. Extraction (`nu get -o`)
 
 - **X1** Tree paths must be relative, with no empty, `.`, `..`, NUL or backslash segment
@@ -515,8 +554,8 @@ required by the named task before it ships.
 | N25 | G4 | browser without `*.localhost` (Safari?) opens the bare origin | downloads, never renders HTML | browser B1/B7 |
 | N26 | G5 | name route on a bare origin | non-active fallback | gate: first name route |
 | N27 | G10 | MASL `content-type: text/html` on bare origin; `set-cookie`/`location`/CRLF in values; CSP that loosens | download; dropped; intersected | gate: 0055 |
-| N28 | P1–P3 | public listener configured on a members-only node without reader auth | refuses to listen; `/api/` absent on public listener | gate: 0043 |
-| N29 | P4/P5 | RASL for unheld CID on a public seed; CORS on loopback RASL | 404, no fetch; no CORS header | `gateway.TestRASLRoute` (loopback; public seed: gate 0043) |
+| N28 | P1–P3 | public listener configured on a members-only node without reader auth; `/api/` on the public listener; held-but-unmarked root on every public route and site origin | refuses to listen, action names the key; 404; 404 identical to unheld | `daemon.TestPublicListener`, `gateway.TestPublicListener` |
+| N29 | P4/P5 | RASL for unheld CID on a public seed; CORS on loopback RASL | 404, no fetch; no CORS header (public: `*` on RASL only) | `gateway.TestRASLRoute` (loopback), `gateway.TestPublicListener` (public) |
 | N30 | G5 | `/at/` record with HTML/script in a string field; hostile collection/rkey names | inert JSON with CSP; listings escape, link only valid names | `gateway.TestAtRoutesInert`, `node.TestAtprotoSnapshotBrowseCar` |
 | N31 | X1 | `../x`, `/x`, `a/../../x`, `a\..\x`, NUL, `./x` | invalid_argument, nothing written | `extract.TestExtractSafety` |
 | N32 | X2 | symlink in destination (dir on the way, file being replaced) | aborts, nothing through the link | `extract.TestExtractSafety` |
@@ -526,7 +565,9 @@ required by the named task before it ships.
 | N36 | A8 | producer listener: push without a token, with another collection's token, with a revoked token | 403, nothing queued | `main.TestProducerPushCLI` |
 | N37 | A8/A2 | producer listener: `Host` not in `api.producer.hosts` | 403 | `main.TestProducerPushCLI` |
 | N38 | A8 | producer listener: any non-push route (`/status`) | 404 | `main.TestProducerPushCLI` |
-| N39 | A8 | `api.producer.listen` without `trusted_network` or `hosts` | refuses to start, action names the key | gate: TLS (0043) |
+| N39 | A8 | `api.producer.listen` without `trusted_network` or `hosts` | refuses to start, action names the key | gate: producer TLS (not part of 0043's content listener) |
+| N40 | P5/P1 | public `Host` is an IP literal, `localhost`, another domain, `<cid>.<other>`, `x.<cid>.<domain>`, or the domain with a foreign port; non-GET methods | 403; 400, no CORS | `gateway.TestPublicListener` |
+| N41 | P1 | public listener without cert/key and without `behind_proxy`; `behind_proxy` off loopback; `public.domain = localhost` | refuses to start, action names the key | `daemon.TestPublicListener` |
 
 ### Feature-entry gates
 
@@ -536,6 +577,10 @@ required by the named task before it ships.
   site origin is *available* but the only *claim* is the fallback.
 - **0043 (public HTTPS)**: A8 (if any non-loopback API ships), P1–P6, N28; browser rows
   rerun against the public origin scheme in all three browsers; cert/deployment runbook.
+  Implemented: P1–P6 as the public listener (state note under P6; N28, N29 public half,
+  N40, N41 automated), no non-loopback API shipped (A8 unchanged), runbook above. Not
+  met until the browser rows B1–B7 and B9 are recorded against a real public domain
+  (validation.md) and the independent review signs off.
 - **0052 (RASL)**: N29; RASL on loopback has no CORS; the SSRF rows of 0061 for `rasl://`.
   Implemented: `/.well-known/rasl/<cid>` serves held objects only, never fetches, sends
   no CORS header on loopback (`gateway.TestRASLRoute`); `rasl://` hints go through the

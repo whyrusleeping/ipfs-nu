@@ -1,10 +1,10 @@
 ---
 id: "0023"
 title: '0c: Kademlia (Amino) client/server + providing; verify BLAKE3 keys on Amino (Q2)'
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-24"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0010"
     - "0004"

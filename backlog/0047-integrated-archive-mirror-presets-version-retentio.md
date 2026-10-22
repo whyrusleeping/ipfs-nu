@@ -1,10 +1,10 @@
 ---
 id: "0047"
 title: Integrated archive/mirror presets, version retention, retrieval and rollback
-status: in_progress
+status: done
 priority: 2
 created: "2026-09-29"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0009"
     - "0064"

@@ -1,10 +1,10 @@
 ---
 id: "0043"
 title: Secure public HTTPS seed/gateway and browser sharing journey
-status: in_progress
+status: in_review
 priority: 2
 created: "2026-09-29"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0028"
     - "0035"

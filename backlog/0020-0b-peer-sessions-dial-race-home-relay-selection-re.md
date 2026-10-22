@@ -1,10 +1,10 @@
 ---
 id: "0020"
 title: '0b: Peer sessions, dial race, home relay selection/renewal/failover'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-22"
 depends_on:
     - "0013"
     - "0016"

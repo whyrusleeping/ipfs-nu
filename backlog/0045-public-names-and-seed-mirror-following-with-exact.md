@@ -1,10 +1,10 @@
 ---
 id: "0045"
 title: Public names and seed/mirror following with exact-target readiness
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-29"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0028"
     - "0035"

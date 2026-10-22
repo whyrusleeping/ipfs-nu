@@ -1,10 +1,10 @@
 ---
 id: "0042"
 title: Design and implement verified one-way IPFS content and installation migration
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-10-22"
 depends_on:
     - "0009"
     - "0026"

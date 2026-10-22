@@ -272,7 +272,15 @@ var cmdShare = &command{
 		if err != nil {
 			return err
 		}
-		if err := e.emit(res, func(w io.Writer) { fmt.Fprintln(w, res.Link) }); err != nil {
+		if err := e.emit(res, func(w io.Writer) {
+			fmt.Fprintln(w, res.Link)
+			// Browser links only when a configured public seed serves the root now (P2).
+			for _, u := range []string{res.HTTPS, res.Site, res.RASL} {
+				if u != "" {
+					fmt.Fprintln(w, u)
+				}
+			}
+		}); err != nil {
 			return err
 		}
 		local, ok := n.(*node.Local)

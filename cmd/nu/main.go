@@ -419,5 +419,7 @@ var root = &command{
 	sub: []*command{
 		cmdInit, cmdDaemon, cmdStatus, cmdDoctor, cmdConfig, cmdOperations,
 		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdCar, cmdDataset, cmdCluster, cmdRelay, cmdVersion,
+		// 0043
+		cmdPublic,
 	},
 }

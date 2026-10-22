@@ -171,6 +171,8 @@ func (n *Local) Share(ctx context.Context, req apiv0.ShareRequest) (*apiv0.Share
 	for _, a := range l.Providers[0].Addrs {
 		res.Addrs = append(res.Addrs, a.String())
 	}
+	// Browser links only when this process's public listener serves the root now (P2).
+	res.HTTPS, res.Site, res.RASL = n.publicLinks(root, p, resolvedKind(nd))
 	return res, nil
 }
 

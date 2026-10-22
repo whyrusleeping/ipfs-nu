@@ -32,6 +32,33 @@ type Config struct {
 	Store StoreConfig `toml:"store"`
 	// Relay configures `nu relay`; nil when the section is absent (never written by init).
 	Relay *RelayConfig `toml:"relay,omitempty"`
+	// Public configures the public HTTPS content listener (operations.md P1–P6); nil
+	// when the section is absent (never written by init).
+	Public *PublicConfig `toml:"public,omitempty"`
+}
+
+// PublicConfig is the `[public]` section: the explicitly configured public content
+// listener (backlog 0043). It serves only roots marked with `nu public add`, never the
+// API, and needs TLS: either cert/key files it serves itself, or `behind_proxy = true`
+// with a loopback listen address and a TLS-terminating reverse proxy for the domain.
+type PublicConfig struct {
+	// Listen is host:port; "" leaves the listener off.
+	Listen string `toml:"listen,omitempty"`
+	// Domain is the public name, optionally with :port when not 443 (`seed.example`,
+	// `seed.example:8443`); sites are served on `<cid>.<domain>`, so a wildcard DNS
+	// record and certificate for `*.<domain>` are needed for site origins.
+	Domain string `toml:"domain,omitempty"`
+	// Cert and Key are PEM files (a full chain and its private key); re-read when they
+	// change on disk.
+	Cert string `toml:"cert,omitempty"`
+	Key  string `toml:"key,omitempty"`
+	// BehindProxy serves plain HTTP on a loopback address for a reverse proxy that
+	// terminates TLS for Domain and *.Domain on this machine.
+	BehindProxy bool `toml:"behind_proxy,omitempty"`
+	// MaxRequests and PerIP bound concurrent requests in total and per client address
+	// (defaults 256 and 32); excess requests get 503 with Retry-After.
+	MaxRequests int `toml:"max_requests,omitzero"`
+	PerIP       int `toml:"per_ip,omitzero"`
 }
 
 // StoreConfig is the `[store]` section: the physical budgets of D17 A5.

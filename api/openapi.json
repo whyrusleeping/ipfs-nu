@@ -166,6 +166,19 @@
       "get": {"summary": "Export a held root as a CAR under a walk profile: atrepo in streamable order (commit, MST pre-order with records interleaved), nu-tree and drisl in pre-order; every block once. The root must be complete under the profile.",
         "parameters": [{"name": "target", "in": "query", "required": true, "schema": {"type": "string"}, "description": "root CID"}, {"name": "profile", "in": "query", "schema": {"type": "string", "enum": ["nu-tree", "atrepo", "drisl"]}, "description": "walk profile (detected from the root when omitted)"}],
         "responses": {"200": {"description": "CAR v1", "content": {"application/vnd.ipld.car": {"schema": {"type": "string", "format": "binary"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/public": {
+      "get": {"summary": "List the roots marked for the public HTTPS listener (0043), with their URLs while it runs.",
+        "parameters": [{"$ref": "#/components/parameters/cursor"}, {"$ref": "#/components/parameters/limit"}],
+        "responses": {"200": {"description": "page of public roots", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublicRootPage"}}}}, "501": {"$ref": "#/components/responses/Error"}}},
+      "post": {"summary": "Mark a held, complete root public (operations.md P2): the public listener serves it and everything under it from now on; the mark is a pin (source public).",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublicRequest"}}}},
+        "responses": {"200": {"description": "the public root and its URLs (empty when no public listener runs)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublicRoot"}}}}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/public/{cid}": {
+      "delete": {"summary": "Remove the public mark; the listener stops serving the root.",
+        "parameters": [{"name": "cid", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "removed"}, "404": {"$ref": "#/components/responses/Error"}}}
     }
   },
   "components": {
@@ -218,7 +231,8 @@
         "type": "object", "required": ["version", "daemon", "paths", "operations"],
         "properties": {
           "version": {"type": "string"},
-          "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"}}},
+          "daemon": {"type": "object", "properties": {"pid": {"type": "integer"}, "started": {"type": "string", "format": "date-time"}, "api": {"type": "string"}, "gateway": {"type": "string"},
+            "public": {"type": "string", "description": "origin of the public listener when it runs"}}},
           "paths": {"type": "object", "properties": {"root": {"type": "string"}, "config": {"type": "string"}, "key": {"type": "string"}, "db": {"type": "string"}, "blobs": {"type": "string"}, "api_file": {"type": "string"}}},
           "operations": {"type": "object", "additionalProperties": {"type": "integer"}},
           "store": {"type": "object", "required": ["objects", "bytes", "pins"], "description": "physical accounting (D17 A8); -1 means unknown/unlimited", "properties": {"objects": {"type": "integer"}, "bytes": {"type": "integer"}, "pins": {"type": "integer"}, "blobs": {"type": "integer"}, "outboards": {"type": "integer"}, "partials": {"type": "integer"}, "db": {"type": "integer"}, "staging": {"type": "integer"}, "reserved": {"type": "integer"}, "nocopy": {"type": "integer"}, "free": {"type": "integer"}, "limit": {"type": "integer"}, "reserve": {"type": "integer"}, "headroom": {"type": "integer"}, "pressure": {"type": "boolean"}}},
@@ -235,7 +249,10 @@
       "GetRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path], nu:// link or rasl:// link"}, "output": {"type": "string", "description": "absolute destination path"}, "dir": {"type": "string", "description": "absolute directory to write into under the content's own name, when output is empty"}}},
       "GetResult": {"type": "object", "required": ["cid", "output", "kind", "files", "dirs", "bytes"], "properties": {"cid": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}, "kind": {"type": "string", "enum": ["file", "dir", "blob"]}, "files": {"type": "integer"}, "dirs": {"type": "integer"}, "bytes": {"type": "integer"}, "skipped": {"type": "array", "items": {"type": "string"}}, "fetched": {"type": "boolean"}}},
       "ShareRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "CID[/path]"}}},
-      "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}},
+      "ShareLink": {"type": "object", "required": ["target", "link", "peer_id", "addrs", "serving"], "properties": {"target": {"type": "string"},
+          "https": {"type": "string", "description": "browser URL when this node's public listener serves the root now (0043)"},
+          "site": {"type": "string"},
+          "rasl": {"type": "string"}, "link": {"type": "string"}, "peer_id": {"type": "string"}, "addrs": {"type": "array", "items": {"type": "string"}}, "serving": {"type": "boolean"}}},
       "ClusterInitRequest": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}, "mode": {"type": "string", "enum": ["public", "private", "isolated"]}}},
       "ClusterInviteRequest": {"type": "object", "properties": {"role": {"type": "string", "enum": ["storage", "client"]}, "tags": {"type": "object", "additionalProperties": {"type": "string"}}, "capacity": {"type": "integer"}, "peer": {"type": "string"}, "expires": {"type": "string", "description": "duration, default 24h"}}},
       "ClusterInvite": {"type": "object", "required": ["token", "expires", "metadata"], "properties": {"token": {"type": "string"}, "peer": {"type": "string"}, "invite_id": {"type": "string"}, "expires": {"type": "string", "format": "date-time"}, "metadata": {"$ref": "#/components/schemas/MetadataState"}}},
@@ -268,7 +285,10 @@
       "AtSnapshotRequest": {"type": "object", "required": ["target"], "properties": {"target": {"type": "string", "description": "at://<handle-or-did>"}, "blobs": {"type": "boolean"}}},
       "AtSnapshot": {"type": "object", "required": ["did", "commit", "rev", "records", "nodes", "profile"], "properties": {"did": {"type": "string"}, "handle": {"type": "string"}, "pds": {"type": "string"}, "commit": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "nodes": {"type": "integer"}, "bytes": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "profile": {"type": "string", "enum": ["atrepo", "atrepo+blobs"]}, "blobs": {"type": "integer"}, "blobs_oversized": {"type": "integer"}, "blobs_failed": {"type": "integer"}}},
       "CarImportRequest": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "absolute path of the CAR"}, "profile": {"type": "string", "enum": ["nu-tree", "atrepo", "drisl"]}, "key": {"type": "string", "description": "did:key or publicKeyMultibase that signed the commit"}, "offline": {"type": "boolean"}, "pin": {"type": "boolean"}}},
-      "CarImport": {"type": "object", "required": ["root", "profile", "blocks", "bytes", "objects", "pinned"], "properties": {"root": {"type": "string"}, "profile": {"type": "string"}, "blocks": {"type": "integer"}, "bytes": {"type": "integer"}, "unreferenced": {"type": "integer"}, "objects": {"type": "integer"}, "pinned": {"type": "boolean"}, "did": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "signature": {"type": "string"}, "signed_by": {"type": "string"}}}
+      "CarImport": {"type": "object", "required": ["root", "profile", "blocks", "bytes", "objects", "pinned"], "properties": {"root": {"type": "string"}, "profile": {"type": "string"}, "blocks": {"type": "integer"}, "bytes": {"type": "integer"}, "unreferenced": {"type": "integer"}, "objects": {"type": "integer"}, "pinned": {"type": "boolean"}, "did": {"type": "string"}, "rev": {"type": "string"}, "records": {"type": "integer"}, "non_conforming": {"type": "array", "items": {"type": "string"}}, "signature": {"type": "string"}, "signed_by": {"type": "string"}}},
+      "PublicRequest": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}}},
+      "PublicRoot": {"type": "object", "required": ["cid"], "properties": {"cid": {"type": "string"}, "https": {"type": "string", "description": "bare-origin browser URL on the public listener; only while it runs"}, "site": {"type": "string", "description": "site origin https://<cid>.<domain>/ of a tree"}, "rasl": {"type": "string", "description": "rasl://<cid>/?hint=<domain>"}}},
+      "PublicRootPage": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/PublicRoot"}}, "next_cursor": {"type": "string"}, "resync": {"type": "boolean"}}}
     }
   }
 }

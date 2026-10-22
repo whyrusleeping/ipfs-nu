@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -67,6 +68,8 @@ type Store struct {
 	reserved       int64
 	admitted       admitCache
 	lastPressureGC time.Time
+	// removals counts committed removals of held objects (Removals, many.go).
+	removals atomic.Uint64
 }
 
 // LinksFunc is a walk profile: the links of a block that a recursive pin follows.
@@ -99,6 +102,10 @@ func Open(dir string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	if err := enableIncrementalVacuum(db); err != nil { // vacuum.go
+		db.Close()
+		return nil, err
+	}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err

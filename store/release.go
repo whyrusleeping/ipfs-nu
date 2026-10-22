@@ -111,6 +111,9 @@ func (s *Store) Drop(ctx context.Context, mhs []cid.Multihash, keep func(Pin) bo
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	if len(out) > 0 {
+		s.removals.Add(1)
+	}
 	for _, f := range files {
 		_ = os.Remove(f)
 	}

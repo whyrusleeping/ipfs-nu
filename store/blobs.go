@@ -375,6 +375,7 @@ func (s *Store) checkNoCopy(row blobRow) (bool, error) {
 	if _, err := s.db.Exec(`DELETE FROM blobs WHERE mh = ? AND src_path = ?`, mhKey(row.m), row.srcPath); err != nil {
 		return false, err
 	}
+	s.removals.Add(1)
 	_ = os.Remove(s.blobPath(row.m) + ".obao")
 	return false, nil
 }

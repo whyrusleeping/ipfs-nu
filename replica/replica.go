@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,7 +23,6 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
 	"github.com/whyrusleeping/nu/core/cid"
-	"github.com/whyrusleeping/nu/fetch"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/store"
 )
@@ -141,6 +139,8 @@ type Manager struct {
 	bound      map[string]boundAt
 	memberSeen map[wire.PeerID]boundAt
 	scrub      *apiv0.ScrubReport
+	// memo caches completeness walks (check.go).
+	memo memoCache
 }
 
 type fetching struct {
@@ -772,80 +772,6 @@ func (c checkResult) complete() bool {
 	return c.err == nil && c.structMissing == 0 && c.missing.Blobs == 0
 }
 
-// check walks target's structure in the store under profile: every structure node must
-// be held, and every blob this member owns (all blobs when full). It also collects the
-// blobs. Atrepo records are leaves except for selected in-limit blob references.
-func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full bool, profile string) checkResult {
-	res := checkResult{allHeld: true, held: map[cid.Multihash]int64{}}
-	links := fetch.Links
-	if strings.HasPrefix(profile, "atrepo") {
-		links = func(c cid.CID, data []byte) ([]fetch.Link, error) {
-			return fetch.AtrepoLinks(c, data, profile == "atrepo+blobs")
-		}
-	}
-	st := m.cfg.Store
-	seen := map[cid.Multihash]bool{}
-	type item struct {
-		c    cid.CID
-		size uint64
-	}
-	stack := []item{{target, size}}
-	for len(stack) > 0 {
-		it := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		mh := it.c.Multihash()
-		if seen[mh] {
-			continue
-		}
-		seen[mh] = true
-		info, ok, err := st.Has(it.c)
-		if err != nil {
-			res.err = err
-			return res
-		}
-		held := ok && info.Complete
-		if it.c.Codec() == cid.Raw {
-			res.blobs = append(res.blobs, mh)
-			res.allHeld = res.allHeld && held
-			if held {
-				res.held[mh] = int64(info.Size)
-			}
-			if !full && !pl.Owns(m.cfg.Self, mh) {
-				continue
-			}
-			sz := it.size
-			if held {
-				sz = info.Size
-			}
-			res.owned.Blobs++
-			res.owned.Bytes += int64(sz)
-			if !held {
-				res.missing.Blobs++
-				res.missing.Bytes += int64(sz)
-			}
-			continue
-		}
-		if !held {
-			res.structMissing++
-			continue
-		}
-		data, err := st.Get(it.c)
-		if err != nil {
-			res.err = err
-			return res
-		}
-		kids, err := links(it.c, data)
-		if err != nil {
-			res.err = err
-			return res
-		}
-		for i := len(kids) - 1; i >= 0; i-- {
-			stack = append(stack, item{kids[i].CID, kids[i].Size})
-		}
-	}
-	return res
-}
-
 // Status returns this member's sync status of a dataset.
 func (m *Manager) Status(name string) (Status, bool) {
 	m.mu.Lock()
@@ -893,17 +819,23 @@ func (m *Manager) Groups(name string, roots ...cid.CID) (groups []cluster.OwnerG
 	var gs cluster.GroupSet
 	seen := map[cid.Multihash]bool{}
 	for _, root := range roots {
-		chk := m.check(root, 0, pl, true, Profile(d))
-		if chk.err != nil || chk.structMissing > 0 {
+		// Groups need the structure, not what is held here (check.go memo).
+		tm, missing, err := m.tree(root, 0, Profile(d))
+		if err != nil || missing > 0 {
 			return nil, pl, false
 		}
-		if len(chk.blobs) == 0 {
-			chk.blobs = []cid.Multihash{root.Multihash()}
-		}
-		for _, mh := range chk.blobs {
-			if !seen[mh] {
+		if len(tm.blobs) == 0 {
+			if mh := root.Multihash(); !seen[mh] {
 				seen[mh] = true
 				gs.Add(pl.Owners(mh), 1)
+			}
+			continue
+		}
+		owners := tm.ownersFor(pl)
+		for i, mh := range tm.blobs {
+			if !seen[mh] {
+				seen[mh] = true
+				gs.Add(owners[i], 1)
 			}
 		}
 	}

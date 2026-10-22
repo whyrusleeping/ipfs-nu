@@ -59,8 +59,10 @@ func (m *Manager) SetRules(name string, rules []Rule, dryRun bool) (*apiv0.Colle
 		if err := checkFollowRules(rules); err != nil {
 			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "%v", err).WithAction("rescue needs a cluster; follow with plain selection rules")
 		}
-		if row, err := m.loadColl(name); err == nil && len(row.writers) == 0 {
-			check = false // no catalog synced yet: the facets are unknown
+		if row, err := m.loadColl(name); err != nil || len(row.writers) == 0 {
+			// No catalog synced yet (or the manager has not seen the new follow's
+			// dataset record yet): the facets are unknown.
+			check = false
 		}
 	}
 	if err := Compile(rules, specs); check && err != nil {

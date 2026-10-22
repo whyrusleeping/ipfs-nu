@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -446,13 +447,22 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 	default:
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "unknown condition %q", cond).WithAction("use metadata, held, ready or archive-ready")
 	}
-	// An archive-ready wait binds to the live set current at its start (W1: never
-	// retargeted by later versions).
+	// An archive-ready wait binds to the live set current when this node first sees the
+	// target in it (W1: never retargeted by later versions). Until then (the version
+	// record has not reached this member yet) it rebinds on every evaluation, so a wait
+	// started right after another member's update does not bind to the previous live set.
 	var live *liveBind
-	if cond == apiv0.WaitArchive {
+	bind := func() {
+		if cond != apiv0.WaitArchive || (live != nil && slices.Contains(live.roots, target)) {
+			return
+		}
+		if dd, ok := c.View().Dataset(name); ok {
+			d = dd
+		}
 		hs := histFor(c, name, d)
 		live = &liveBind{id: hs.ret.ID, roots: hs.liveRoots()}
 	}
+	bind()
 	if req.Timeout != "" {
 		if timeout, err = time.ParseDuration(req.Timeout); err != nil || timeout < 0 {
 			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "timeout must be a duration such as 10m (0 waits indefinitely)")
@@ -474,6 +484,7 @@ func (n *Local) DatasetWait(ctx context.Context, scope, name string, req apiv0.D
 		deadline = t.C
 	}
 	for {
+		bind()
 		res, fail := n.waitEval(c, name, target, cond, holders, acks, req.Mode, live)
 		switch {
 		case res.Satisfied:

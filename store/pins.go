@@ -140,6 +140,10 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 	}
 	var st WalkStats
+	pre, err := s.prefetch(ctx, p.CID, links)
+	if err != nil {
+		return st, err
+	}
 	seen := map[cid.Multihash]bool{}
 	stack := []cid.CID{p.CID}
 	for len(stack) > 0 {
@@ -153,9 +157,12 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 		seen[c.Multihash()] = true
 		st.Objects++
-		info, ok, err := s.Has(c)
-		if err != nil {
-			return st, err
+		e, cached := pre.objs[c.Multihash()]
+		info, ok := e.info, e.ok
+		if !cached {
+			if info, ok, err = s.Has(c); err != nil {
+				return st, err
+			}
 		}
 		held := ok && info.Complete
 		if held {
@@ -171,9 +178,11 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		if links == nil || !held || c.Codec() != cid.DRISL {
 			continue
 		}
-		data, err := s.Get(c)
-		if err != nil {
-			return st, err
+		data := e.data
+		if data == nil || e.codec != c.Codec() {
+			if data, err = s.Get(c); err != nil {
+				return st, err
+			}
 		}
 		kids, err := links(c, data)
 		if err != nil {
@@ -249,6 +258,12 @@ func (s *Store) GC(ctx context.Context, o GCOptions) (GCResult, error) {
 	}
 	if err := tx.Commit(); err != nil {
 		return res, err
+	}
+	if res.Blocks+res.Blobs > 0 {
+		s.removals.Add(1)
+	}
+	if res.Blocks+res.Blobs+res.Partials > 0 {
+		_ = s.reclaimDB() // best effort: the rows are gone either way
 	}
 	for _, f := range files {
 		_ = os.Remove(f) // a nocopy blob's data path is its source, never under blobs/

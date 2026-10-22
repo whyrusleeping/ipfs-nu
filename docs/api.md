@@ -450,7 +450,7 @@ GET  /datasets/{name}/versions             DatasetVersions {history, live, live_
 GET  /datasets/{name}/diff?from=&to=       DatasetDiff {added, removed, changed, truncated?}
 POST /datasets/{name}/label    VersionLabelRequest {version, label?, note?, remove?, reacquire?} → VersionLabel
 POST /datasets/{name}/rollback RollbackRequest {version, note?} → Dataset (version: the appended one)
-POST /datasets/{name}/prune    PruneRequest {dry_run?} → PruneReport {candidates, free_bytes, shared_bytes, pruned?}
+POST /datasets/{name}/prune    PruneRequest {dry_run?} → PruneReport {candidates, free_bytes, shared_bytes, reclaim_bytes, pruned?}
 nu [cluster] dataset create <ds> --archive|--mirror [--history keep_last=10,daily=30,…] [--source <dir>]
 nu [cluster] dataset update <ds> [<cid> | <dir>]     # no target: re-add the --source directory
 nu [cluster] dataset versions|diff|label|rollback|prune <ds> …

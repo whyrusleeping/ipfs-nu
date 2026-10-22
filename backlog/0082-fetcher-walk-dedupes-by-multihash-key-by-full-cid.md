@@ -1,7 +1,7 @@
 ---
 id: "0082"
 title: 'Fetcher walk dedupes by multihash: key by full CID so raw+DRISL aliases complete'
-status: in_progress
+status: done
 priority: 3
 created: "2026-10-22"
 updated: "2026-10-22"

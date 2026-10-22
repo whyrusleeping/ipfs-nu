@@ -31,3 +31,4 @@ Acceptance: `grep -riI 'ethereum\|lighthouse\|lodestar\|eth2' --exclude-dir=.git
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (05eb761, 3e14086; merged d536e3d): eth2 ping + snappy dep removed from interop/, Lighthouse/Lodestar gone from run.py/README/CI job name, docs/spec Ethereum mentions removed, backlog 0011/0002 reworded with work-log notes. Kubo blackbox and the go/rust/js transport matrix (6/6) pass after removal. Remaining grep hits are only backlog history; memory notes consolidated.

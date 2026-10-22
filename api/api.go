@@ -75,6 +75,7 @@ var Routes = []Route{
 	{"GET", "/operations/{id}/wait"},
 	{"POST", "/operations/{id}/cancel"},
 	{"POST", "/add"},
+	{"POST", "/import/ipfs"},
 	{"GET", "/cat"},
 	{"GET", "/ls"},
 	{"GET", "/pins"},
@@ -98,6 +99,7 @@ func (s *Server) register() {
 		{"GET", "/operations/{id}/wait"}:    s.operationWait,
 		{"POST", "/operations/{id}/cancel"}: s.operationCancel,
 		{"POST", "/add"}:                    s.add,
+		{"POST", "/import/ipfs"}:            s.importIPFS,
 		{"GET", "/cat"}:                     s.cat,
 		{"GET", "/ls"}:                      s.ls,
 		{"GET", "/pins"}:                    s.pins,
@@ -385,6 +387,19 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	o, err := s.n.Add(r.Context(), req)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusAccepted, o)
+	return nil
+}
+
+func (s *Server) importIPFS(w http.ResponseWriter, r *http.Request) error {
+	var req apiv0.IPFSImportRequest
+	if err := readJSON(r, &req); err != nil {
+		return err
+	}
+	o, err := s.n.ImportIPFS(r.Context(), req)
 	if err != nil {
 		return err
 	}

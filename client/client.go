@@ -282,6 +282,15 @@ func (c *Client) Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operatio
 	return &o, nil
 }
 
+// ImportIPFS starts a verified IPFS CAR import.
+func (c *Client) ImportIPFS(ctx context.Context, req apiv0.IPFSImportRequest) (*apiv0.Operation, error) {
+	var o apiv0.Operation
+	if _, err := c.do(ctx, http.MethodPost, "/import/ipfs", nil, &req, &o); err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // Cat streams a target's bytes.
 func (c *Client) Cat(ctx context.Context, target string) (io.ReadCloser, error) {
 	res, err := c.do(ctx, http.MethodGet, "/cat", url.Values{"target": {target}}, nil, nil)

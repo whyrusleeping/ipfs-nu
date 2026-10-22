@@ -345,6 +345,13 @@ type Paths struct {
 	APIFile string `json:"api_file"`
 }
 
+// IPFSImportRequest starts a verified IPFS CAR import.
+type IPFSImportRequest struct {
+	Root string `json:"root"`
+	CAR string `json:"car"`
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
 // AddRequest starts an add operation. The daemon reads Path itself (API and daemon run as
 // the same user on loopback), so no upload is needed. The result of the operation is an
 // AddResult. Fields mirror `nu add` flags and will be settled by the store integration.

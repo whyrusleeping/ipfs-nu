@@ -90,6 +90,7 @@ func NewCARSource(r io.Reader) (*CARSource, error) {
 	}
 	return c, nil
 }
+func (c *CARSource) Blocks() int { return len(c.blocks) }
 func (c *CARSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
 	if e := ctx.Err(); e != nil {
 		return nil, e

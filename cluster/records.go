@@ -249,11 +249,17 @@ type Follow struct {
 	Lazy       bool   `drisl:"lazy,omitempty"`
 	MaxSize    int64  `drisl:"max_size,omitempty"`
 	NoAnnounce bool   `drisl:"no_announce,omitempty"`
+	// Select (0058, D22 "Following collections") follows a collection by local rules:
+	// the dataset is a collection whose single writer is the followed name, the
+	// catalog is pinned whole and items are held by the node's rules.
+	Select bool `drisl:"select,omitempty"`
 }
 
-// Mode is the follow's readiness mode: full, scoped:<path> or lazy.
+// Mode is the follow's readiness mode: full, scoped:<path>, lazy or select.
 func (f *Follow) Mode() string {
 	switch {
+	case f != nil && f.Select:
+		return "select"
 	case f != nil && f.Lazy:
 		return "lazy"
 	case f != nil && f.Path != "":
@@ -732,6 +738,9 @@ func decodeValue(r *Record, v any) error {
 		}
 		if f := d.Source.Follow; f != nil && (f.MaxSize < 0 || len(f.Path) > 1024 || d.Source.Name == "") {
 			return errors.New("follow options apply to name sources; max_size must not be negative")
+		}
+		if f := d.Source.Follow; f != nil && f.Select && (d.Collection == nil || f.Lazy) {
+			return errors.New("a select follow is a collection dataset and not lazy")
 		}
 		if in := d.Source.Ingest; in != nil {
 			if d.Collection == nil || len(in.Hosts) > MaxIngestHosts {

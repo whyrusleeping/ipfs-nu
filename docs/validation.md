@@ -1565,3 +1565,27 @@ Verification before commit: gofmt, `git diff --check`, `go vet ./...`,
 64 MiB `-race` benchmark run with tracing enabled also passed, exercising the
 watchdog concurrently with stream completion; its instrumentation-heavy rates
 are not included in the performance tables. No backlog edits or pushes.
+
+## IPFS bridge (0042) — early fixture evidence
+
+The default bridge package tests are offline and fast (`go test ./bridge`): hand-built
+fixtures cover verified raw/dag-pb blocks, CIDv0/v1 parsing, UnixFS file/directory/symlink
+conversion, tampered CAR blocks, decoder fuzz seeds, and a retry after a source block is
+missing. The retry re-runs conversion from the CAR and relies on deterministic content addressing/store
+deduplication. A node test persists a running CAR job, closes/reopens `Local`, and confirms
+the same operation ID recovers to success; this is a restart/recovery test, not a power-loss
+or forced process-kill campaign.
+
+Opt-in Kubo test: `NU_DOCKER=1 go test ./bridge -run TestKuboCARImports -v`, using the
+same digest-pinned `ipfs/kubo:v0.40.0` image recorded in `interop/run.py`. It passed locally
+(16.4 s): Kubo created a directory with 1,201 generated entries, a 3 MiB file, raw UnixFS
+leaves, a symlink, and CARs for CIDv1/raw-leaf and CIDv0 imports; imported file bytes and
+symlink target bytes were compared against `ipfs get` output. The large directory exercised
+Kubo's sharded-directory representation and conversion completed. This is a local opt-in
+fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in pinned-Kubo
+Bitswap test also passes: a Nu host requests a 1 MiB CIDv1 raw block over QUIC-v1 and receives
+and verifies the payload (about 1 s locally). That probe uses a static provider result; live Amino
+DHT provider discovery against Kubo/the public network is not verified. The CAR import is
+exposed through CLI/API and durable operation recovery is tested, but CAR jobs persist the
+request/stage/result and replay from the CAR rather than retaining per-block checkpoints.
+Cutover readiness and representative-installation reconciliation remain unverified.

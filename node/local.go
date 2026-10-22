@@ -90,6 +90,10 @@ func NewLocal(r *repo.Repo) (*Local, error) {
 		Atproto: atproto.New(atproto.Config{}), content: c, started: time.Now()}
 	c.SetDatasets(n.ResolveDataset)
 	c.SetNames(n.gatewayName)
+	if err := n.recoverIPFSImports(); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	return n, nil
 }
 

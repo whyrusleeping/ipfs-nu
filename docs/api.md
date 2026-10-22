@@ -69,6 +69,15 @@ from the start instead of treating it as an empty delta. A malformed cursor is
 
 ## Operations
 
+### IPFS migration
+
+`POST /api/v0/import/ipfs` starts an `import-ipfs` operation. Give a local CARv1 source with
+`{"root":"<IPFS CID>","car":"/absolute/path/root.car"}`; the daemon verifies every block
+against its original CID. Omit `car` to retrieve by Bitswap over QUIC-v1 with provider
+lookup through Amino Kademlia. `dry_run` is supported for CAR only; it traverses/verifies the root and returns the planned Nu root, file/byte totals, and a blob/outboard physical estimate (not DB/DRISL overhead) against current headroom. The CLI forms
+are `nu import ipfs --car root.car <cid>` and `nu import ipfs <cid>`; create a CAR read-only
+with `ipfs dag export <cid> > root.car`. Direct Kubo repo-internal access is not supported.
+
 Long-running work is an operation: `{id, kind, target, state, stage?, progress{done,
 total?, unit?}, created, updated, result?, error?}`. `target` is exact (a CID, path or
 link), never something that could resolve differently later. States: `running`,

@@ -37,6 +37,8 @@ type Node interface {
 
 	// Add starts an add operation whose result is an apiv0.AddResult.
 	Add(ctx context.Context, req apiv0.AddRequest) (*apiv0.Operation, error)
+	// ImportIPFS starts a verified CAR-to-Nu migration operation.
+	ImportIPFS(ctx context.Context, req apiv0.IPFSImportRequest) (*apiv0.Operation, error)
 	// Cat streams the bytes of a CID target (file node, blob, or path inside a tree).
 	Cat(ctx context.Context, target string) (io.ReadCloser, error)
 	// Ls lists a directory target.

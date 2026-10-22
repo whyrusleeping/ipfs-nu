@@ -78,6 +78,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if h.pub == nil {
+		// Only loopback pages (site origins, the bare origin) may embed loopback
+		// responses: another site cannot probe what the node holds with <img>/<script>
+		// load and error events (0077). Navigations are unaffected.
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-site")
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "method %s is not allowed", r.Method))
 		return

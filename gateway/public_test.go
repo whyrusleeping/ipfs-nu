@@ -58,7 +58,8 @@ func TestPublicListener(t *testing.T) {
 		!strings.Contains(res.Header.Get("Link"), "<https://"+site+"/index.html>") || res.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("active on public bare origin: %d %s", res.StatusCode, res.Header)
 	}
-	if res, body := get(t, srv, "seed.example", "/tree/"+f.root+"/notes.txt", map[string]string{"Range": "bytes=2-4"}); res.StatusCode != 206 || body != "234" {
+	if res, body := get(t, srv, "seed.example", "/tree/"+f.root+"/notes.txt", map[string]string{"Range": "bytes=2-4"}); res.StatusCode != 206 || body != "234" ||
+		res.Header.Get("Cross-Origin-Resource-Policy") != "" { // public content may be embedded anywhere
 		t.Fatalf("range: %d %q", res.StatusCode, body)
 	}
 	// Site origin renders index.html; no CORS, no cookies; directory redirect stays on the origin.

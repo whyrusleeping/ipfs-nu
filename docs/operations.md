@@ -711,7 +711,10 @@ destination.**
   source-map and manifest fields are never reflected. Bundles render only on site origins.
 - **G11** Cross-origin reads from a site origin to a bare origin, to another site origin or
   to the API are blocked by G2/A6 (no CORS). Navigations and embeds between them are
-  allowed; they transfer nothing.
+  allowed; they transfer nothing. Every loopback gateway response carries
+  `Cross-Origin-Resource-Policy: same-site`, so a page on another site cannot embed
+  loopback URLs to probe what the node holds by load/error events (0077); the public
+  listener does not send it (published content may be embedded anywhere).
 
 ### P. Public and member-only serving
 
@@ -776,6 +779,14 @@ are bounded in total and per client address (`503` + `Retry-After`).
 6. Limits: `public.max_requests` (256) and `public.per_ip` (32) bound concurrency; put
    bandwidth shaping and request logging in the proxy or OS. Behind a proxy the per-IP
    bound sees the proxy's address (no `X-Forwarded-For` trust in this build).
+7. Cookie scope: every published site runs on `<cid>.<domain>`, and browsers let script
+   on one subdomain set cookies for the parent `domain`, which every other published
+   site then sees (and can overwrite). The listener never sets or reads cookies, but a
+   published site that uses cookies is not isolated from the others unless `domain` is
+   on the [Public Suffix List](https://publicsuffix.org/) (private section). Use a domain
+   dedicated to the seed (never one whose parent hosts logins or other services), and
+   submit it to the PSL if published sites may rely on cookies; `localStorage` and other
+   origin-scoped state are isolated either way.
 
 ### X. Extraction (`nu get -o`)
 
@@ -852,6 +863,7 @@ required by the named task before it ships.
 | N45 | P3 | `cluster init`/`join` of a private or isolated cluster while the public listener runs | conflict, action names `public.listen`; no membership | `node.TestPublicListenerRefusesPrivateCluster` |
 | N46 | G12/G9 | `Range` with 17 parts; a directory larger than one page; listing `If-None-Match`; a public client that stops reading | 200 whole body; paged with `?from=`, per-page ETag; 304; write cut off after the stall timeout | `gateway.TestPublicBounds`, `node.TestPublicCodecSwap` (MST paging) |
 | N47 | X1/X2 | unsafe path (`z\..\evil`) after good entries; a directory swapped for a symlink while a file in it is being written | invalid_argument and the destination not even created; the write fails, nothing outside | `extract.TestExtractSafety` |
+| N48 | G11 | another site embeds a loopback gateway URL (`<img>`/`<script>`) to probe held content | `Cross-Origin-Resource-Policy: same-site` on every loopback response (content and errors), none on the public listener | `gateway.TestGatewayOrigins`, `gateway.TestPublicListener` |
 
 ### Feature-entry gates
 

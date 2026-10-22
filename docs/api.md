@@ -653,7 +653,8 @@ These are the mechanics of rules G1–G9 of the
   extension, then `application/octet-stream`. Blobs (`/blob/<cid>` or a blob root) are
   always `application/octet-stream` downloads. Symlink entries are listed but answer
   `422` instead of being followed.
-- **Headers.** Every response has `X-Content-Type-Options: nosniff`; content responses
+- **Headers.** Every response has `X-Content-Type-Options: nosniff` and (loopback
+  only) `Cross-Origin-Resource-Policy: same-site`; content responses
   carry `ETag: "<cid>"` and `Cache-Control: public, max-age=31536000, immutable`;
   gateway-generated pages (root, listings) carry
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`. No cookies are

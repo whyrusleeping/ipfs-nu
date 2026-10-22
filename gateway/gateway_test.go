@@ -143,6 +143,12 @@ func TestGatewayOrigins(t *testing.T) {
 		!strings.Contains(body, "42 bytes") || !strings.Contains(body, "symlink") || res.Header.Get("Content-Security-Policy") == "" {
 		t.Fatalf("listing: %d %s\n%s", res.StatusCode, res.Header, body)
 	}
+	// N48: loopback responses (content and errors) cannot be embedded cross-site.
+	for _, p := range []string{"/tree/" + f.root + "/", "/tree/" + f.root + "/notes.txt", "/tree/" + fakeCID(7) + "/"} {
+		if res, _ := get(t, srv, "", p, nil); res.Header.Get("Cross-Origin-Resource-Policy") != "same-site" {
+			t.Fatalf("%s: no CORP: %s", p, res.Header)
+		}
+	}
 	// Missing trailing slash on a directory redirects.
 	if res, _ := get(t, srv, "", "/tree/"+f.root, nil); res.StatusCode != 301 {
 		t.Fatalf("dir without slash: %d", res.StatusCode)

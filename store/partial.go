@@ -252,18 +252,18 @@ func (p *Partial) Flush() (err error) {
 	return nil
 }
 
-// Commit turns a complete partial into a normal blob, atomically.
+// Commit turns a complete partial into a normal blob, atomically. It syncs each file once
+// and skips the held-map update, since the commit deletes the partial row (0084).
 func (p *Partial) Commit() error {
 	if !p.Complete() {
 		return errors.New("store: partial blob is not complete")
 	}
-	if err := p.Flush(); err != nil {
-		return err
-	}
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
 	if err := p.f.Truncate(int64(p.Size)); err != nil {
 		return err
 	}
-	if err := p.f.Sync(); err != nil {
+	if err := SyncFiles([]*os.File{p.f, p.ob}); err != nil {
 		return err
 	}
 	path := p.s.partialPath(p.MH)

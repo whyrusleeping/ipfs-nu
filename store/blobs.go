@@ -23,21 +23,23 @@ func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 // raw CID (tree.BlobSink). size -1 means unknown: the data is staged first and the outboard
 // computed in a second pass.
 func (s *Store) AddBlob(r io.Reader, size int64) (cid.CID, error) {
-	return s.addBlob(r, size, s.opts.DefaultHash, nil)
+	return s.addBlob(r, size, s.opts.DefaultHash, nil, nil)
 }
 
 // AddBlobHash is AddBlob with an explicit hash. SHA-256 blobs are limited to 8 MiB.
 func (s *Store) AddBlobHash(r io.Reader, size int64, h cid.Hash) (cid.CID, error) {
-	return s.addBlob(r, size, h, nil)
+	return s.addBlob(r, size, h, nil, nil)
 }
 
 // PutBlob stores a blob fetched by known CID, verifying it as a whole. For large BLAKE3
 // blobs fetched by range, use Partial instead.
 func (s *Store) PutBlob(c cid.CID, r io.Reader, size int64) (cid.CID, error) {
-	return s.addBlob(r, size, c.Hash(), &c)
+	return s.addBlob(r, size, c.Hash(), &c, nil)
 }
 
-func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID) (cid.CID, error) {
+// addBlob stores a blob; with a batch, a blob that needs files is staged in it instead of
+// being synced and committed now.
+func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *Batch) (cid.CID, error) {
 	if !h.Valid() {
 		return cid.CID{}, cid.ErrInvalid
 	}
@@ -76,9 +78,14 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID) (cid
 	if err != nil {
 		return cid.CID{}, err
 	}
-	defer func() { f.Close(); os.Remove(f.Name()) }()
 	var ob *os.File
+	staged := false // handed to the batch, which closes and removes the files
 	defer func() {
+		if staged {
+			return
+		}
+		f.Close()
+		os.Remove(f.Name())
 		if ob != nil {
 			ob.Close()
 			os.Remove(ob.Name())
@@ -140,6 +147,11 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID) (cid
 	if err != nil {
 		return cid.CID{}, err
 	}
+	if b != nil {
+		staged = true
+		b.stage(stagedBlob{m: m, size: uint64(size), data: f, ob: ob})
+		return c, nil
+	}
 	if err := f.Sync(); err != nil {
 		return cid.CID{}, err
 	}
@@ -169,8 +181,27 @@ func (s *Store) commitBlob(m cid.Multihash, size uint64, dataFile, obFile, srcPa
 func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, srcPath string, srcMtime int64, fromPartial bool) error {
 	s.gcMu.RLock()
 	defer s.gcMu.RUnlock()
-	if row, err := s.blobRow(m); err == nil && row.srcPath == "" {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.commitBlobIn(tx, m, size, dataFile, obFile, srcPath, srcMtime, fromPartial); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// commitBlobIn is commitBlobTx's work inside tx (Batch.Commit runs it for many blobs).
+// Callers hold gcMu.RLock. Staged files of a blob already held as a full copy are left
+// for the caller to remove.
+func (s *Store) commitBlobIn(tx *sql.Tx, m cid.Multihash, size uint64, dataFile, obFile, srcPath string, srcMtime int64, fromPartial bool) error {
+	var held sql.NullString
+	switch err := tx.QueryRow(`SELECT src_path FROM blobs WHERE mh = ?`, mhKey(m)).Scan(&held); {
+	case err == nil && held.String == "":
 		return nil // already held as a full copy
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return err
 	}
 	final := s.blobPath(m)
 	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
@@ -190,11 +221,6 @@ func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, src
 	if srcPath != "" {
 		src = srcPath
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	// Delete then insert (not REPLACE) so the usage triggers see both rows.
 	if _, err := tx.Exec(`DELETE FROM blobs WHERE mh = ?`, mhKey(m)); err != nil {
 		return err
@@ -208,7 +234,7 @@ func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, src
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 type blobRow struct {
@@ -310,7 +336,9 @@ func (s *Store) OpenBlob(m cid.Multihash) (*Blob, error) {
 // AddNoCopy references the file at path in place (BLAKE3; the outboard is stored). Reads
 // check its size and mtime and re-hash it on mismatch; a source that no longer matches is
 // treated as absent. Files of at most one chunk group are copied instead.
-func (s *Store) AddNoCopy(path string) (cid.CID, error) {
+func (s *Store) AddNoCopy(path string) (cid.CID, error) { return s.addNoCopy(path, nil) }
+
+func (s *Store) addNoCopy(path string, b *Batch) (cid.CID, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
 		return cid.CID{}, err
@@ -329,7 +357,7 @@ func (s *Store) AddNoCopy(path string) (cid.CID, error) {
 	}
 	size := st.Size()
 	if size <= inlineMax {
-		return s.addBlob(f, size, cid.BLAKE3, nil)
+		return s.addBlob(f, size, cid.BLAKE3, nil, b)
 	}
 	if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
 		return cid.CID{}, err
@@ -338,17 +366,28 @@ func (s *Store) AddNoCopy(path string) (cid.CID, error) {
 	if err != nil {
 		return cid.CID{}, err
 	}
-	defer func() { ob.Close(); os.Remove(ob.Name()) }()
+	staged := false
+	defer func() {
+		if !staged {
+			ob.Close()
+			os.Remove(ob.Name())
+		}
+	}()
 	m, err := blob.Outboard(ob, f, uint64(size))
 	if err != nil {
-		return cid.CID{}, err
-	}
-	if err := ob.Sync(); err != nil {
 		return cid.CID{}, err
 	}
 	// The source must not have changed while hashing.
 	if st2, err := os.Stat(path); err != nil || st2.Size() != size || !st2.ModTime().Equal(st.ModTime()) {
 		return cid.CID{}, fmt.Errorf("store: %s changed while it was being added", path)
+	}
+	if b != nil {
+		staged = true
+		b.stage(stagedBlob{m: m, size: uint64(size), ob: ob, srcPath: path, srcMtime: st.ModTime().UnixNano()})
+		return cid.New(cid.Raw, m), nil
+	}
+	if err := ob.Sync(); err != nil {
+		return cid.CID{}, err
 	}
 	return cid.New(cid.Raw, m), s.commitBlob(m, uint64(size), "", ob.Name(), path, st.ModTime().UnixNano())
 }

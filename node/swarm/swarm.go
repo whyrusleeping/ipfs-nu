@@ -70,6 +70,7 @@ type Config struct {
 	// Public connectivity uses only explicit configured/known relays. Private and
 	// Isolated disable relay/AutoNAT/disco/default public discovery entirely.
 	Relays            []wire.Multiaddr
+	WSS               WSSPolicy
 	Private, Isolated bool
 	Peers             map[wire.PeerID][]wire.Multiaddr
 	// LookupSources is the public streaming resolver attachment point (0072).
@@ -185,7 +186,8 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err := s.startConnectivity(bg, socket); err != nil {
 		return nil, err
 	}
-	s.sessions, err = host.NewSessions(s.host, host.SessionConfig{Lookup: s.lookup, Cache: s.cache, Dial: s.connectivity.dial, Private: cfg.Private, Peers: cfg.Peers})
+	// One route may need independent UDP, WSS and inner-QUIC setup budgets.
+	s.sessions, err = host.NewSessions(s.host, host.SessionConfig{Lookup: s.lookup, Cache: s.cache, Dial: s.connectivity.dial, DialTimeout: 6 * time.Second, ConnectTimeout: 8 * time.Second, Private: cfg.Private, Peers: cfg.Peers})
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +418,7 @@ func classify(root cid.CID, err error) error {
 			WithAction("the holder may have removed it or not finished adding it; ask for a fresh link").WithDetail("cause", err.Error())
 	case errors.Is(err, fetch.ErrNoProvider):
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no provider of %s could be reached", root).
-			WithAction("check that the holder is online (its `"+nu.Name+" daemon` or `"+nu.Name+" share` is running) and reachable over UDP").WithDetail("cause", err.Error())
+			WithAction("check that the holder is online (its `"+nu.Name+" daemon` or `"+nu.Name+" share` is running) and reachable over UDP or a declared WSS relay").WithDetail("cause", err.Error())
 	case errors.Is(err, kad.ErrNoPeers):
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no provider of %s is known: no link hint, no connected peer, and the DHT has no routing peers", root).
 			WithAction("check internet access (DHT bootstrap needs DNS and UDP), or use a share link with its provider (`peer=`/`addr=`)").WithDetail("cause", err.Error())

@@ -324,7 +324,9 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 		if err != nil {
 			continue
 		}
-		if _, ok := n.c.s.host.Connection(id); !ok {
+		// AutoNAT's current observer profile requires an outer UDP endpoint.
+		// A WSS (possibly proxied) connection is not a UDP reachability witness.
+		if conn, ok := n.c.s.host.Connection(id); !ok || conn.Transport() != "quic-v1" {
 			continue
 		}
 		var reqs []autonat.Request

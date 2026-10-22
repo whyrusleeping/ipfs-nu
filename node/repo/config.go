@@ -205,6 +205,10 @@ type SwarmConfig struct {
 	MDNS bool `toml:"mdns"`
 	// Public connectivity is opt-in to known relays, never an inferred directory.
 	Relays []string `toml:"relays,omitempty"`
+	// Proxy is an explicit http:// CONNECT proxy for WSS only; no environment discovery.
+	Proxy string `toml:"proxy,omitempty"`
+	// RelayCertPins are peerID@hex-SHA256(leaf DER) pins, additional to Web-PKI.
+	RelayCertPins []string `toml:"relay_cert_pins,omitempty"`
 	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
 	Mode  string   `toml:"mode,omitempty"`
 	Peers []string `toml:"peers,omitempty"`

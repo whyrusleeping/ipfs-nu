@@ -63,7 +63,7 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 			out.Backup = state.Backup.Base36()
 		}
 		for _, r := range state.Relays {
-			out.Relays = append(out.Relays, apiv0.RelayStatus{PeerID: r.Peer.Base36(), Address: r.Address.String(), RTTMillis: float64(r.RTT.Microseconds()) / 1000, Expires: r.Expires, LastError: r.LastError})
+			out.Relays = append(out.Relays, apiv0.RelayStatus{PeerID: r.Peer.Base36(), Address: r.Address.String(), RTTMillis: float64(r.RTT.Microseconds()) / 1000, Expires: r.Expires, LastError: r.LastError, Transport: r.Transport, UDPError: r.UDPError})
 		}
 	}
 	// Include ordinary wire-compatible peers and outer relay connections too.
@@ -72,6 +72,9 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 		row := apiv0.PeerPathStatus{PeerID: conn.PeerID().Base36(), Path: "recovering"}
 		if !s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
 			row.Path = "direct-quic"
+			if conn.Transport() == "wss" {
+				row.Path = "relay-wss"
+			}
 			row.Direct = conn.RemoteAddr().String()
 		}
 		paths[conn.PeerID()] = row

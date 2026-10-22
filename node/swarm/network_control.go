@@ -58,7 +58,7 @@ func (c *connectivity) initNetwork() error {
 		}
 	}
 	var err error
-	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize})
+	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize, Observe: c.observe})
 	if err != nil {
 		return err
 	}
@@ -237,6 +237,13 @@ func (c *connectivity) runNetwork() error {
 			for _, conn := range c.s.host.Connections() {
 				if err := c.s.identify.Push(ctx, conn.PeerID()); err != nil {
 					errs = append(errs, err)
+				}
+				// Physical peers (relays) also re-report our observed address, so the
+				// reflexive candidate follows the new path instead of the stale one.
+				if !c.s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
+					if _, err := c.s.identify.Identify(ctx, conn.PeerID()); err != nil {
+						errs = append(errs, err)
+					}
 				}
 			}
 			return errors.Join(errs...)

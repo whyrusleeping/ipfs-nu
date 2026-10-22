@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu"
+	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/p2p/homerelay"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/lookup"
@@ -38,6 +39,8 @@ type connectivity struct {
 	pending   chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+	historyMu sync.Mutex // per-peer path history for doctor; leaf lock (see note)
+	history   map[wire.PeerID][]apiv0.PathEvent
 }
 
 type pathPeer struct {
@@ -335,12 +338,17 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 		}
 		stop()
 		if err != nil {
+			if p.lastError != err.Error() {
+				c.note(id, "relay dial via %s failed: %v", rid.Base36(), err)
+			}
 			p.lastError = err.Error()
 		} else {
 			p.lastError = ""
 			p.lastConnected = time.Now()
 			if preparing {
 				p.setupTime = time.Since(started)
+				c.s.metrics.setup.Observe(p.setupTime)
+				c.note(id, "relay circuit via %s and inner handshake ready in %v", rid.Base36(), p.setupTime.Round(time.Millisecond))
 			}
 		}
 		p.unlock()
@@ -459,9 +467,11 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
 		p.lastError = err.Error()
+		c.note(circ.Peer, "accepted relay circuit via %s but the inner handshake failed: %v", circ.Relay.Base36(), err)
 		leg.Close()
 	} else {
 		p.lastConnected = time.Now()
+		c.note(circ.Peer, "accepted relay circuit via %s", circ.Relay.Base36())
 	}
 }
 func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) {
@@ -481,6 +491,7 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 			return
 		}
 		p.leg = nil
+		c.note(id, "relay leg via %s closed; the lower peer re-dials known routes", p.relay.Base36())
 		p.unlock()
 		// Exactly one authenticated inner endpoint repairs packet paths. The other
 		// only accepts replacement circuits after the old leg has failed/joined.

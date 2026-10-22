@@ -81,7 +81,7 @@ func TestAminoBitswapImport(t *testing.T) {
 		t.Fatalf("inventory incomplete: %+v", dry.Missing)
 	}
 	res := run(apiv0.IPFSImportRequest{Root: root})
-	if res.Files == 0 || res.Bytes != dry.Bytes {
+	if res.Root == "" || res.Files != dry.Files || res.Bytes != dry.Bytes {
 		t.Fatalf("import %+v does not match its inventory %+v", res, dry)
 	}
 }

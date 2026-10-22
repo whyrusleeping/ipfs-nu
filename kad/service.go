@@ -386,20 +386,35 @@ func (s *Service) getProviders(key []byte) []Peer {
 	return append([]Peer(nil), v...)
 }
 
-func readMessage(r io.Reader) (Message, error) { return readMessageBuffered(bufio.NewReader(r)) }
-func readMessageBuffered(br *bufio.Reader) (Message, error) {
-	n, e := varint.Read(br)
+// readMessage reads a response (MaxResponse, DecodeResponse); readMessageBuffered reads a
+// request (MaxMessage, Decode).
+func readMessage(r io.Reader) (Message, error) {
+	b, e := readFrame(bufio.NewReader(r), MaxResponse)
 	if e != nil {
 		return Message{}, e
 	}
-	if n > MaxMessage {
-		return Message{}, wire.ErrLimit
-	}
-	b := make([]byte, int(n))
-	if _, e = io.ReadFull(br, b); e != nil {
+	return DecodeResponse(b)
+}
+func readMessageBuffered(br *bufio.Reader) (Message, error) {
+	b, e := readFrame(br, MaxMessage)
+	if e != nil {
 		return Message{}, e
 	}
 	return Decode(b)
+}
+func readFrame(br *bufio.Reader, limit int) ([]byte, error) {
+	n, e := varint.Read(br)
+	if e != nil {
+		return nil, e
+	}
+	if n > uint64(limit) {
+		return nil, wire.ErrLimit
+	}
+	b := make([]byte, int(n))
+	if _, e = io.ReadFull(br, b); e != nil {
+		return nil, e
+	}
+	return b, nil
 }
 func writeMessage(w io.Writer, m Message) error {
 	b, e := Encode(m)

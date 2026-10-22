@@ -438,12 +438,10 @@ adds the real daemon/CLI and restricted-network assembly. Replacing the CONNECT
 proxy with a refusing proxy produces `CONNECT denied: HTTP 403` in status **and
 `nu doctor`**, not an opaque timeout or insecure retry.
 
-**Explicit limitation discovered during acceptance:** an immediate one-sided daemon
-restart can leave the surviving peer's old inner QUIC session alive. An immediate
-get retry then fails before that session expires. The passing restart fixture
-restarts both endpoints to isolate persisted resumability from this qpath recovery
-issue. Immediate one-sided reboot recovery is **not evidenced** and needs a separate
-socket/path-owner fix; do not represent this test as that guarantee.
+**Historical limitation, superseded by 0075 below:** the original acceptance run
+needed both endpoints restarted because the survivor retained stale inner QUIC
+state. `TestDaemonWSSUDPBlocked` now restarts only the recipient, including the
+CONNECT case; it no longer uses that workaround.
 
 | Endpoint/proxy case | Support and evidence |
 |---|---|
@@ -472,7 +470,71 @@ push timing checks; their focused serial reruns and the subsequent full gate
 passed. The recovery probe retains its short QUIC-only deadline rather than
 spending the larger WSS setup budget on a dead QUIC-only relay.
 
-### Independent security review request / review plan (0017, 0020 and 0041)
+### One-sided daemon restart recovery (0075, 2026-10-22)
+
+Root causes were distinct from address-switch recovery:
+
+1. Host generated a new reset secret on each start. The new daemon's stateless
+   resets did not match survivors' learned tokens. The secret is now derived from
+   the node's private identity with domain/family separation (D9).
+2. Host's same-direction duplicate rule rejected the authenticated new connection
+   while the stale one occupied its slot (also visible on outer relay QUIC).
+   It now probes the exact old connection before rejecting that duplicate.
+3. qpath deliberately preserved inner sessions across relay failures, and only the
+   lower PeerID repaired raw legs. A rebooted lower endpoint had no old session or
+   routes to repair, leaving the higher survivor idle. Both ends can now repair
+   (staggered); the lower still initiates inner QUIC. Replacement legs probe an
+   old inner session, eliciting a reset or proving it is still alive.
+4. Four concurrent range workers could exhaust the fetcher's three-failure budget
+   on one connection reset. Session-backed request errors now carry their exact
+   connection generation; that single outage counts once, while fresh connection
+   failures still exhaust the existing bounded budget.
+
+No magicsock/quic-go reset parsing change was needed: qpath admits standard reset
+packets (fixed bit, short header), and unrecognized random reset CIDs on physical
+receive pass through to quic-go. quic-go matches the reset token at the transport
+level even if the reported source is physical rather than virtual. This does not
+mark a direct path verified, and a replacement still authenticates TLS to PeerID.
+New signed-record sequence numbers and relay-asserted STOP identity are not used
+as authority to evict an existing authenticated connection.
+
+```
+GOMAXPROCS=4 go test -p 1 -tags natlab ./node/swarm \
+  -run '^(TestDaemonOneSidedRestart|TestDaemonWSSUDPBlocked)$' -count=1 -v
+```
+
+`TestDaemonOneSidedRestart` uses actual daemons and CLI add/share/get in rootless
+namespaces, forcing direct UDP, relay-only UDP, or WSS-only TCP/443. Each mode:
+
+- SIGKILLs **only the provider** after partial verified progress. The **same** get
+  process must succeed without caller retry/error, and its output is SHA-256
+  compared with the original (13.2–14.4 MB, BLAKE3 content verification).
+- Interrupts **only the recipient** for a fresh blob, inspects durable partial
+  ranges with its store closed/reopened, restarts it and immediately issues a new
+  get. The provider/relay stay running. Output must again match exactly.
+- Requires completion within 15 seconds of starting the one-sided restart, not
+  the old minute-long idle timeout. A serial passing run completed provider cases
+  in 0.33–2.77 s and recipient cases in 0.28–2.21 s (39.3 s total). A loaded run
+  exceeded the bound while daemon startup/disk work was delayed; the serial rerun
+  passed without weakening the bound. These are fixture observations, not a fleet SLO.
+
+Focused unit tests check stable identity/family-scoped reset secrets, preservation
+of live peers that answer protocol-NA or hit local stream limits, and one-versus-
+three connection-generation failure accounting with four concurrent workers.
+Independent review of secret derivation, duplicate admission and cancellation is
+requested; no security sign-off is implied. Address-switch recovery is separate.
+
+Final verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`: `go vet ./... &&
+staticcheck ./... && go test ./... && ./scripts/depguard.sh`, gofmt and diff checks.
+The final combined restart/WSS natlab run passed in 65.0 s. The direct, QUIC-relay,
+and WSS-relay provider restarts completed in 1.09 s, 0.57 s, and 0.40 s; recipient
+restarts in 0.24 s, 0.54 s, and 1.16 s. QUIC-relay fixes the provider as the lower
+PeerID and WSS-relay as the higher, so both deterministic inner roles are exercised.
+An intermittent concurrent-failure accounting race found during validation was
+fixed: quic-go can return the terminal `net.ErrClosed`-wrapping error to a stream
+before canceling the connection context; error tagging now handles both orders.
+
+### Independent security review request / review plan (0017, 0020, 0041 and 0075)
 
 **Requested; pending independent review.** The implementation author is not the
 independent reviewer. A networking/security reviewer should review the following
@@ -486,7 +548,7 @@ follow-up commits here. Passing the smoke/soak tests is not security approval.
   budgets, exact endpoint authority, parser/stream/handshake resource bounds,
   teardown and qpath inner-session recovery. Reproduce the UDP-blocked direct
   and CONNECT cases and adversarial TLS/Upgrade/CONNECT failures. Specifically
-  examine the one-sided restart limitation above. No independent sign-off has
+  examine the 0075 one-sided restart recovery changes above. No independent sign-off has
   been obtained; the author does not approve their own implementation.
 - **Contract and implementation:** D11's “Path v1 control and probe security
   contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set

@@ -14,6 +14,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
+	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
 	"github.com/whyrusleeping/nu/store"
@@ -243,8 +244,9 @@ type swarm struct {
 
 type peer struct {
 	Peer
-	bad   bool // dropped (corrupt) or failing; guarded by swarm.mu
-	fails int
+	bad                bool // dropped (corrupt) or failing; guarded by swarm.mu
+	fails              int
+	connectionFailures map[*host.Conn]bool // bounded by maxFails; guarded by swarm.mu
 }
 
 // maxFails is how many transport failures make a peer unusable for the rest of a fetch.
@@ -309,6 +311,18 @@ func (s *swarm) report(ctx context.Context, p *peer, err error) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if p.bad {
+		return true
+	}
+	if failure := connectionFailure(err); failure != nil {
+		if p.connectionFailures[failure] {
+			return false
+		}
+		if p.connectionFailures == nil {
+			p.connectionFailures = make(map[*host.Conn]bool)
+		}
+		p.connectionFailures[failure] = true
+	}
 	p.fails++
 	if p.fails >= maxFails {
 		p.bad = true

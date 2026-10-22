@@ -88,11 +88,14 @@ Supported UnixFS profile:
   Import names byte-exactly, subject to the Nu
   D3 name rules; never normalize/rename silently. Permission bits reduce to Nu's executable
   bit. No timestamps, ownership, xattrs or MIME guesses are preserved.
-- Empty files/directories and files with raw or dag-pb leaves are supported. An import file
-  becomes a Nu raw blob (BLAKE3 by default); a directory becomes the D3 Nu MST tree. Thus all
-  resulting roots/blobs are newly computed Nu CIDs. Existing Nu D3 limits still apply,
-  including 8 MiB for whole-object SHA-256 verification; IPFS source blocks are individually
-  CID-verified under their original hash and do not become Nu SHA-256 blobs by implication.
+- Empty files/directories and files with raw or dag-pb leaves are supported. A file entry
+  becomes a Nu raw blob (BLAKE3 by default); a standalone file root is wrapped in the normal
+  D3a MASL file node. A directory root becomes the D3 Nu MST tree. A standalone symlink root
+  has no filename to represent as a D3 entry and is refused with an instruction to import its
+  containing directory. Thus all resulting roots/blobs are newly computed Nu CIDs. Existing
+  Nu D3 limits still apply, including 8 MiB for whole-object SHA-256 verification; IPFS source
+  blocks are individually CID-verified under their original hash and do not become Nu SHA-256
+  blobs by implication.
 
 ## Sources and transport
 

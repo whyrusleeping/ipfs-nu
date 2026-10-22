@@ -1289,3 +1289,152 @@ checkpoints. Pre-commit `go vet ./... && staticcheck ./... && go test ./... &&
 read-ahead, resume and multi-peer corruption recovery. Remaining gaps: consistent
 throughput on busy/full storage, the original 10 GB single-peer target, physical independent providers,
 WAN/high-BDP tuning, and remote/native-platform execution. No backlog edits.
+
+### 0071 stall investigation: destination sync latency (2026-10-22)
+
+**Reproduced and isolated, not fixed in production.** The intermittent low rates
+are reproducible without Nu: a single-goroutine sequential-file-write + sync
+control on the same filesystem also falls to approximately 50 MB/s. Nu's bounded
+checkpoint backpressure exposes that destination storage latency; there is no
+positive evidence of a scheduler/endgame deadlock or a two-minute request timeout
+in these runs. It would be incorrect to claim a production fix by loosening the
+resume bound, skipping sync, or relabeling RAM-backed results as durable-disk
+performance. No production code, checkpoint cadence, timeout or memory limit was
+changed in this investigation. A speculative `fdatasync` replacement was tested
+and **discarded**: five single-peer trials still included a 39.09 MB/s result.
+
+Same EPYC/Go/kernel as above; base `a64a277` after merging master. Destination
+`/tmp` is on the root ext4/LVM volume, **KINGSTON SNV2S2000G (`nvme2n1`)**, 96%
+full, approximately 77 GiB free at the end. The exact lower-level cause of the
+I/O latency (device cache/GC, filesystem behavior, or competing workload) is not
+established; this is not a hardware-health diagnosis. The capture identifies the
+blocking I/O layer, rather than assuming the pauses came from an unrelated user.
+
+#### Repeated results (2 GiB each; decimal MB/s)
+
+Each row has **10 independent fresh-destination runs**, `-benchtime=1x -count=10`.
+CPU count, endpoints, verification, caps and code are unchanged. Block/mutex
+profiling and request diagnostics were enabled for both disk and RAM downloads.
+The single-peer threshold is the previously measured conservative 191.86 MB/s;
+the capped case threshold is 64 MB/s, 0.8 of two honest 40 MB/s providers. One
+additional 40 MB/s provider corrupts its responses and is dropped in every run.
+
+| Measurement set | Minimum | Median | Maximum | Below target |
+|---|---:|---:|---:|---:|
+| Initial disk, single | 44.93 | 259.54 | 270.16 | 3/10 |
+| Initial disk, capped three/one corrupt | 47.80 | 78.72 | 79.33 | 3/10 |
+| Final disk, single (enhanced watchdog) | 123.54 | 272.62 | 296.39 | 1/10 |
+| Final disk, capped three/one corrupt | 44.52 | 79.10 | 79.26 | 2/10 |
+| RAM isolation control, single | 257.80 | 269.52 | 281.42 | 0/10 |
+| RAM isolation control, capped three/one corrupt | 78.39 | 79.09 | 79.44 | 0/10 |
+| Storage-only sequential write + sync | 49.84 | 478.75 | 538.89 | Not a network target |
+
+Final disk capped min/median/max as fractions of the honest sum:
+**0.557 / 0.989 / 0.991**; RAM capped **0.980 / 0.989 / 0.993**. All download
+runs passed their independent final size/digest check and corrupt-peer assertion.
+Across the two disk measurement sets, **9/40 downloads missed the threshold**.
+This is not a universal one-in-three failure probability; the bad rates cluster
+in time, and the small sample is from one shared storage device.
+
+The RAM control used an 8 GiB tmpfs mounted **only inside an unprivileged private
+mount namespace** at `.hardening/stall/ram-tmp`, with `TMPDIR` set there. It did
+not modify host mounts or sysctls. The mount and data disappeared on namespace
+exit. Both final-disk and RAM test binaries have identical SHA-256
+`2c33301ef2b9f51ff9c04228fc4419a5cc5cdbdf7cf337eef969c3bbe491e1fb`.
+**Tmpfs sync is not persistent storage or power-loss evidence**; this comparison
+isolates Nu/QUIC scheduling from the physical destination device. It is not a
+workaround to deploy or a replacement for the failed physical-disk measurements.
+
+#### Captured cause and excluded candidates
+
+- The initial idle watchdog captured a single-peer pause at 2,084,569,088 bytes,
+  with **no active requests**. One range worker was in `syscall.Fsync` from
+  `store.(*Partial).Flush` (data file); the other three waited on the checkpoint
+  completion channel. No worker held `Partial.mu` while waiting for a peer.
+- Many slow runs continued completing a few chunks every second, so an idle-only
+  `>1s` watchdog missed them. The enhanced watchdog also triggers after two
+  consecutive seconds below the scenario's throughput threshold. In the final
+  disk set it captured **34 goroutine dumps across all three slow runs; 33 had a
+  worker in `fsync`**. It captured **zero** dumps in the 20 RAM-control downloads.
+- All final-disk single-peer runs performed **2,049 requests with zero resets**
+  (have + 2,048 ranges). Their maximum request duration was 0.534 s and maximum
+  individual stream-read wait 0.086 s. Slow capped runs had maximum requests
+  0.234/0.664 s and stream-read waits 0.053/0.040 s. Expected corrupt/endgame
+  resets occurred, but there was no 30 s or 120 s retry delay. Single-peer runs
+  cannot take the cross-peer endgame duplicate path yet reproduced the slowdown.
+- The final disk block profile attributes **162.23 s aggregate worker wait** to
+  the checkpoint completion channel. The byte-identical RAM-control binary has
+  **no sampled wait at that channel** (0.172 ms aggregate elsewhere in the
+  checkpoint closure). This is storage backpressure, not a lock-order cycle.
+- A separate three-run `strace -f -tt -T -y -e trace=fsync,fdatasync` capture
+  measured **125.27 s in 372 partial-data syncs**, 18.20 s in 369 outboard syncs,
+  and only 0.13 s in 12 SQLite WAL syncs. Maximum data-file sync was **2.551 s**.
+  These syscall-traced runs are diagnostic, **not performance measurements**:
+  ptrace materially slows the whole process. Final, non-ptrace `iostat -dx -t 1`
+  independently recorded `nvme2n1` write await up to **642.85 ms**, queue depth
+  **107.72** at that sample, and about 38 MiB/s completed writes.
+- `BenchmarkCheckpointIO` removes the entire Nu stack: one goroutine, no locks,
+  network, SQLite or hashing, sequential 64 KiB writes and `File.Sync` every
+  16 MiB. Two of ten runs fell to **61.17 and 49.84 MB/s**, with **90.9% / 91.5%**
+  of elapsed time in sync and maximum individual syncs **1.403 / 1.658 s**.
+  Seven runs were 472–539 MB/s, and one was 229.80 MB/s. Thus neither QUIC flow
+  control nor Nu's verified-write path is required to reproduce this behavior.
+
+#### Harness changes and reproduction
+
+`NU_DOWNLOAD_TRACE` now enables per-request elapsed time/received-byte/read-wait
+records and one-second progress samples in JSONL. Each run has its own directory;
+up to 12 low-progress/low-throughput goroutine snapshots plus a first-stall block
+profile are saved. The block snapshot needs `-blockprofile` to enable sampling.
+Tracing is test-only, optional, bounded in live memory, and does not change the
+fetcher. Traces close and their watchdog joins even on benchmark failure.
+
+```sh
+mkdir -p .hardening/stall
+NU_SLOW=1 NU_DOWNLOAD_TRACE="$PWD/.hardening/stall/disk" \
+  go test ./nutest -run '^$' -bench '^BenchmarkDownload$' \
+  -benchtime=1x -count=10 -timeout=30m \
+  -blockprofile=.hardening/stall/disk.block \
+  -mutexprofile=.hardening/stall/disk.mutex -o .hardening/stall/disk.test
+NU_SLOW=1 go test ./nutest -run '^$' -bench '^BenchmarkCheckpointIO$' \
+  -benchtime=1x -count=10 -timeout=20m
+# Run iostat -dx -t 1 alongside the disk set; stop it when the set finishes.
+go tool pprof -list='download.func3' .hardening/stall/disk.block
+# Each trace directory contains events.jsonl, and, on a stall,
+# stall-00.txt ... stall-11.txt and stall.block.
+
+# Optional Linux isolation control, NOT a persistent-storage benchmark:
+mkdir -p .hardening/stall/ram-tmp
+unshare --user --map-root-user --mount sh -c '
+  mount -t tmpfs -o size=8G tmpfs "$PWD/.hardening/stall/ram-tmp" &&
+  TMPDIR="$PWD/.hardening/stall/ram-tmp" NU_SLOW=1 \
+  NU_DOWNLOAD_TRACE="$PWD/.hardening/stall/ram" \
+  go test ./nutest -run "^$" -bench "^BenchmarkDownload$" \
+    -benchtime=1x -count=10 -timeout=20m \
+    -blockprofile=.hardening/stall/ram.block \
+    -mutexprofile=.hardening/stall/ram.mutex -o .hardening/stall/ram.test'
+```
+
+Local raw evidence is under ignored `.hardening/stall/`: `before.log`, `before/`,
+`before.{block,mutex}`, `disk-final.log`, `disk-final/`, `disk-final.{block,mutex}`,
+`iostat-final.log`, `ram.log`, `ram/`, `ram.{block,mutex}`, `checkpoint-io.log`,
+`fdatasync.log`, `fsync.strace`, and `strace.log`. Representative initial dump:
+`before/transfer-2811230722/stall-00.txt`; final slow runs:
+`disk-final/transfer-{2341863676,1975892721,282941204}/`. Initial trace paths in
+console output were package-relative; those directories were moved under the
+root `.hardening/stall/before/`. The harness now requires absolute trace paths to
+avoid that ambiguity. No raw profile or generated binary is committed.
+
+**Remaining blocker:** predictable persistent-storage throughput on this root
+volume. No safe application change was demonstrated that removes the observed
+sync latency while preserving the existing bounded durable checkpoints. A
+repeat on suitable persistent storage (or diagnosis/remediation of this volume)
+is still needed before declaring 0071's minimum physical-disk rate satisfied.
+Reducing request timeouts cannot fix these captures: the workers were not waiting
+on requests. No change to durability policy is proposed or assumed authorized.
+
+Verification before commit: gofmt, `git diff --check`, `go vet ./...`,
+`staticcheck ./...`, `go test ./...` and `./scripts/depguard.sh` passed. A separate
+64 MiB `-race` benchmark run with tracing enabled also passed, exercising the
+watchdog concurrently with stream completion; its instrumentation-heavy rates
+are not included in the performance tables. No backlog edits or pushes.

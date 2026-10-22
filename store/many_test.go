@@ -7,15 +7,18 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"testing/fstest"
 
 	"github.com/whyrusleeping/nu/core/cid"
+	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/tree"
 )
 
-// HasMany and GetMany answer exactly as Has and Get do, across blocks, inline and file
-// blobs and absent objects; a GC that removes something changes Removals.
+// HasMany and GetMany answer exactly as Has and Get do, per requested CID, across blocks,
+// inline and file blobs, absent objects and raw bytes asked for as DRISL (0077); a GC that
+// removes something changes Removals.
 func TestHasMany(t *testing.T) {
 	s := open(t, t.TempDir())
 	fsys := fstest.MapFS{}
@@ -34,6 +37,11 @@ func TestHasMany(t *testing.T) {
 		t.Fatal(err)
 	}
 	absent, _ := cid.Parse("bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")
+	for _, c := range cs {
+		if c.Codec() == cid.Raw { // the same bytes under the DRISL codec
+			cs = append(cs, cid.New(cid.DRISL, c.Multihash()))
+		}
+	}
 	cs = append(cs, absent, cs[0]) // and a duplicate
 	check := func() {
 		t.Helper()
@@ -50,11 +58,11 @@ func TestHasMany(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if g, gok := got[c.Multihash()]; gok != ok || g != info {
+			if g, gok := got[c]; gok != ok || g != info {
 				t.Fatalf("%s: HasMany %v %+v, Has %v %+v", c, gok, g, ok, info)
 			}
 			data, err := s.Get(c)
-			if b, ok := blocks[c.Multihash()]; ok != (err == nil) || !bytes.Equal(b.Data, data) {
+			if b, ok := blocks[c]; ok != (err == nil) || !bytes.Equal(b, data) {
 				t.Fatalf("%s: GetMany %v, Get %v", c, ok, err)
 			}
 		}
@@ -157,4 +165,57 @@ func TestIncrementalVacuumUpgrade(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT count(*) FROM pins`).Scan(&pins); err != nil || pins != 1 {
 		t.Fatalf("pins after conversion: %d %v", pins, err)
 	}
+}
+
+// A tree linking a DRISL CID whose bytes are stored only as a raw blob (a "codec swap",
+// 0077) does not hold that node: the walk reports it missing and never follows the links
+// its bytes would have as DRISL, even when the same tree also links the raw blob.
+func TestWalkCodecSwap(t *testing.T) {
+	s := open(t, t.TempDir())
+	root, raw, swapped, secret := codecSwapTree(t, s)
+	var visited []cid.CID
+	st, err := s.Walk(context.Background(), Pin{CID: root, Mode: Recursive, Profile: "nu-tree"}, func(c cid.CID, held bool) error {
+		visited = append(visited, c)
+		if c == swapped && held {
+			t.Errorf("%s held as DRISL", c)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Complete() || st.Missing != 1 || !slices.Contains(visited, raw) || !slices.Contains(visited, swapped) || slices.Contains(visited, secret) {
+		t.Fatalf("walk %+v visited %v", st, visited)
+	}
+}
+
+// codecSwapTree stores a secret blob, bytes that decode as a file node pointing at it
+// (stored only as a raw SHA-256 blob), and a DRISL bundle root linking those bytes both
+// as raw and under the DRISL codec.
+func codecSwapTree(t *testing.T, s *Store) (root, raw, swapped, secret cid.CID) {
+	t.Helper()
+	secret, err := s.AddBlob(bytes.NewReader([]byte("members only")), 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evil, err := drisl.Marshal(tree.FileNode{Src: secret, Nu: tree.FileMeta{Size: 12}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err = s.AddBlobHash(bytes.NewReader(evil), int64(len(evil)), cid.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	swapped = cid.New(cid.DRISL, raw.Multihash())
+	b, err := drisl.Marshal(map[string]any{"$type": tree.TypeMASL, "resources": map[string]any{
+		"a": map[string]any{"src": raw}, "b": map[string]any{"src": swapped}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, err = cid.SumCID(cid.DRISL, cid.SHA256, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(root, b); err != nil {
+		t.Fatal(err)
+	}
+	return root, raw, swapped, secret
 }

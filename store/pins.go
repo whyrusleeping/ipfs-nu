@@ -159,11 +159,11 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 		}
 		seen[c] = true
 		st.Objects++
-		e, cached := pre.objs[c.Multihash()]
+		// The prefetch answers per full CID with Has's codec rules (0077: a DRISL CID
+		// whose bytes are stored only as raw is not held).
+		e, cached := pre.objs[c]
 		info, ok := e.info, e.ok
-		// The prefetch is keyed by multihash; when the stored codec differs, ask the
-		// codec-checking Has (0077: DRISL reads of raw-only bytes are not held).
-		if !cached || (ok && info.Codec != c.Codec()) {
+		if !cached {
 			if info, ok, err = s.Has(c); err != nil {
 				return st, err
 			}
@@ -183,7 +183,7 @@ func (s *Store) walk(ctx context.Context, p Pin, fn func(c cid.CID, info Info, h
 			continue
 		}
 		data := e.data
-		if data == nil || e.codec != c.Codec() {
+		if data == nil {
 			if data, err = s.Get(c); err != nil {
 				return st, err
 			}

@@ -12,6 +12,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/collection"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
@@ -425,8 +426,16 @@ func (n *Local) resolveDataset(ctx context.Context, pt target.Target) (cid.CID, 
 	}
 	if d.Source.Name != "" && (pt.Version == "" || pt.Version == "held") {
 		// A follow serves its held view (docs/follow.md "Lifecycle"): the last fully held
-		// target, which may be older than the head being acquired.
-		if m := n.replicaFor(c); m != nil {
+		// target, which may be older than the head being acquired. A select follow's
+		// held view is the head whose catalog was synced whole (its items are held by
+		// the rules; the rest resolve as not held).
+		if collection.IsFollow(d) {
+			if cm, _ := n.collectionsOf(c); cm != nil {
+				if synced, ok := cm.SyncedHead(pt.Dataset); ok {
+					return synced, nil
+				}
+			}
+		} else if m := n.replicaFor(c); m != nil {
 			if held := m.Protected(pt.Dataset).Held; held != "" {
 				return cid.Parse(held)
 			}

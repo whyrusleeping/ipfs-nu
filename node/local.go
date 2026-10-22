@@ -314,10 +314,17 @@ func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
 		}
 		return n.atrepoListing(r, root, d, pt.Path, label)
 	}
-	nd, root, p, err := n.resolveOrFetch(ctx, t)
+	pt, root, err := n.parseTarget(ctx, t)
 	if err != nil {
 		return nil, err
 	}
+	// A listing needs the directory's structure, not the content below it (a select
+	// follow lists its whole catalog while holding only selected items).
+	nd, err := n.ensureWith(ctx, root, pt.Path, targetHints(pt), nil, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	p := pt.Path
 	l := &apiv0.Listing{Target: root.String(), Entries: []apiv0.Entry{}}
 	if p != "" {
 		l.Target += "/" + p

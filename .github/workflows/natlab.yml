@@ -1,6 +1,32 @@
+# NAT-lab exit scenarios (0024): gates pull requests that touch networking paths.
+# Rows covered: AutoNAT/mapping/filtering/hairpin/UDP-block fixtures (p2p/natlab),
+# public<->EIM, IPv6<->IPv6, router-mapped (miniupnpd) and EIM/EIF<->EIM/APDF direct
+# paths with an address change mid-transfer (p2p/disco), port mapping and the
+# reaction pipeline (p2p/portmap, p2p/netmon), and the real-daemon suite
+# (node/swarm): relay matrix with doctor explanations, relay failover, direct
+# upgrade, metrics, a Wi-Fi->hotspot switch during a get, and the UDP-blocked
+# doctor diagnosis. Everything runs in isolated network namespaces.
 name: natlab
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'p2p/**'
+      - 'node/swarm/**'
+      - 'relay/**'
+      - 'proto/**'
+      - 'fetch/**'
+      - 'cmd/nu/connectivity.go'
+      - 'cmd/nu/cmd_relay.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/natlab.yml'
+  push:
+    branches: [master, main]
+    paths:
+      - 'p2p/**'
+      - 'node/swarm/**'
+      - 'relay/**'
 
 env:
   CGO_ENABLED: "0"
@@ -8,19 +34,21 @@ env:
 jobs:
   natlab:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: stable
       - name: namespace tools and router daemon
-        # The real-daemon test requires the nft backend with PCP enabled.
-        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps miniupnpd-nftables
-      - name: build lab tests (never run the Go toolchain as root)
+        # The real-daemon tests need tc (iproute2); mapped-path rows need the nft
+        # miniupnpd backend with PCP enabled.
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps bash miniupnpd-nftables
+      - name: build nu and lab tests (never run the Go toolchain as root)
         run: |
-          for package in natlab portmap netmon; do
-            go test -c -tags natlab -o "$RUNNER_TEMP/$package.test" "./p2p/$package"
+          go build -o "$RUNNER_TEMP/nu" ./cmd/nu
+          for package in p2p/natlab p2p/portmap p2p/netmon p2p/disco node/swarm; do
+            go test -c -tags natlab -o "$RUNNER_TEMP/$(basename "$package").test" "./$package"
           done
       - name: isolated scenarios
         # Root is the portable CI fallback; local go test uses user+net
@@ -28,11 +56,16 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          for package in natlab portmap netmon; do
+          for package in natlab portmap netmon disco; do
             sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" NU_MINIUPNPD=/usr/sbin/miniupnpd \
-              "$RUNNER_TEMP/$package.test" -test.v -test.timeout=60s \
+              "$RUNNER_TEMP/$package.test" -test.v -test.timeout=120s \
               2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
           done
+          # Real daemons: relay matrix, failover, direct upgrade, metrics, hotspot
+          # switch mid-transfer, UDP-blocked doctor explanation.
+          sudo env NU_NATLAB_BIN="$RUNNER_TEMP/nu" \
+            "$RUNNER_TEMP/swarm.test" -test.v -test.timeout=600s -test.run '^TestDaemonNAT' \
+            2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

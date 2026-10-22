@@ -181,7 +181,12 @@ func BenchmarkDownload(b *testing.B) {
 			}
 			for i := 0; i < b.N; i++ {
 				dst := downloadStore(b)
-				cfg := fetch.Config{Store: dst, Providers: fetch.Static(peers)}
+				minRate := int64(192_000_000) // conservative half of the measured QUIC ceiling
+				if count == 3 {
+					minRate = 2 * capBytes * 8 / 10
+				}
+				trace, tracedPeers := newDownloadTrace(b, peers, minRate)
+				cfg := fetch.Config{Store: dst, Providers: fetch.Static(tracedPeers)}
 				if value := os.Getenv("NU_DOWNLOAD_FLUSH_BYTES"); value != "" {
 					cfg.FlushBytes, err = strconv.ParseUint(value, 10, 64)
 					if err != nil || cfg.FlushBytes == 0 {
@@ -191,9 +196,10 @@ func BenchmarkDownload(b *testing.B) {
 				fetcher := fetch.New(cfg)
 				b.StartTimer()
 				start := time.Now()
-				result, err := fetcher.Fetch(ctx, id, fetch.Options{Size: uint64(size)})
+				result, err := fetcher.Fetch(ctx, id, fetch.Options{Size: uint64(size), Progress: trace.progress})
 				elapsed := time.Since(start)
 				b.StopTimer()
+				trace.close()
 				if err != nil {
 					b.Fatal(err)
 				}

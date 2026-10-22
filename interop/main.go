@@ -66,7 +66,16 @@ func main() {
 	}
 }
 
-func newHost(ip string) (*host.Host, *proto.Service, error) {
+type coreService interface {
+	Identify(context.Context, wire.PeerID) (proto.PeerInfo, error)
+	Ping(context.Context, wire.PeerID) (time.Duration, error)
+	Close() error
+}
+
+func newHost(ip string) (*host.Host, coreService, error) {
+	if os.Getenv("NU_INTEROP_DAEMON") == "1" {
+		return daemonHost(ip)
+	}
 	key, err := wire.GenerateNodeKey()
 	if err != nil {
 		return nil, nil, err

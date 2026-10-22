@@ -1,7 +1,7 @@
 ---
 id: "0029"
 title: 'First magic preview exit: different NATs, 10 GB/10k-file tree, browser and 3-peer download'
-status: in_progress
+status: in_review
 priority: 2
 created: "2026-09-24"
 updated: "2026-10-22"

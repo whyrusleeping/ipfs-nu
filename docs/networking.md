@@ -978,6 +978,16 @@ reflexive candidate follows the new path, and a peer that receives a new candida
 generation re-probes its selected direct path immediately instead of at the next
 heartbeat.
 
+Measured daemon behavior (0029, post-0024): a 512 MiB relayed `nu get` survives
+recipient-only, provider-only and simultaneous interface/subnet/WAN changes from
+cone networks to APDM/APDF hotspots without daemon restart or CLI retry. Progress
+remains monotonic and the final size/SHA-256 matches. This uses the ordinary
+wildcard UDP socket, which remains bound while the kernel selects the new route;
+it does **not** demonstrate physical socket replacement or inner QUIC identity
+preservation. `physical_rebind=false` and the pipeline's rebind warning remain
+accurate for explicitly bound addresses that disappear. See the 0029 results in
+[validation](validation.md#first-magic-preview-automated-nat-lab-exit-0029-2026-10-22).
+
 `p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
 before returning. Events are bounded, coalesced invalidations: consumers re-read OS
 state rather than treating notifications as complete snapshots. Overflow requests a

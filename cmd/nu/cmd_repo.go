@@ -11,8 +11,10 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/client"
+	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/node/repo"
+	"github.com/whyrusleeping/nu/store"
 )
 
 // 0044: offline repo maintenance (docs/operations.md "Backup, export and recovery").
@@ -208,6 +210,42 @@ var cmdRepo = &command{
 					fmt.Fprintf(w, "restored peer %s into %s (%d files, %d state repositories verified)\n", m.PeerID, r.Root(), len(m.Files), m.Verified)
 					fmt.Fprintf(w, "next: `%s repo import <dir>` for an exported bundle, or start the daemon to re-acquire content from other members\n", nu.Name)
 				})
+			},
+		},
+		{
+			name:    "unpin",
+			args:    "--source <source> [--name <name>] <cid>",
+			summary: "remove one pin of any source (orphaned pins after an import or a re-genesis); subsystems re-pin what they still need",
+			run: func(ctx context.Context, e *env, args []string) error {
+				fs := e.flags()
+				source := fs.String("source", "", "pin source as shown by `pin ls` (explicit, cluster, follow, …)")
+				name := fs.String("name", "", "pin name as shown by `pin ls`")
+				if err := parseFlags(fs, args); err != nil {
+					return err
+				}
+				if fs.NArg() != 1 || *source == "" {
+					return usagef("repo unpin needs --source and one CID")
+				}
+				c, err := cid.Parse(fs.Arg(0))
+				if err != nil {
+					return usagef("repo unpin: %v", err)
+				}
+				n, err := e.offlineNode(ctx)
+				if err != nil {
+					return err
+				}
+				removed := false
+				for _, mode := range []string{store.Recursive, store.Direct} {
+					ok, err := n.Store.Unpin(store.Pin{CID: c, Mode: mode, Source: *source, Name: *name})
+					if err != nil {
+						return err
+					}
+					removed = removed || ok
+				}
+				if !removed {
+					return apiv0.Errorf(apiv0.CodeNotFound, "no %s pin %q of %s", *source, *name, c).WithAction("list pins with `" + nu.Name + " pin ls`")
+				}
+				return e.emit(apiv0.Pin{CID: c.String()}, func(w io.Writer) { fmt.Fprintf(w, "unpinned %s (%s %s)\n", c, *source, *name) })
 			},
 		},
 	},

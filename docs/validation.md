@@ -1063,11 +1063,52 @@ Scaled to the v0-era test policy: a few fast tests per acceptance bullet (Linux 
 | Retention schedule, lookup without fallback | `cluster.TestRetainAndSelect` | GFS buckets from the newest version, labels and head always live, `max_bytes` drops the oldest unprotected and reports protected excess; deterministic live-set identity; a time before history is an error; a duplicated label is ambiguous |
 | Crash consistency | `TestOneNodeArchive` (restart) | head and version are one signed commit; history, labels and availability survive a restart |
 
-Not covered: macOS/APFS crash, sleep, Unicode and case tests (no macOS runner here;
-extraction's case/normalization collision handling is X1–X6), process kill between the
+Not covered: macOS/APFS crash and sleep tests (see 0044 below for Unicode/case),
+process kill between the
 import and the head write (the import is unpinned and falls to GC after the grace),
 authenticated import-manifest export (needs 0042's manifests) and historical identity
 evidence for external sources (0045, 0054).
+
+## Distribution, upgrades and recovery (0044)
+
+Scaled to the v0-era test policy (Linux, 2026-10-22). Rules are
+[B1–B8, U1–U6, I1–I5](operations.md#b-backup-export-and-recovery).
+
+| Rule / scenario | Evidence | Shows |
+|---|---|---|
+| Clean-machine restore from a complete export + backed-up authority (B1–B6) | `node.TestCleanMachineRestore` | a one-node archive with two versions and a 9 MiB blob (stored beside the CAR) is exported and backed up; the repo is deleted; restore verifies the signed state under the same PeerId, history is back but content unreadable until import; import verifies every object, restores the pins; both versions read byte-exact; a truncated bundle pins nothing; restoring over another node key is `conflict` |
+| Clean-machine restore from surviving members (B6) | `cluster_test.TestRestoreFromSurvivors` | the founding member (root + admin keys) of a two-member archive cluster is wiped and restored from its authority backup only; it rejoins as the same member, re-acquires both retained versions from the survivor, and its admin key still writes a head the survivor accepts |
+| Interrupted upgrade (U2/U3) | `store.TestInterruptedUpgrade` | a store one schema behind is opened by a child process SIGKILLed inside the last migration's transaction; the schema stays at the previous version, the next open resumes and completes it (derived columns and usage counters correct) |
+| Newer formats refused untouched (U4/U5) | `store.TestInterruptedUpgrade`, `repo.TestNewerLayoutRefused`; CLI by hand | newer `user_version` → `ErrNewerSchema`, version unchanged; newer layout → `ErrNewerLayout`; `nu status` exits 4 (`not_supported`) with "run the newer release; downgrades are not supported" |
+| Filenames, Unicode, case, symlinks, modes (data.md Platforms, X1–X6) | `node.TestFilenameRoundTrip`, `extract.TestExtractSafety` | Linux (ext4/tmpfs): NFC and NFD spellings, `Readme.md`/`README.md`, 254-byte and emoji names round-trip byte-exact through add and `get -o`; `0750` → `0755`, `0600` → `0644`; the symlink is recorded, reported with its target and not created; a FIFO is skipped and reported on add; a non-UTF-8 name fails the add naming the file. On a folding filesystem the second spelling is reported naming the entry it maps onto (asserted at run time; exercised by the macOS CI job) |
+| CLI round trip and permissions | by hand, `nu repo export/backup/restore/import/unpin` | backup tar and its entries `0600`, bundle files `0600`; restore into a fresh `NU_PATH` then import; `nu repo unpin` removes a pin of any source |
+| Release build (I1) | `scripts/release.sh build/package` by hand | static linux/amd64 binary; tarballs with fixed order/owner/mtime and `0644`/`0755` modes; packaging twice gives identical SHA-256 |
+| Install, upgrade, pre-upgrade backup (I4/I5) | `dist/install.sh` by hand on this Linux workstation (systemd user unit), then removed | install from a tarball (checksum verified), daemon up under `systemctl --user`; upgrade v0.0.1 → v0.0.2 stops the unit, writes a `0600` authority backup, swaps the binary, restarts; held content still served; a corrupted tarball is refused by its checksum; `--no-service` install/upgrade twice in a prefix |
+
+Bugs found: the installer's readiness probe used `nu status`, which falls back to an
+in-process node and took the repo lock from the starting daemon; it now probes with
+`nu operations` (daemon only).
+
+**Human or CI only (not run here):**
+
+- macOS: native runs of the arm64/amd64/universal binaries beyond the release workflow's
+  smoke step; the LaunchAgent install/upgrade path of `install.sh`; `plutil -lint` (CI);
+  APFS case/normalization extraction (the macOS `go test` job runs
+  `TestFilenameRoundTrip`/`TestExtractSafety`; its results are not recorded here yet).
+- Isolated/private-mode egress on macOS: the netns lab results (`-tags natlab`) are Linux
+  evidence only and authorize no macOS isolation claim.
+- APFS crash consistency and sleep/wake (power cut during migration and during sync on a
+  laptop; lid close while serving). Linux kill tests do not authorize macOS claims.
+- Signing and notarization: needs an Apple Developer ID certificate and notary
+  credentials as repository secrets (I2); until then macOS binaries ship unsigned and
+  Gatekeeper will warn on browser-downloaded copies.
+- `--system` install on a Linux server as root (user creation, `/var/lib/nu`, unit
+  hardening under real workloads; `systemd-analyze verify` passes apart from the absent
+  binary).
+- Security review of backup/restore (archive parsing limits, plaintext key handling,
+  restore preconditions) and of the units' hardening, per the independent review plan.
+- Re-genesis (B8) as an end-to-end drill; there is no `nu cluster leave`, so it is a manual
+  procedure today.
 
 ## Release evidence
 

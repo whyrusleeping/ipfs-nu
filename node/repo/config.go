@@ -215,6 +215,9 @@ type SwarmConfig struct {
 	// under random loss, so they stay opt-in until a loss-aware policy exists).
 	RelayDatagram string `toml:"relay_datagram,omitempty"`
 	HardNAT       string `toml:"hard_nat,omitempty"` // auto (default) or off
+	// GSO: auto (default; UDP segmentation offload only when the uplink NIC does it in
+	// hardware), on or off (p2p/host.ConfigureGSO).
+	GSO string `toml:"gso,omitempty"`
 	// DHT: auto (default; Amino client when a non-loopback address is bound, server
 	// once AutoNAT confirms public reachability), client (always a client, never a
 	// server) or off. Private/isolated modes never run it.

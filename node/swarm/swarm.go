@@ -95,6 +95,9 @@ type Config struct {
 	RelayDatagram bool
 	// HardNAT is auto (default) or off; only consenting Nu path sessions use it.
 	HardNAT string
+	// GSO is auto (default), on or off (host.ConfigureGSO). It is process-wide and takes
+	// effect for transports created after the first Start.
+	GSO string
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
@@ -154,6 +157,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 	}()
 
+	gsoOff, why, err := host.ConfigureGSO(cfg.GSO)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("UDP GSO", "disabled", gsoOff, "why", why)
 	listen, err := listenAddrs(cfg.Listen, log)
 	if err != nil {
 		return nil, err
@@ -649,7 +657,7 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile),
+	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile), GSO: cfg.Swarm.GSO,
 		DHT: DHTConfig{Mode: cfg.Swarm.DHT, LookupDomain: cfg.Swarm.LookupDomain, RoutingURL: cfg.Swarm.RoutingURL, NoAnnounce: r.NoAnnounced}}
 	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
 		return Config{}, err

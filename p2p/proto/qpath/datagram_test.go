@@ -55,6 +55,11 @@ func TestDatagramRelayUpgradeAndFallback(t *testing.T) {
 	if sa.DatagramSent == 0 || sb.DatagramSent == 0 || sa.DatagramReceived == 0 || sb.DatagramReceived == 0 {
 		t.Fatal("datagram leg unused", sa, sb)
 	}
+	// Relay byte counters (0024 metrics) must include datagram-leg traffic in
+	// both directions: a 96 KiB echo moved far more than the handshake bytes.
+	if sa.Sent.Relay < 90<<10 || sa.Recv.Relay < 90<<10 || sb.Recv.Relay < 90<<10 || sa.Sent.Direct != 0 {
+		t.Fatal("relay byte counters miss datagram-leg bytes", sa.Sent, sa.Recv, sb.Recv)
+	}
 	after, ok := x.a.Connection(x.b.ID())
 	if !ok || after != before {
 		t.Fatal("inner connection replaced by the upgrade")

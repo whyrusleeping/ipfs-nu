@@ -23,9 +23,14 @@ var datagramRetry = []time.Duration{30 * time.Second, 2 * time.Minute, 10 * time
 var relayOptimizeInterval = 10 * time.Minute
 var relayOptimizeDelay = time.Second
 
-// acceptDatagramPolicy answers a relay's offer: only when a live stream leg to
-// that peer through that relay exists. It may wait briefly for in-progress setup.
+// acceptDatagramPolicy answers a relay's offer: only when this node itself opted
+// in (swarm.relay_datagram = on; an "on" dialer cannot upgrade an "off" target)
+// and a live stream leg to that peer through that relay exists. It may wait
+// briefly for in-progress setup.
 func (c *connectivity) acceptDatagramPolicy(relay, peer wire.PeerID) bool {
+	if !c.s.cfg.RelayDatagram {
+		return false
+	}
 	c.mu.Lock()
 	p := c.peers[peer]
 	c.mu.Unlock()

@@ -98,6 +98,7 @@ func TestDaemonPairAwarePeerRelay(t *testing.T) {
 		labConfig(t, dirs[i], "swarm.listen", labArray(fmt.Sprintf("/ip4/10.%d.0.2/udp/4171/quic-v1", i+1)))
 		labConfig(t, dirs[i], "swarm.mdns", "false")
 		labConfig(t, dirs[i], "swarm.relays", labArray(relays...))
+		labConfig(t, dirs[i], "swarm.relay_datagram", "on")
 		labConfig(t, dirs[i], "api.listen", "127.0.0.1:0")
 		labConfig(t, dirs[i], "gateway.listen", "127.0.0.1:0")
 		daemons[i] = labStart(t, clients[i], bin, dirs[i], "daemon")

@@ -219,6 +219,11 @@ type SwarmConfig struct {
 	// PeerRelayAllow makes this public node a bounded circuit relay for exactly
 	// these PeerIDs (an owner's devices or an allow-list); empty disables it.
 	PeerRelayAllow []string `toml:"peer_relay_allow,omitempty"`
+	// RelayDatagram: "off" (default) or "on". On, this node upgrades relayed legs it
+	// dials to the Nu datagram relay extension and accepts such upgrades from peers;
+	// off keeps every relayed leg on the circuit stream (D11c §5: datagram legs lost
+	// under random loss, so they stay opt-in until a loss-aware policy exists).
+	RelayDatagram string `toml:"relay_datagram,omitempty"`
 	// DHT: auto (default; Amino client when a non-loopback address is bound, server
 	// once AutoNAT confirms public reachability), client (always a client, never a
 	// server) or off. Private/isolated modes never run it.

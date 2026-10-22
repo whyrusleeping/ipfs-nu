@@ -91,6 +91,9 @@ type Config struct {
 	// datagram extension) for exactly these peers: an owner's devices or an
 	// allow-list. Empty disables peer relaying; private/isolated modes never relay.
 	PeerRelayAllow []wire.PeerID
+	// RelayDatagram opts relayed legs into the Nu datagram relay extension, both
+	// as the upgrading dialer and as an accepting target. Off by default.
+	RelayDatagram bool
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.

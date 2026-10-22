@@ -471,6 +471,7 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	}
 	p.leg = leg
 	p.relay = circ.Relay
+	c.setDatagram(p, "stream") // the dialer upgrades; relay offers arrive via acceptDatagrams
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
 		p.lastError = err.Error()

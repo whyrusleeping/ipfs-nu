@@ -448,6 +448,10 @@ A1–A8; the transfer rules are in [operations](operations.md#capacity-and-trans
   is free space kept on the filesystem holding the store (default 1 GiB); headroom is
   `min(limit − physical, free − reserve)` over the terms that apply. `store.gc_watermark`
   (default 0.9) is the fraction of `limit` above which automatic GC runs.
+  `store.state_reserve` (default 16 MiB, capped at `limit/8` so small limits stay usable)
+  is a slice of that headroom only signed cluster-state writes may use (blocks of the
+  state repositories this member writes or pulls, `Store.State()`); content admission
+  never consumes it, so reported `headroom` is the headroom less the reserve.
 - **A6 Admission.** Every write declares its need before it stores anything: a known-size
   add or fetch needs the object plus its outboard; a partial blob needs its missing groups
   plus the outboard on first open; an unknown-size add needs one chunk group up front and
@@ -466,7 +470,8 @@ A1–A8; the transfer rules are in [operations](operations.md#capacity-and-trans
   open. GC never removes pinned content of any source: under pressure, acquisition pauses
   with the bytes needed and the action (release pins with `pin rm`/unfollow, free disk
   space, or raise `store.limit`); protected content ([S7](operations.md#s-safe-release))
-  is never released to make a new update fit.
+  is never released to make a new update fit. Pressure (content headroom 0) leaves the
+  state reserve: an authority with a full store still writes member and head records.
 - **A8 Status.** `nu status` and `GET /api/v0/status` report the `store` section:
   `{objects, pins, bytes (physical), blobs, outboards, partials, db, staging, reserved
   (admitted, unwritten fetch bytes), nocopy, free, limit, reserve, headroom, pressure}`,

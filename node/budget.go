@@ -25,7 +25,7 @@ func storeLimits(r *repo.Repo) (store.Limits, error) {
 			WithAction("fix the value in config.toml; sizes are bytes with an optional K/M/G/T/P suffix, e.g. `" + nu.Name + " config set store.limit 50G` (0 for no limit)")
 	}
 	return store.Limits{Physical: int64(cfg.Store.Limit), FreeReserve: int64(cfg.Store.FreeReserve),
-		Watermark: cfg.Store.GCWatermark, Grace: GCGrace}, nil
+		Watermark: cfg.Store.GCWatermark, Grace: GCGrace, StateReserve: int64(cfg.Store.StateReserve)}, nil
 }
 
 // apiErr maps store errors into the API error contract (content.StoreError).

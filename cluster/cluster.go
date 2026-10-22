@@ -535,7 +535,7 @@ func (c *Cluster) writeAs(did string, ops []Op) (*Written, error) {
 		c.mu.Unlock()
 		return nil, ErrNoKey
 	}
-	st := c.opts.Store
+	st := c.opts.Store.State() // signed state may use the state reserve (D17 A5)
 	var r *atrepo.Repo
 	var old cid.CID
 	if h, ok := c.heldLocked(did); ok {
@@ -690,7 +690,7 @@ func (c *Cluster) Apply(did string, want cid.CID, r io.Reader) (bool, error) {
 		return false, ErrStale
 	}
 	for _, b := range a.Blocks {
-		if err := c.opts.Store.Put(b.CID, b.Data); err != nil {
+		if err := c.opts.Store.State().Put(b.CID, b.Data); err != nil {
 			return false, err
 		}
 	}

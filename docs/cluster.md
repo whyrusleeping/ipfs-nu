@@ -494,8 +494,8 @@ over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-
   automatically. Several authorities may write the same record; LWW keeps one. A
   partitioned authority marks the members it cannot hear (re-placing their blobs on its
   side), which is transient over-replication, released after healing and settling.
-  Signed-state writes need store headroom: a member whose store is full cannot write
-  member records (finding; state writes have no reserved budget yet).
+  Signed-state writes use the store's state reserve (`store.state_reserve`, D17 A5), so
+  an authority whose store is full for content still writes member records.
 - **Release:** per member, in `replica` (`release.go`), as
   [operations S1–S4](operations.md#s-safe-release) with the readings in the 0048 gate:
   *version* candidates are unpinned once the head and live set are confirmed `k` times by

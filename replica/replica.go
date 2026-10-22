@@ -379,6 +379,7 @@ func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *S
 	ret := cluster.Retain(name, hist, d.Policy.History, cluster.HeadVersion(hist, head.Value.Target))
 	s.Live, s.LiveVersions = ret.ID, map[string]bool{}
 	full := s.Mode == cluster.ModeFull
+	local := m.cfg.Cluster.Mode() == cluster.ModeLocal
 	m.mu.Lock()
 	if st.Versions == nil {
 		st.Versions = map[string]string{}
@@ -413,7 +414,9 @@ func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *S
 		s.LiveVersions[e.TID] = complete
 		m.mu.Lock()
 		st.Versions[e.TID] = e.Root
-		if complete && !contains(st.Complete, e.TID) {
+		// On the one-node cluster local completeness establishes a version; elsewhere an
+		// archive-ready evaluation does (Establish).
+		if complete && local && !contains(st.Complete, e.TID) {
 			st.Complete = append(st.Complete, e.TID)
 		}
 		st.Pruned = slices.DeleteFunc(st.Pruned, func(t string) bool { return t == e.TID })
@@ -435,8 +438,12 @@ func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *S
 		if contains(st.Complete, tid) || m.protectedLocked(st, root, liveRoots) {
 			continue
 		}
+		c, err := cid.Parse(root)
+		if err == nil && !local && m.check(c, 0, pl, full).complete() {
+			continue // this member's share is held: a release candidate, not skipped
+		}
 		// Skipped: never complete here and no longer selected.
-		if c, err := cid.Parse(root); err == nil {
+		if err == nil {
 			_, _ = m.cfg.Store.Unpin(pinFor(name, c))
 		}
 		delete(st.Versions, tid)

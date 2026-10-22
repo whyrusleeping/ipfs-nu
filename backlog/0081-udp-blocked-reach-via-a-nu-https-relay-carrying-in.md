@@ -21,3 +21,4 @@ Acceptance if accepted: UDP-blocked Nu↔Nu transfer through a declared Nu relay
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: DEFERRED by the user: UDP-blocked networks are not needed at this stage. Stays proposed; do not start without new user direction.

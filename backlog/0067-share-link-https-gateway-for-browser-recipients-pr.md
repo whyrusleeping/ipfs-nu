@@ -1,10 +1,10 @@
 ---
 id: "0067"
 title: Share-link HTTPS gateway for browser recipients (proposal)
-status: proposed
+status: done
 priority: 3
 created: "2026-10-21"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0028"
     - "0039"
@@ -23,3 +23,4 @@ Open questions: abuse (malware/phishing distribution under a project domain), re
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: REJECTED by the user (not necessary). Closed without implementation; browser recipients use an operator's own public seed (0043).

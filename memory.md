@@ -30,3 +30,6 @@
 
 ## Lessons learned
 - 2026-10-22 [measured observation] The terra model (agent_5) repeatedly stopped multi-stage coding tasks after one small stage even when told to continue; opus/claude/sol/astra handled long tasks. Prefer them for big implementation work. <!-- ycc-memory id=m-dmaz6ejx2jgo kind=observation session=s_e77e1e628cbf87bf event=18504 actor=coordinator scope=workspace classified=model -->
+
+## Codebase gotchas
+- 2026-10-22 [measured observation] Interrupted NAT-lab daemon tests can leave orphaned `nu daemon`/`nu relay` processes under /tmp/TestDaemonNAT*; check with `pgrep -x nu -a` (not `pkill -f`, which can match the calling shell) before manual multi-daemon runs on default ports. <!-- ycc-memory id=m-dmb4qxogarqe kind=observation session=s_ce5d367a91139809 event=130 actor=coordinator scope=workspace classified=model -->

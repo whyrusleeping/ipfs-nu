@@ -328,9 +328,8 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
   independent. See [validation](docs/validation.md#q2-amino-provider-keys-and-citizenship-bounded-live-results-incomplete-swarm-run).
 - **Public infrastructure:** operators, funding, admission/abuse/quotas, regional deployment
   and domain control before default-service promises; account-free sharing remains a goal.
-  A share-link HTTPS gateway (streaming from an online sharer, download-only on a sandbox
-  domain, capped, uncached) would give browser recipients the first-share magic without
-  hosting obligations; it is a proposal with abuse/cost questions, not a commitment.
+  A project-operated share-link HTTPS gateway is not planned; browser recipients use an
+  operator's own public seed.
 - **Name:** the product/binary name `nu` is provisional and clashes with Nushell's `nu`
   executable. Keep the name in few places (`cmd/nu`, one constant, `NU_` env prefix) so a
   rename stays mechanical.

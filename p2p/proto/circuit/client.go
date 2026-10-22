@@ -33,23 +33,27 @@ func (c *Circuit) Reset() { c.Stream.Reset(); c.once.Do(func() { close(c.done) }
 type ClientConfig struct {
 	Timeout                      time.Duration
 	MaxReservations, MaxCircuits int
+	// AcceptDatagram approves a relay's datagram-leg offer for peer. nil refuses
+	// every offer; owners return true only for a live circuit with that peer.
+	AcceptDatagram func(relay, peer wire.PeerID) bool
 }
 type heldReservation struct {
 	value Reservation
 	conn  *host.Conn
 }
 type Client struct {
-	host         *host.Host
-	cfg          ClientConfig
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.Mutex
-	reservations map[wire.PeerID]heldReservation
-	active       map[*Circuit]bool
-	accepted     chan *Circuit
-	requests     chan struct{}
-	wg           sync.WaitGroup
-	closeOnce    sync.Once
+	host             *host.Host
+	cfg              ClientConfig
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	reservations     map[wire.PeerID]heldReservation
+	active           map[*Circuit]bool
+	accepted         chan *Circuit
+	acceptedDatagram chan *DatagramLeg
+	requests         chan struct{}
+	wg               sync.WaitGroup
+	closeOnce        sync.Once
 }
 
 func NewClient(h *host.Host, cfg ClientConfig) (*Client, error) {
@@ -74,9 +78,14 @@ func NewClient(h *host.Host, cfg ClientConfig) (*Client, error) {
 		}
 	}
 	ctx, cancel := context.WithCancel(h.Context())
-	c := &Client{host: h, cfg: cfg, ctx: ctx, cancel: cancel, reservations: make(map[wire.PeerID]heldReservation), active: make(map[*Circuit]bool), accepted: make(chan *Circuit, cfg.MaxCircuits), requests: make(chan struct{}, cfg.MaxReservations)}
+	c := &Client{host: h, cfg: cfg, ctx: ctx, cancel: cancel, reservations: make(map[wire.PeerID]heldReservation), active: make(map[*Circuit]bool), accepted: make(chan *Circuit, cfg.MaxCircuits), acceptedDatagram: make(chan *DatagramLeg, cfg.MaxCircuits), requests: make(chan struct{}, cfg.MaxReservations)}
 	if err := h.Handle(StopProtocol, cfg.MaxCircuits+8, c.handleStop); err != nil {
 		cancel()
+		return nil, err
+	}
+	if err := h.Handle(DatagramStopProtocol, cfg.MaxCircuits, c.handleDatagramStop); err != nil {
+		cancel()
+		h.RemoveHandler(StopProtocol)
 		return nil, err
 	}
 	return c, nil
@@ -99,6 +108,7 @@ func (c *Client) Close() error {
 		}
 		c.mu.Unlock()
 		c.host.RemoveHandler(StopProtocol)
+		c.host.RemoveHandler(DatagramStopProtocol)
 		c.wg.Wait()
 	})
 	return nil

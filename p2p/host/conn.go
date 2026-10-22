@@ -22,6 +22,7 @@ type Conn struct {
 	key      wire.PublicKey
 	outbound bool
 	streams  map[*Stream]struct{} // protected by host.mu
+	datagramState
 }
 
 func (c *Conn) PeerID() wire.PeerID       { return c.peer }

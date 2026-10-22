@@ -112,4 +112,19 @@ func TestImportDirectoryFileAndSymlink(t *testing.T) {
 	if _, err = drisl.Decode(manifest); err != nil {
 		t.Fatal(err)
 	}
+	fileResult, err := Import(context.Background(), file, blocks, st, st, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileNodeData, err := st.Get(fileResult.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileNode, err := tree.DecodeFileNode(fileNodeData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileNode.Src != f.CID {
+		t.Fatalf("standalone file root does not wrap imported blob: %+v", fileNode)
+	}
 }

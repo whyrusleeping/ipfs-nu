@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 
+	"github.com/spaolacci/murmur3"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/core/mst"
@@ -74,19 +77,33 @@ func Import(ctx context.Context, root IPFSCID, src BlockSource, blobs BlobSink, 
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if e.Kind != tree.KindDir {
-		return ImportResult{}, errors.New("bridge: root must be a UnixFS directory")
+	var nuRoot cid.CID
+	var data []byte
+	if e.Kind == tree.KindDir {
+		header := tree.Header{V: 1, Root: e.CID, Files: i.files, Bytes: e.Size}
+		nuRoot, data, err = drisl.Sum(header)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		if err = nodes.Put(nuRoot, data); err != nil {
+			return ImportResult{}, err
+		}
+	} else if e.Kind == tree.KindFile {
+		// A standalone UnixFS file becomes the standard Nu file node (D3a), not an
+		// artificial one-entry directory with a fabricated filename.
+		file := tree.FileNode{Src: e.CID, Nu: tree.FileMeta{Size: e.Size}}
+		nuRoot, data, err = drisl.Sum(file)
+		if err != nil {
+			return ImportResult{}, err
+		}
+		if err = nodes.Put(nuRoot, data); err != nil {
+			return ImportResult{}, err
+		}
+	} else {
+		return ImportResult{}, errors.New("bridge: a standalone UnixFS symlink has no directory entry name; import its containing directory")
 	}
-	header := tree.Header{V: 1, Root: e.CID, Files: i.files, Bytes: e.Size}
-	hc, hdata, err := drisl.Sum(header)
-	if err != nil {
-		return ImportResult{}, err
-	}
-	if err = nodes.Put(hc, hdata); err != nil {
-		return ImportResult{}, err
-	}
-	result := ImportResult{IPFSRoot: root.String(), Root: hc, Files: i.files, Bytes: i.total, Mappings: i.mappings}
-	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": hc, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": i.total, "mappings": i.mappings}
+	result := ImportResult{IPFSRoot: root.String(), Root: nuRoot, Files: i.files, Bytes: i.total, Mappings: i.mappings}
+	manifest := map[string]any{"$type": "io.ipfs.nu.import", "v": int64(1), "ipfs_root": root.String(), "nu_root": nuRoot, "importer": opts.ImporterVersion, "source": opts.Source, "verified": true, "files": i.files, "bytes": i.total, "mappings": i.mappings}
 	mc, mb, err := drisl.Sum(manifest)
 	if err != nil {
 		return ImportResult{}, err
@@ -197,6 +214,9 @@ func (i *importer) rawFile(c IPFSCID, p string, b []byte) (tree.Entry, error) {
 	return tree.Entry{Kind: tree.KindFile, CID: blob, Size: uint64(len(b))}, nil
 }
 func (i *importer) file(root IPFSCID, p string, u UnixFSData, links []Link) (tree.Entry, error) {
+	if u.HasFilesize && u.Filesize > math.MaxInt64 {
+		return tree.Entry{}, errors.New("bridge: UnixFS filesize exceeds local store bounds")
+	}
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	var n int64
@@ -246,6 +266,9 @@ func (i *importer) file(root IPFSCID, p string, u UnixFSData, links []Link) (tre
 		<-errCh
 		return tree.Entry{}, e
 	}
+	// AddBlob consumes the declared filesize. Close the read side before awaiting the
+	// producer so a false undersized claim cannot strand its streaming writer forever.
+	_ = pr.Close()
 	if e = <-errCh; e != nil {
 		return tree.Entry{}, e
 	}
@@ -288,34 +311,65 @@ func (i *importer) filePart(c IPFSCID, w io.Writer, depth int) error {
 	if u.Type != UnixFSFile {
 		return fmt.Errorf("bridge: non-file UnixFS node in file links (%d)", u.Type)
 	}
+	var n int64
+	cw := countWriter{w: w, n: &n}
 	if len(u.Data) > 0 {
-		if _, e = w.Write(u.Data); e != nil {
+		if _, e = cw.Write(u.Data); e != nil {
 			return e
 		}
 	}
-	for _, l := range pb.Links {
+	if len(u.Blocksizes) > 0 && len(u.Blocksizes) != len(pb.Links) {
+		return errors.New("bridge: nested UnixFS blocksizes count does not match links")
+	}
+	for idx, l := range pb.Links {
 		x, e := ParseIPFSBytes(l.CID)
 		if e != nil {
 			return e
 		}
-		if e = i.filePart(x, w, depth+1); e != nil {
+		before := n
+		if e = i.filePart(x, &cw, depth+1); e != nil {
 			return e
 		}
+		if len(u.Blocksizes) > 0 && uint64(n-before) != u.Blocksizes[idx] {
+			return fmt.Errorf("bridge: nested UnixFS blocksize mismatch for link %d", idx)
+		}
+	}
+	if u.HasFilesize && uint64(n) != u.Filesize {
+		return fmt.Errorf("bridge: nested UnixFS filesize mismatch: have %d want %d", n, u.Filesize)
 	}
 	return nil
 }
 func (i *importer) hamtLinks(c IPFSCID, u UnixFSData, links []Link, depth int) ([]Link, error) {
-	if u.Fanout == 0 || u.Fanout > 1<<16 || u.HashType != 0x22 {
-		return nil, errors.New("bridge: unsupported HAMT fanout/hash type")
+	return i.hamtLinksAt(c, u, links, depth, 0, u.Fanout, nil)
+}
+
+func (i *importer) hamtLinksAt(c IPFSCID, u UnixFSData, links []Link, depth, consumed int, fanout uint64, parentSlots []uint64) ([]Link, error) {
+	if depth > i.opts.MaxDepth || fanout == 0 || fanout > 1<<10 || fanout&(fanout-1) != 0 || u.Fanout != fanout || u.HashType != 0x22 {
+		return nil, errors.New("bridge: unsupported HAMT fanout/hash type or nesting depth")
+	}
+	bitsPerLevel := 0
+	for v := fanout; v > 1; v >>= 1 {
+		bitsPerLevel++
+	}
+	digits := (bitsPerLevel + 3) / 4
+	if len(u.Data) == 0 || len(u.Data) > int(fanout/8) {
+		return nil, fmt.Errorf("bridge: HAMT bitfield has invalid size: got %d bytes for fanout %d", len(u.Data), fanout)
+	}
+	seen := make(map[uint64]bool, len(links))
+	setBits := 0
+	for _, b := range u.Data {
+		for x := b; x != 0; x &= x - 1 {
+			setBits++
+		}
+	}
+	if setBits != len(links) {
+		return nil, errors.New("bridge: HAMT bitfield/link count mismatch")
 	}
 	var out []Link
-	digits := 1
-	for x := u.Fanout - 1; x > 15; x >>= 4 {
-		digits++
-	}
-	for _, l := range links {
+	var prev uint64
+	for n, l := range links {
 		if len(l.Name) < digits {
-			return nil, errors.New("bridge: invalid HAMT link prefix")
+			return nil, errors.New("bridge: invalid HAMT link prefix/name")
 		}
 		prefix := l.Name[:digits]
 		for _, r := range prefix {
@@ -323,8 +377,29 @@ func (i *importer) hamtLinks(c IPFSCID, u UnixFSData, links []Link, depth int) (
 				return nil, errors.New("bridge: malformed HAMT prefix")
 			}
 		}
+		slot, e := strconv.ParseUint(prefix, 16, 64)
+		if e != nil || slot >= fanout {
+			return nil, errors.New("bridge: HAMT prefix index out of range")
+		}
+		if seen[slot] || (n > 0 && slot <= prev) {
+			return nil, errors.New("bridge: duplicate or unordered HAMT link prefix")
+		}
+		seen[slot] = true
+		prev = slot
+		if slot/8 >= uint64(len(u.Data)) || u.Data[len(u.Data)-1-int(slot/8)]&(1<<(slot%8)) == 0 {
+			return nil, errors.New("bridge: HAMT link absent from bitfield")
+		}
 		name := l.Name[digits:]
 		if name != "" {
+			hash := murmur3.Sum64([]byte(name))
+			slots := append(append([]uint64(nil), parentSlots...), slot)
+			for level, want := range slots {
+				shift := uint(64 - (level+1)*bitsPerLevel)
+				got := (hash >> shift) & (fanout - 1)
+				if got != want {
+					return nil, fmt.Errorf("bridge: HAMT name %q hashes to shard %x, link uses %x", name, got, want)
+				}
+			}
 			l.Name = name
 			out = append(out, l)
 			continue
@@ -348,7 +423,7 @@ func (i *importer) hamtLinks(c IPFSCID, u UnixFSData, links []Link, depth int) (
 		if ud.Type != UnixFSHAMTShard {
 			return nil, errors.New("bridge: HAMT bucket link does not point to a shard")
 		}
-		nested, e := i.hamtLinks(child, ud, pb.Links, depth+1)
+		nested, e := i.hamtLinksAt(child, ud, pb.Links, depth+1, consumed+bitsPerLevel, fanout, append(append([]uint64(nil), parentSlots...), slot))
 		if e != nil {
 			return nil, e
 		}

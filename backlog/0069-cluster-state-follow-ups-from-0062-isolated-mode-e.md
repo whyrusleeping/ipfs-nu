@@ -1,7 +1,7 @@
 ---
 id: "0069"
 title: 'Cluster state follow-ups from 0062: isolated-mode endpoint refusal, cluster mDNS, join idle timeout, revoke/member CLI'
-status: in_progress
+status: done
 priority: 3
 created: "2026-10-21"
 updated: "2026-10-22"

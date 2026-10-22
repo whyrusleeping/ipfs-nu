@@ -21,3 +21,4 @@ Acceptance: nutest (or a small in-process DHT) shows a daemon's pinned CID found
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Coordinator notes for the implementer (from 0069): add swarm.dht (and any routing endpoint keys) to node/daemon checkIsolated; never provide cluster dataset roots (heads, versions, collection catalogs) — providing enumeration must exclude cluster/cluster-surplus/collection-*/floor/version pin sources; test it.

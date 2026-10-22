@@ -1,7 +1,7 @@
 ---
 id: "0019"
 title: '0b+: Datagram relay extension, pair-aware relay choice, peer relays'
-status: in_progress
+status: in_review
 priority: 3
 created: "2026-09-24"
 updated: "2026-10-22"

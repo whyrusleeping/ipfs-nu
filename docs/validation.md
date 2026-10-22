@@ -1531,6 +1531,11 @@ work, not initial validated operating limits. Establish supported pilot limits f
 and publish them before release. Promote sub-file reuse or placement changes only when
 representative workloads justify the cost and complexity.
 
+The workload matrix, per-gate pilot success criteria, intake and result templates, the
+seeded fixtures and runner, and the sub-file reuse and capacity-UX decision criteria are in
+[pilots.md](pilots.md) (templates awaiting real pilots). Synthetic runs are recorded under
+[harness smoke results](#harness-smoke-results-0034-not-pilot-evidence).
+
 ### Pilot candidates
 
 **Decentralized Sentinel Collaborative Ground Segment** (vmx, IPFS Foundation;
@@ -1716,6 +1721,112 @@ Human (needs the deployment owner):
 - Full multi-file scenes on declared hardware: push ingest and fan-out Gbit/s,
   multi-source fetch of new items (partial-item holdings are not implemented).
 - The install/init/invite/join runbook tested by someone other than the implementer.
+
+## Harness smoke results (0034, not pilot evidence)
+
+**Harness smoke results, not pilot evidence.** One run of every [synthetic fixture](pilots.md#benchmark-fixtures-and-runner)
+at its default small scale, made to exercise the method and the runner. The machine was
+shared and loaded (load average 10–13 during the run). Nodes ran in-process over
+loopback QUIC, with stores on tmpfs (no fsync cost) and compressed cluster windows.
+Nothing here is a support, capacity or scale claim, and none of it decides the
+[gates](pilots.md#decision-gates). Raw data: `bench/results/2026-10-22-smoke-600ad9a.json`.
+Reproduce with `NU_BENCH_PILOT=all NU_BENCH_OUT=<dir> go test ./bench/pilot -run TestPilot -v -timeout 1h`.
+An earlier run of the same code differed by up to 1.5× in per-file timings: the `sparse`
+cluster repair restore took 18.6 s against 12.2 s here, and the `sparse` archive add
+8.6 s against 9.4 s.
+
+Commit 600ad9a, go1.26.2, linux/amd64, AMD EPYC 9684X 96-Core Processor (192 CPUs, GOMAXPROCS 16), TMPDIR /dev/shm, seed 1, scale 1, 4 versions; cluster heartbeat 200ms, evidence fresh 2s, down_after 1s, settle 500ms; process max RSS 79.04 MiB.
+
+**One-node archive** (per update = mean over versions 1…n−1; stored = Δ blob and outboard bytes; DB = Δ database files; amplification = Δ physical store bytes ÷ novel bytes):
+
+| shape | v0 logical / files | v0 add | update: novel | whole-file changed | stored | DB | amplification | add | restore oldest | over-budget update |
+|---|---|---|---|---|---|---|---|---|---|---|
+| site | 5.40 MiB / 45 | 0.08 s | 0.09 MiB | 0.09 MiB | 0.07 MiB | 0.28 MiB | 3.9× | 0.13 s | 0.05 s | refused `insufficient_storage`, held intact, ok after raise |
+| sparse | 14.69 MiB / 2000 | 4.99 s | 0.22 MiB | 0.22 MiB | 0.11 MiB | 0.23 MiB | 1.6× | 9.41 s | 5.47 s | refused `insufficient_storage`, held intact, ok after raise |
+| rewrite | 32.00 MiB / 2 | 0.04 s | 0.12 MiB | 32.12 MiB | 32.25 MiB | 0.10 MiB | 258.8× | 0.04 s | 0.02 s | refused `insufficient_storage`, held intact, ok after raise |
+| shift | 16.00 MiB / 1 | 0.03 s | 0.02 MiB | 16.05 MiB | 16.11 MiB | 0.10 MiB | 767.1× | 0.03 s | 0.01 s | refused `insufficient_storage`, held intact, ok after raise |
+| append | 7.21 MiB / 5 | 0.03 s | 1.00 MiB | 9.21 MiB | 9.24 MiB | 0.17 MiB | 9.4× | 0.04 s | 0.01 s | refused `insufficient_storage`, held intact, ok after raise |
+| sharded | 16.00 MiB / 257 | 0.55 s | 0.03 MiB | 13.43 MiB | 13.47 MiB | 0.04 MiB | 419.5× | 1.18 s | 0.74 s | refused `insufficient_storage`, held intact, ok after raise |
+| dump | 25.00 MiB / 22 | 0.06 s | 9.25 MiB | 21.75 MiB | 9.29 MiB | 0.38 MiB | 1.0× | 0.11 s | 0.07 s | refused `insufficient_storage`, held intact, ok after raise |
+| items | 20.00 MiB / 540 | 1.61 s | 2.43 MiB | 2.43 MiB | 2.31 MiB | 0.36 MiB | 1.1× | 3.01 s | 2.32 s | refused `insufficient_storage`, held intact, ok after raise |
+
+**Retention reclaim** (history keep_last 2: prune after the over-budget probe's extra version, then store GC):
+
+| shape | pruned versions | dry-run estimate | reclaimed |
+|---|---|---|---|
+| site | 3 | 0.02 MiB | −0.06 MiB |
+| sparse | 3 | 0.76 MiB | 0.38 MiB |
+| rewrite | 3 | 96.56 MiB | 96.52 MiB |
+| shift | 3 | 48.26 MiB | 48.22 MiB |
+| append | 3 | 24.72 MiB | 24.66 MiB |
+| sharded | 3 | 40.46 MiB | 40.39 MiB |
+| dump | 3 | 9.29 MiB | 9.23 MiB |
+| items | 3 | 0.99 MiB | 0.92 MiB |
+
+**Three-member cluster, replicas 2** (writer is a member; per update = mean over versions 1…n−1; transfer floor ≈ 1.33 × novel, see docs/pilots.md):
+
+| shape | update: novel | transfer | transfer amplification | stored (all members) | ready | all owners held | writer gc freed | per-member storage | restore oldest (member) | repair: detect / restore / transfer | interventions |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| site | 0.09 MiB | 0.16 MiB | 1.8× | 0.94 MiB | 0.15 s | 0.15 s | 0.62 MiB | 7.22 MiB / 2.87 MiB / 6.81 MiB | 0.11 s, 8.12 MiB served | 1.10 s / 1.07 s / 0.66 MiB | 1: writer `dataset gc` (surplus release) |
+| sparse | 0.22 MiB | 0.42 MiB | 1.9× | 0.99 MiB | 8.30 s | 8.76 s | 4.80 MiB | 21.32 MiB / 16.35 MiB / 16.74 MiB | 6.84 s, 10.54 MiB served | 1.10 s / 12.18 s / 5.73 MiB | 1: writer `dataset gc` (surplus release) |
+| rewrite | 0.12 MiB | 32.26 MiB | 258.1× | 64.86 MiB | 0.25 s | 0.25 s | 0 | 129.61 MiB / 65.27 MiB / 64.96 MiB | 0.14 s, 35.35 MiB served | 1.08 s / 1.21 s / 32.20 MiB | 1: writer `dataset gc` (surplus release) |
+| shift | 0.02 MiB | 21.49 MiB | 1017.0× | 37.92 MiB | 0.15 s | 0.15 s | 16.06 MiB | 48.95 MiB / 32.84 MiB / 48.96 MiB | 0.03 s, 0 served | 1.10 s / 3.21 s / 48.34 MiB | 1: writer `dataset gc` (surplus release) |
+| append | 1.00 MiB | 14.04 MiB | 14.0× | 23.88 MiB | 0.16 s | 0.16 s | 18.31 MiB | 17.60 MiB / 25.09 MiB / 30.25 MiB | 0.03 s, 1.29 MiB served | 1.10 s / 7.11 s / 28.60 MiB | 1: writer `dataset gc` (surplus release) |
+| sharded | 0.03 MiB | 21.66 MiB | 672.5× | 31.88 MiB | 0.98 s | 1.03 s | 19.57 MiB | 41.00 MiB / 41.80 MiB / 42.62 MiB | 0.85 s, 12.82 MiB served | 1.04 s / 8.07 s / 32.24 MiB | 1: writer `dataset gc` (surplus release) |
+| dump | 9.25 MiB | 14.90 MiB | 1.6× | 24.29 MiB | 0.23 s | 0.23 s | 17.01 MiB | 25.21 MiB / 30.08 MiB / 30.71 MiB | 0.11 s, 11.85 MiB served | 1.18 s / 3.12 s / 23.11 MiB | 1: writer `dataset gc` (surplus release) |
+| items | 2.43 MiB | 3.76 MiB | 1.5× | 5.98 MiB | 3.00 s | 3.18 s | 8.54 MiB | 24.41 MiB / 21.89 MiB / 23.49 MiB | 2.34 s, 15.96 MiB served | 1.14 s / 10.36 s / 11.00 MiB | 1: writer `dataset gc` (surplus release) |
+
+**First magic** (`site`: sharer daemon → recipient with no daemon; browser daemon's gateway):
+
+| add | get (no daemon) | gateway page after get | bytes | served |
+|---|---|---|---|---|
+| 0.04 s | 0.08 s | 0.00 s | 5.40 MiB | 5.42 MiB |
+
+| publisher update | novel | served to recipient | get |
+|---|---|---|---|
+| v1 | 0.06 MiB | 0.27 MiB | 0.04 s |
+| v2 | 0.07 MiB | 0.29 MiB | 0.04 s |
+| v3 | 0.15 MiB | 0.38 MiB | 0.04 s |
+
+Steps: sharer: nu add -r <dir> (prints the link) → recipient: nu get <link> -o <dir> (no daemon, no init) → browser: open the gateway page.
+
+What the run shows about the mechanisms, on synthetic data only:
+
+- **Whole-file amplification is as designed.** The `rewrite`, `shift`, `sharded` and
+  `append` shapes store and transfer whole changed files: 9× to 1,000× their novel bytes
+  at these sizes. The ratio grows with file or shard size. `dump`, `items` and `sparse`
+  stay near 1× in blob bytes. Byte-identical dump parts and the `latest/` copies
+  deduplicate: `dump` stored about its novel bytes while its whole-file bytes were 2.4×
+  higher. No log rotated within 4 versions at the default scale. A separate 12-version
+  `append` archive run with rotations showed the per-version cost following the active
+  log sizes: it rose to 13.3 MiB, then fell to 5.9–9.0 MiB once closed segments stopped
+  costing, against 1.0 MiB novel. These are inputs
+  to the [sub-file reuse gate](pilots.md#sub-file-reuse-chunking-within-files), to be
+  weighed against real workloads.
+- **Per-version metadata dominates small updates.** In `site` and `sparse`, the DB grows
+  more than the novel blob bytes per version (0.23–0.28 MiB against 0.09–0.22 MiB). A
+  publisher update served 0.27–0.38 MiB of tree structure and content for 0.06–0.15 MiB
+  of novel bytes.
+- **Per-file cost dominates many-file updates.** Updating the 2,000-file `sparse` tree
+  took about 9 s on a single node and about 8 s to `ready` on the cluster; `items`, with
+  about 600 files, took about 3 s. A CPU profile of the `sparse` archive run put 71% of
+  CPU under `store.Has` called from `replica.Manager.check`. This is per-blob SQLite
+  lookups during readiness evaluation (`evalTarget`) and archive establishment
+  (`establishArchive`), repeated across versions and heartbeats. Restores of the same
+  trees took 2–7 s. This is a follow-up candidate for the replica and readiness path, and
+  a reason to measure entry counts with pilots before publishing limits.
+- **Budgets behave per C5 on every shape.** An over-budget update was refused with
+  `insufficient_storage` and an action; held versions stayed complete and readable; and
+  one intervention (raising `store.limit`) resumed the update.
+- **Reclaim falls short of the estimate where the DB holds the data.** The `sparse`
+  shape reclaimed 0.38 MiB against a 0.76 MiB estimate, and `site` reclaimed −0.06 MiB
+  (the prune and GC grew the DB). Small blocks deleted from SQLite do not shrink the
+  file. This is an input to the [capacity-UX gate](pilots.md#capacity-adjustment-ux).
+- **The cluster stays at the transfer floor without amplification.** On `dump` and
+  `items` it moved 1.5–1.6× the novel bytes (floor 1.33×). Repair restored two copies
+  after a member loss with no intervention once the loss was detected, in 1–12 s with
+  compressed windows. The writer's surplus release (`dataset gc`) is the one operator
+  step each cluster run needed.
 
 ## Reporting method
 

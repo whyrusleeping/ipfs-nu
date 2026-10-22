@@ -32,6 +32,7 @@ nu get alice.example.com/site/index.html
 | [Collections](docs/collections.md) | Growing item collections: metadata facets, member-selected and rolling holdings, rescue, union heads, item push API, holdings index (D22) |
 | [IPFS migration](docs/migration.md) | Installation migration and verified one-way content import, provenance and cutover |
 | [Validation and measurements](docs/validation.md) | Experiments, pilot workloads, measurement method and release evidence |
+| [Pilot workloads and gates](docs/pilots.md) | Workload matrix, pilot intake and result templates, benchmark fixtures/runner, sub-file reuse and capacity-UX decision gates (templates awaiting real pilots) |
 
 This entry point owns goals, local interfaces, implementation structure, milestones and open
 decisions. Detailed requirements live in the owning documents; decision IDs remain for
@@ -270,6 +271,8 @@ rasl/                   rasl:// URLs and the hinted-host HTTPS source (fetch.Sou
 relay/                  circuit HOP + dnsaddr/routing server
 bridge/                 later IPFS import: Bitswap, UnixFS; enabled in standard Linux/macOS
                         production distribution, optional/build-tagged for minimal embedders
+bench/                  seeded workload fixtures (fixtures/, cmd/fixturegen) and the opt-in pilot
+                        benchmark runner (pilot/); docs/pilots.md
 dist/ scripts/           service definitions (systemd, launchd), install/upgrade and release
                         scripts
 experiments/            separate Go module for spikes; may use go-libp2p/Kubo, never imported
@@ -340,7 +343,8 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
 - **Security:** browser/API isolation, private gateway readers, OAuth/discovery validation,
   authenticated probe/destination authorization, invite/revocation and root recovery.
 - **Pilot performance:** data/change shape, whole-file costs, capacity adjustment UX and
-  whether sub-file reuse must move forward. Publish measured support limits, not sizing guesses.
+  whether sub-file reuse must move forward: criteria in [pilot decision gates](docs/pilots.md#decision-gates),
+  evaluated against real pilot data. Publish measured support limits, not sizing guesses.
 - **Format precision:** [data details](docs/data.md#details-still-to-specify),
   [DASL/atproto details](docs/dasl.md#details-still-to-specify),
   [collection details](docs/collections.md#details-still-to-specify), version-tree /

@@ -24,7 +24,8 @@ proofs, DAG layouts or placement algorithms.
 The initial institutional audience is teams maintaining versioned datasets and archives,
 alongside individuals publishing and mirroring datasets. Start with smaller deployments
 shaped like Internet Archive or Wikipedia workflows, not promises of their largest scale.
-Recruit concrete pilot users and workloads before freezing capacity and performance claims.
+Recruit concrete pilot users and workloads before freezing capacity and performance claims
+([workload matrix and intake](pilots.md)).
 Assume substantial parallel engineering capacity; broad acceptance, not only a research
 prototype, is the goal.
 

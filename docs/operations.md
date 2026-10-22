@@ -373,8 +373,10 @@ mechanics are [D17 A1–A8](data.md#accounting-and-budgets).
   no transfer budget is enforced and status says so.
 
 Archive cost includes whole changed files initially. Benchmark monolithic rewrites, appends,
-small-object changes and sharded indexes before committing update-cost claims. Sub-file reuse
-may be promoted by that evidence; structural delta sync is not arbitrary binary delta sync.
+small-object changes and sharded indexes before committing update-cost claims
+([fixtures and runner](pilots.md#benchmark-fixtures-and-runner)). Sub-file reuse may be
+promoted by that evidence ([decision gate](pilots.md#sub-file-reuse-chunking-within-files));
+structural delta sync is not arbitrary binary delta sync.
 
 ## Authority, administration and recovery
 

@@ -1,0 +1,17 @@
+[package]
+name = "quicperf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Plain quinn throughput between two hosts, the Rust counterpart of
+# experiments/cmd/quicperf (docs/validation.md "LAN benchmarks").
+[dependencies]
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+
+[profile.release]
+codegen-units = 1
+lto = true

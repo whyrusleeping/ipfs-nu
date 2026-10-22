@@ -3,4 +3,5 @@
 /nu
 /.hardening/
 /experiments/bao-vectors/target/
+/experiments/quicperf-rs/target/
 /experiments/quicgo-cid/quic-go/

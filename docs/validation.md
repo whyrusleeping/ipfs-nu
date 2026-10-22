@@ -2114,6 +2114,21 @@ Nu's 1:1 is ~82% of plain quic-go without GSO on the same path. The rest is Nu's
 request/verify/store pipeline: about 1 GB/s of a single connection needs a NIC with UDP
 segmentation offload on the sender.
 
+**quinn vs quic-go.** Same hosts and session, one connection and one stream of 4 GiB, two
+runs each. Tools: `experiments/cmd/quicperf` (quic-go v0.64.1) and
+`experiments/quicperf-rs` (quinn 0.11, rustls/ring, default transport config). GSO was
+toggled at the sender (quinn `enable_segmentation_offload`, quic-go `QUIC_GO_DISABLE_GSO`):
+
+| Sender → receiver (MB/s) | quinn GSO | quinn no GSO | quic-go GSO | quic-go no GSO |
+|---|---|---|---|---|
+| alphac-2 (r8169, no offload) → alphac-3 | 356–363 | 659–661 | 357–358 | 643–738 |
+| alphac-3 (E810, offload) → alphac-2 | **1146–1155** | 695–758 | 1048–1056 | 655–723 |
+
+quinn shows the same GSO pathology on the Realtek NIC and the same no-GSO rate. With
+hardware offload it is ~9% faster than quic-go, and both are near the 1175 MB/s TCP line
+rate. Switching QUIC stacks would not change Nu's per-connection rate on this hardware;
+the NIC and the GSO choice decide it.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

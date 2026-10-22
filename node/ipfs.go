@@ -130,6 +130,9 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, err
 	if job.Request.CAR == "" {
 		sourceKind = "bitswap"
 	}
+	// Per-operation block checkpoints survive cancellation and daemon restart. The
+	// wrapper verifies before atomic persistence and revalidates every cache hit.
+	src = bridge.CheckpointSource{Dir: filepath.Join(n.importDir(), o.Snapshot().ID, "blocks"), Upstream: src}
 	lastProgress := time.Now()
 	res, err := bridge.Import(o.Context(), root, src, n.Store, n.Store, bridge.ImportOptions{ImporterVersion: "nu-" + nu.Version, Source: sourceKind, OnBlock: func(done int, _ bridge.IPFSCID) {
 		if time.Since(lastProgress) < 100*time.Millisecond && done != 1 {

@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,5 +186,65 @@ func TestPressurePauses(t *testing.T) {
 	}
 	if s.Reported.State != cluster.SyncPaused || s.Reported.Complete {
 		t.Fatalf("report %+v", s.Reported)
+	}
+}
+
+// A placement fetch that fails at once (the owner is unreachable) is retried with a
+// bounded exponential backoff instead of re-running the reconcile pass on every failure
+// (0076); a cluster state change resets the backoff and retries promptly.
+func TestFailedFetchBackoff(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "store"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	self := peer(t, 1)
+	c, err := cluster.Create(cluster.Options{Dir: filepath.Join(dir, "c"), Store: st}, "lab", cluster.ModePrivate, self, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write(
+		cluster.Op{Collection: cluster.NSMember, RKey: peer(t, 2).String(), Value: &cluster.Member{Roles: []string{cluster.RoleStorage}, State: cluster.StateActive}},
+		cluster.Op{Collection: cluster.NSDataset, RKey: "ds", Value: &cluster.Dataset{Source: cluster.Source{Local: true}, Policy: cluster.Policy{Replicas: 2}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int64
+	down := func(context.Context, cid.CID, []wire.PeerID, func(cid.CID) bool, func(cid.CID) []wire.PeerID) error {
+		attempts.Add(1)
+		return errors.New("owner unreachable")
+	}
+	m, err := Open(Config{Store: st, Cluster: c, Self: self, Dir: filepath.Join(dir, "c"), Fetch: down, Interval: 10 * time.Millisecond, Backoff: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	m.Start()
+	f := &fixture{st: st, c: c, m: m, self: self}
+	f.head(t, cid.MustParse("bafkr4ihkr4ld3m4gqkjf4reryxsy2s5tkbxprqkow6fin2iiyvreuzzab4"))
+	start := time.Now()
+	time.Sleep(300 * time.Millisecond)
+	passes, n := m.passes.Load(), attempts.Load()
+	t.Logf("%d passes, %d attempts", passes, n)
+	// Retries at 20, 40, 80, 160 ms after each failure: about five attempts in 300 ms,
+	// and passes bounded by the 10 ms ticker plus one per retry.
+	if n < 2 || n > 8 {
+		t.Fatalf("%d fetch attempts in %s, want a handful", n, time.Since(start))
+	}
+	if passes > 60 {
+		t.Fatalf("%d reconcile passes in %s with a failing fetch", passes, time.Since(start))
+	}
+	// A state change resets the backoff: the next attempt follows at once.
+	before := attempts.Load()
+	if _, err := c.Write(cluster.Op{Collection: cluster.NSMember, RKey: peer(t, 3).String(), Value: &cluster.Member{Roles: []string{cluster.RoleStorage}, State: cluster.StateActive}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for attempts.Load() == before {
+		if time.Now().After(deadline) {
+			t.Fatal("no retry after a cluster state change")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

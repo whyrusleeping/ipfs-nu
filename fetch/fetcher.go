@@ -196,16 +196,103 @@ func (f *Fetcher) Fetch(ctx context.Context, c cid.CID, o Options) (Result, erro
 	for _, p := range o.Peers {
 		r.sw.add(p)
 	}
-	if f.cfg.Providers != nil {
-		if err := f.cfg.Providers.Find(ctx, c, r.sw.add); err != nil && len(r.sw.live()) == 0 && o.Source == nil {
+	// Provider discovery streams in the background: the walk starts as soon as any
+	// source yields a usable peer (a link hint, a connected peer) and later candidates
+	// join the swarm as they arrive, so a slow or failing source (a DHT whose bootstrap
+	// is stuck) never delays a transfer the hints can serve. Discovery is cancelled
+	// when the walk is done.
+	d := r.discover(ctx, c)
+	defer d.stop()
+	if len(r.sw.live()) == 0 && o.Source == nil {
+		if err := d.waitFirst(ctx); err != nil {
+			return r.result(), err
+		}
+		if err := d.finishedErr(); err != nil && len(r.sw.live()) == 0 {
 			return r.result(), err
 		}
 	}
+	gen := r.sw.generation()
 	err := r.walk(ctx, c, o.Size)
+	if err != nil && ctx.Err() == nil {
+		// The peers tried could not serve it; sources still running may name others.
+		// Wait for them and retry once if any arrived (held objects are skipped).
+		if werr := d.wait(ctx); werr == nil && r.sw.generation() != gen {
+			err = r.walk(ctx, c, o.Size)
+		}
+	}
 	if err == nil {
 		r.stage(StageDone)
 	}
 	return r.result(), err
+}
+
+// discovery is one Fetch's background Providers.Find.
+type discovery struct {
+	done   chan struct{} // closed when Find returned
+	first  chan struct{} // closed when the first candidate arrived
+	once   sync.Once
+	err    error
+	cancel context.CancelFunc
+}
+
+func (r *run) discover(ctx context.Context, c cid.CID) *discovery {
+	d := &discovery{done: make(chan struct{}), first: make(chan struct{})}
+	ctx, d.cancel = context.WithCancel(ctx)
+	if r.f.cfg.Providers == nil {
+		close(d.done)
+		return d
+	}
+	go func() {
+		defer close(d.done)
+		d.err = r.f.cfg.Providers.Find(ctx, c, func(p Peer) {
+			r.sw.add(p)
+			d.once.Do(func() { close(d.first) })
+		})
+	}()
+	return d
+}
+
+// waitFirst returns when a candidate arrived, discovery ended, or ctx ended.
+func (d *discovery) waitFirst(ctx context.Context) error {
+	select {
+	case <-d.first:
+	case <-d.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// wait returns when discovery ended or ctx ended.
+func (d *discovery) wait(ctx context.Context) error {
+	select {
+	case <-d.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *discovery) finished() bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// finishedErr is Find's error once it returned, nil while it runs.
+func (d *discovery) finishedErr() error {
+	if d.finished() {
+		return d.err
+	}
+	return nil
+}
+
+func (d *discovery) stop() {
+	d.cancel()
+	<-d.done
 }
 
 // run is one Fetch call.
@@ -243,6 +330,7 @@ type swarm struct {
 	peers   []*peer
 	index   map[wire.PeerID]*peer
 	dropped []wire.PeerID
+	gen     int
 }
 
 type peer struct {
@@ -262,7 +350,15 @@ func (s *swarm) add(p Peer) {
 		pp := &peer{Peer: p}
 		s.index[p.ID()] = pp
 		s.peers = append(s.peers, pp)
+		s.gen++
 	}
+}
+
+// generation counts the peers added so far (a change means new candidates).
+func (s *swarm) generation() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gen
 }
 
 func (s *swarm) live() []*peer {
@@ -532,9 +628,11 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		r.update(func(p *Progress) { p.Objects++ })
 		return nil
 	}
+	// A blob nobody serves does not stop the others: every available blob is stored
+	// (a later fetch, or a placement retry, then has only the missing ones to ask for).
 	errSmall := make(chan error, 1)
-	go func() { errSmall <- parallel(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
-	return errors.Join(parallel(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
+	go func() { errSmall <- parallelAll(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
+	return errors.Join(parallelAll(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
 }
 
 func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {
@@ -607,6 +705,39 @@ func children(c cid.CID, data []byte) ([]blobRef, error) {
 }
 
 // parallel runs fn over items with at most n at a time, stopping at the first error.
+// parallelAll is parallel without the cancellation: every item is attempted and the
+// errors are joined (ctx still stops it).
+func parallelAll[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
+	sem := make(chan struct{}, n)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	for _, it := range items {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := fn(ctx, it); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return ctx.Err()
+}
+
 func parallel[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

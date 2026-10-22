@@ -1,7 +1,7 @@
 ---
 id: "0085"
 title: Single-peer transfer ceiling ~330 MB/s (one QUIC connection) on 10 GbE
-status: in_progress
+status: done
 priority: 3
 created: "2026-10-22"
 updated: "2026-10-22"

@@ -1,7 +1,7 @@
 ---
 id: "0084"
 title: 'Small-file throughput: batch durability in add, fetch and extract (~85 files/s today)'
-status: in_progress
+status: done
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

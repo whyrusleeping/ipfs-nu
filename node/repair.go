@@ -250,10 +250,11 @@ func (n *Local) ClusterAudit(ctx context.Context, req apiv0.AuditRequest) (*apiv
 	}
 	if req.Scrub > 0 || req.Full {
 		if m := n.replicaFor(c); m != nil {
-			s := m.Scrub(ctx, req.Scrub)
+			sample := req.Scrub
 			if req.Full {
-				s = m.Scrub(ctx, 0)
+				sample = 0
 			}
+			s := m.Scrub(ctx, sample)
 			rep.Scrub = &s
 		}
 	}

@@ -551,7 +551,11 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}, nil
+	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}
+	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
+		return Config{}, err
+	}
+	return out, nil
 }
 
 // FetchPlaced fetches root for cluster placement (docs/cluster.md "Sync, handoff and

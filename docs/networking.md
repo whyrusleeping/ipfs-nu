@@ -269,12 +269,12 @@ connect attempt. The first successful authenticated path wins; cancel/join losin
 dials and close extra successful connections. Retained session handles become invalid
 after Forget, which releases the session slot and can also revoke membership.
 
-Only literal QUIC-v1 direct addresses are dialable in v0. DNS/circuit hints are
-preserved but fail with ErrUnsupportedAddress until their resolver/transport lands.
-Explicitly prepared qpath legs may supply local-only virtual literals to these same
-sessions when Host uses a magicsock socket policy; this is not automatic circuit dialing
-or permission to publish/cache virtual hints. Public routing/relay orchestration remains
-0020. No-address cases match ErrNoAddresses. DialError retains per-address reasons
+Literal QUIC-v1 direct addresses and single-hop circuit hints through explicit
+configured/known literal QUIC relays are dialable in v0. DNS resolution remains a
+lookup concern. `node/swarm` supplies the circuit transport seam, authenticates inner
+TLS and never publishes/caches its local virtual dial addresses. A cold session
+starts a relay immediately alongside direct candidates rather than waiting behind
+unproven direct timeouts. No-address cases match ErrNoAddresses. DialError retains per-address reasons
 and lookup errors and unwraps them for errors.Is/As. Certificate PeerId mismatch
 has a typed Expected/Actual error, preserved through QUIC's handshake failure.
 Successful dial addresses enter the optional cache at confidence 1 with seven-day
@@ -331,6 +331,46 @@ endpoints on the operator's bounded allow-list; otherwise 120s and 128 KiB per
 direction apply by default. Global/per-peer/per-observed-IP slots still constrain
 admitted traffic. Production operator/admission policy remains 0039; ordinary
 Noise/yamux relayed connections and Nu qpath upgrades are separate work.
+
+### v0 swarm connectivity configuration
+
+`[swarm]` accepts `relays = ["/ip4/<ip>/udp/<port>/quic-v1/p2p/<relay>", ...]`
+(at most sixteen, one endpoint per relay), `mode = "public" | "private" | "isolated"`,
+and `peers = ["/ip4/<ip>/udp/<port>/quic-v1/p2p/<peer>", ...]` for explicit private
+members. Public is the default mode but there is **no default public relay fleet**;
+operators must configure available admitted relays. A link may introduce an exact
+known relay endpoint; a remote signed record cannot independently introduce one.
+Private/isolated mode disables relays, AutoNAT, disco and public lookup sources.
+Private mode also disables mDNS and authorizes only explicit peers. Private/isolated
+cluster membership applies its dynamic gate and disables public connectivity both
+at startup and on runtime init/join; re-enabling requires a restart.
+
+`probe_allow = ["<peerID>@<IP>:<port>", ...]` grants only those exact disco
+**destinations**, independently of peer assertions. An explicit user link's direct
+hint also grants its exact endpoint. These grants permit private candidate disclosure
+to that peer; unrelated relayed peers receive no LAN/loopback candidates and cannot
+induce UDP probes/replies to arbitrary targets. Signed records, relay metadata and
+reflexive observations never grant probe permission. Without suitable grants peers
+remain relayed: safe relay sharing does not depend on hole punching. No ranges,
+prediction, DNS target resolution or blanket-true authorization are installed.
+
+`portmap_gateway = "<literal IP>"` optionally enables PCP/NAT-PMP/UPnP leases at
+that operator-selected gateway for the shared socket's port. Mappings remain tentative
+candidates; no automatic gateway discovery is claimed. Two independent observer IPs
+must AutoNAT-verify the same endpoint before public reachability withdraws reservations.
+D12 runs real invalidation/confirmation/mapping-refresh/renewal/push/probing hooks.
+Physical socket replacement is **not implemented**: route/address changes revoke
+proofs and explicitly report that limitation rather than claiming successful rebind.
+
+The lower authenticated PeerID always initiates inner QUIC and repairs relay legs.
+Incoming crossed attempts cannot overwrite a live leg; setup is serialized per peer,
+bounded globally, and retried with identity-based staggers. Recovery closes/joins the
+old leg and tries authenticated known backup hints without replacing inner QUIC when
+it beats the idle timeout. Initial inner paths use one primary socket (IPv4 when
+available); ordinary direct/outer QUIC still supports both configured families, but
+cross-family inner multipath is not claimed. `status`/`doctor` expose reachability,
+relay TTL/RTT/errors, per-peer paths and failed network-change stages. `LookupSources`
+is the streaming attachment seam for 0072; this work does not attach the DHT.
 
 ## D11. Nu-path
 

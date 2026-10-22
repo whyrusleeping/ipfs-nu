@@ -177,6 +177,11 @@ func (n *Local) AttachNetwork(sw ClusterNet) error {
 
 func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 	cs := &n.clusters
+	if c.Mode() == cluster.ModePrivate || c.Mode() == cluster.ModeIsolated {
+		if owner, ok := cs.sw.(interface{ DisablePublic() }); ok {
+			owner.DisablePublic()
+		}
+	}
 	if cs.svc != nil || cs.sw == nil {
 		return nil
 	}

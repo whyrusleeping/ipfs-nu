@@ -38,25 +38,20 @@ host connections.
 
 ## Assembly boundary (0020)
 
-These APIs are not yet wired into `node/swarm`. The connectivity owner still needs:
+`node/swarm` now owns magicsock-backed sockets, circuit-aware session dialing,
+bounded incoming qpath admission, authenticated signed-route learning, disco and
+the netmon pipeline. Both endpoints agree that the lower PeerID initiates inner
+QUIC and recovers failed packet paths. Crossed raw-circuit setups are rejected and
+retried with identity-based staggers; a live leg is never overwritten. The old leg
+is always closed/joined before reattachment. This package still promotes only
+**reservations**; active inner packet-path repair belongs to that owner.
 
-1. A magicsock-backed Host and a circuit-aware `host.SessionConfig.Dial` adapter.
-   Use `circuit.ParseAddress` to split hints and independently authorize relays and
-   destinations before dialing. Never put the local qpath dial address in public
-   hints/cache. Sessions validate returned host/identity and retain their gates,
-   canonical sessions, bounded races and cancel/join behavior.
-2. Bounded incoming STOP/qpath admission, deterministic crossed-attempt handling,
-   and one recovery initiator. Close/join the old relay leg before reattachment.
-   This manager promotes **reservations**, not active inner QUIC packet paths.
-3. `proto.Config.Addresses` combining advertised direct and live circuit addresses,
-   shared with Swarm.Addrs/share links. Route `Changed` to
-   `identify.AddressesChanged`. Authenticated fresh `OnPeerRecord` callbacks can
-   carry peer failover routes, but are not independent destination authorization.
-4. Disco's independent exact-endpoint authorization/candidate disclosure policy,
-   plus AutoNAT/portmap/netmon hooks. Physical socket replacement remains absent;
-   a no-op hook must not claim successful rebind.
-5. Minimal `swarm.relays` configuration, status/doctor surfaces, the 0072 DHT
-   attachment seam, and real daemon/share-link NAT-lab acceptance evidence.
+Identify and share links use the same direct + live relay snapshot, with both
+relay hints first so bounded links retain a backup. Public relay prefixes must be
+configured or independently known from an explicit link; signed records alone do
+not authorize a new relay or disco destination. Owner configuration and diagnostics
+are described in docs/networking.md. Physical socket replacement remains absent;
+D12 reports it rather than claiming a no-op rebind succeeded.
 
 The fast tests here use real loopback Hosts/circuit servers. Controlled latency
 rankings make selection deterministic while probes still perform real ping I/O.

@@ -165,6 +165,15 @@ type SwarmConfig struct {
 	Listen []string `toml:"listen"`
 	// MDNS enables LAN peer discovery (default true).
 	MDNS bool `toml:"mdns"`
+	// Public connectivity is opt-in to known relays, never an inferred directory.
+	Relays []string `toml:"relays,omitempty"`
+	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
+	Mode  string   `toml:"mode,omitempty"`
+	Peers []string `toml:"peers,omitempty"`
+	// ProbeAllow entries are peerID@IP:port exact independent destination grants.
+	// A grant also permits private candidate disclosure to that peer.
+	ProbeAllow     []string `toml:"probe_allow,omitempty"`
+	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
 }
 
 // DefaultConfig returns the configuration written at init.

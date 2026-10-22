@@ -291,7 +291,8 @@ type NetworkStatus struct {
 	// Peers counts connected peers.
 	Peers int `json:"peers"`
 	// Connected lists the connected peers' base36 PeerIds.
-	Connected []string `json:"connected,omitempty"`
+	Connected    []string            `json:"connected,omitempty"`
+	Connectivity *ConnectivityStatus `json:"connectivity,omitempty"`
 }
 
 // StoreStatus is the store section of Status (D17 A8). Byte fields are physical: what

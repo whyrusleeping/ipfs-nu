@@ -24,29 +24,31 @@ import (
 // One primary socket carries inner paths; other families still serve ordinary
 // wire-compatible direct/outer QUIC. Inner cross-family multipath is not claimed.
 type connectivity struct {
-	s       *Swarm
-	ctx     context.Context
-	cancel  context.CancelFunc
-	socket  *magicsock.Conn
-	client  *circuit.Client
-	homes   *homerelay.Manager
-	network *networkControl
-	mu      sync.Mutex
-	closed  bool
-	peers   map[wire.PeerID]*pathPeer
-	known   map[wire.PeerID]wire.Multiaddr
-	pending chan struct{}
-	wg      sync.WaitGroup
+	s         *Swarm
+	ctx       context.Context
+	cancel    context.CancelFunc
+	socket    *magicsock.Conn
+	client    *circuit.Client
+	homes     *homerelay.Manager
+	network   *networkControl
+	mu        sync.Mutex
+	closed    bool
+	peers     map[wire.PeerID]*pathPeer
+	known     map[wire.PeerID]wire.Multiaddr
+	pending   chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 }
 
 type pathPeer struct {
-	gate      chan struct{}
-	leg       *magicsock.Relay // guarded by gate; close/join before every replacement
-	routes    []wire.Multiaddr
-	seq       uint64
-	touched   time.Time
-	relay     wire.PeerID // guarded by gate; diagnostics, not identity
-	lastError string
+	gate          chan struct{}
+	leg           *magicsock.Relay // guarded by gate; close/join before every replacement
+	routes        []wire.Multiaddr
+	seq           uint64
+	touched       time.Time
+	relay         wire.PeerID // guarded by gate; diagnostics, not identity
+	lastError     string
+	lastConnected time.Time
 }
 
 // sharedHost binds all sockets before Host starts, preserving its ownership-on-
@@ -147,6 +149,9 @@ func (c *connectivity) spawn(fn func()) bool {
 	return true
 }
 func (c *connectivity) close() {
+	c.closeOnce.Do(c.shutdown)
+}
+func (c *connectivity) shutdown() {
 	c.mu.Lock()
 	c.closed = true
 	c.cancel()
@@ -330,6 +335,7 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 			p.lastError = err.Error()
 		} else {
 			p.lastError = ""
+			p.lastConnected = time.Now()
 		}
 		p.unlock()
 		if err == nil {
@@ -440,7 +446,10 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	p.relay = circ.Relay
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
+		p.lastError = err.Error()
 		leg.Close()
+	} else {
+		p.lastConnected = time.Now()
 	}
 }
 func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) {

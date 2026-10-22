@@ -128,7 +128,18 @@ type Error struct {
 	Message string         `json:"message"`
 	Action  string         `json:"action,omitempty"`
 	Details map[string]any `json:"details,omitempty"`
+
+	cause error // in-process only: errors.Is/As see through the envelope
 }
+
+// WithCause returns a copy of e that unwraps to cause (never serialized).
+func (e *Error) WithCause(cause error) *Error {
+	c := *e
+	c.cause = cause
+	return &c
+}
+
+func (e *Error) Unwrap() error { return e.cause }
 
 // Envelope is the JSON body of every error response: {"error": {...}}.
 type Envelope struct {
@@ -291,7 +302,8 @@ type NetworkStatus struct {
 	// Peers counts connected peers.
 	Peers int `json:"peers"`
 	// Connected lists the connected peers' base36 PeerIds.
-	Connected []string `json:"connected,omitempty"`
+	Connected    []string            `json:"connected,omitempty"`
+	Connectivity *ConnectivityStatus `json:"connectivity,omitempty"`
 }
 
 // StoreStatus is the store section of Status (D17 A8). Byte fields are physical: what
@@ -343,6 +355,13 @@ type Paths struct {
 	DB      string `json:"db"`
 	Blobs   string `json:"blobs"`
 	APIFile string `json:"api_file"`
+}
+
+// IPFSImportRequest starts a verified IPFS CAR import.
+type IPFSImportRequest struct {
+	Root   string `json:"root"`
+	CAR    string `json:"car"`
+	DryRun bool   `json:"dry_run,omitempty"`
 }
 
 // AddRequest starts an add operation. The daemon reads Path itself (API and daemon run as

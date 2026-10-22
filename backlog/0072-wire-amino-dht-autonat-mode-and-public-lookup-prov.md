@@ -1,7 +1,7 @@
 ---
 id: "0072"
 title: Wire Amino DHT, AutoNAT mode and public lookup/providing into the daemon
-status: todo
+status: in_progress
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"

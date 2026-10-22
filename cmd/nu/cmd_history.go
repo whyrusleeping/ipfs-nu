@@ -112,6 +112,9 @@ func printVersion(w io.Writer, v apiv0.VersionInfo) {
 	if v.RestoredFrom != "" {
 		fmt.Fprintf(w, ", restores %s", v.RestoredFrom)
 	}
+	if v.Rev != "" {
+		fmt.Fprintf(w, ", rev %s", v.Rev)
+	}
 	if v.Note != "" {
 		fmt.Fprintf(w, " — %s", v.Note)
 	}

@@ -16,6 +16,13 @@ type DatasetContent interface {
 	ResolveDataset(ctx context.Context, name, version string) (string, error)
 }
 
+// AtDatasetContent is the optional atproto-archive view of a DatasetContent (0054): a
+// dataset root that is a repository commit redirects to its /at/<did>@<rev>/ listing
+// instead of /tree/.
+type AtDatasetContent interface {
+	AtLocation(ctx context.Context, root string) (string, bool)
+}
+
 // NameContent resolves a public name <handle-or-did>/<name> to its current verified
 // target (cached per docs/names.md D6); content that implements it serves /nu/ (0045).
 // held selects the follow's held root instead of the resolved target.
@@ -90,5 +97,24 @@ func (h *Handler) dataset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if ac, ok := h.content.(AtDatasetContent); ok {
+		if loc, ok := ac.AtLocation(r.Context(), root); ok {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("X-Nu-Root", root)
+			http.Redirect(w, r, loc+escapeSegments(p), http.StatusFound)
+			return
+		}
+	}
 	redirectRoot(w, r, root, p)
+}
+
+func escapeSegments(p string) string {
+	if p == "" {
+		return ""
+	}
+	var segs []string
+	for _, s := range strings.Split(p, "/") {
+		segs = append(segs, url.PathEscape(s))
+	}
+	return strings.Join(segs, "/")
 }

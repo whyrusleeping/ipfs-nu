@@ -1,6 +1,9 @@
 package apiv0
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // atproto records, repository snapshots and CAR import/export (0053; docs/dasl.md "Using
 // atproto data").
@@ -103,4 +106,35 @@ type CarImport struct {
 	// no key was given and the identity could not be resolved (offline import).
 	Signature string `json:"signature,omitempty"`
 	SignedBy  string `json:"signed_by,omitempty"`
+}
+
+// AtrepoSource is an atproto-account dataset's source state (0054, D21): the account,
+// its scope, the redistribution rule in force and the admin's update bookkeeping
+// (meaningful on the node that fetches; storage-only members report the head only).
+type AtrepoSource struct {
+	DID    string   `json:"did"`
+	Handle string   `json:"handle,omitempty"`
+	NSIDs  []string `json:"nsids,omitempty"`
+	Blobs  bool     `json:"blobs,omitempty"`
+	// Own says the operator controls the account; PublishHistory is the recorded
+	// override; Redistribution is the rule in force: "unrestricted" (own account or
+	// override), "current-only" (third-party, active) or "private" (account inactive).
+	Own            bool   `json:"own,omitempty"`
+	PublishHistory bool   `json:"publish_history,omitempty"`
+	Redistribution string `json:"redistribution"`
+	// Status is the verified account status ("active", deactivated, takendown,
+	// suspended, deleted); Rev the held rev, PDSRev the PDS's current rev when known
+	// (lag = the two differ); Refreshed/Error/Mode (since, full, status) describe the
+	// last update attempt.
+	Status    string    `json:"status"`
+	Rev       string    `json:"rev,omitempty"`
+	PDSRev    string    `json:"pds_rev,omitempty"`
+	Refreshed time.Time `json:"refreshed,omitzero"`
+	Error     string    `json:"error,omitempty"`
+	Mode      string    `json:"mode,omitempty"`
+	// Blob bookkeeping of this node's fetches: fetched, oversized (> 8 MiB, skipped)
+	// and failed blobs.
+	BlobsFetched   int `json:"blobs_fetched,omitempty"`
+	BlobsOversized int `json:"blobs_oversized,omitempty"`
+	BlobsFailed    int `json:"blobs_failed,omitempty"`
 }

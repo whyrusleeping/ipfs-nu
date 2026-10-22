@@ -341,6 +341,7 @@ func (e *env) local(r *repo.Repo, network bool) (*node.Local, func(), error) {
 	}
 	cfg.AllowPeer = n.GateSwarm(cfg.AllowPeer)
 	if n.PrivateNetwork() {
+		cfg.Isolated = true // cluster gate owns membership; disable all public mechanisms
 		cfg.MDNS = false
 	}
 	sw, err := swarm.Start(context.Background(), cfg)
@@ -425,7 +426,7 @@ var root = &command{
 	summary: nu.Name + ": add files, share a link, fetch them elsewhere, browse them locally.",
 	sub: []*command{
 		cmdInit, cmdDaemon, cmdStatus, cmdDoctor, cmdConfig, cmdOperations,
-		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdCar, cmdDataset, cmdCluster, cmdRelay, cmdVersion,
+		cmdAdd, cmdCat, cmdLs, cmdGet, cmdShare, cmdPin, cmdDag, cmdCar, cmdDataset, cmdCluster, cmdRelay, cmdVersion, cmdImport,
 		// 0043
 		cmdPublic,
 		// 0044

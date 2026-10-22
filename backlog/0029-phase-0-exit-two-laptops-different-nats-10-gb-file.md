@@ -1,10 +1,10 @@
 ---
 id: "0029"
 title: 'First magic preview exit: different NATs, 10 GB/10k-file tree, browser and 3-peer download'
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-24"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0068"
     - "0028"

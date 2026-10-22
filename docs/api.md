@@ -69,6 +69,15 @@ from the start instead of treating it as an empty delta. A malformed cursor is
 
 ## Operations
 
+### IPFS migration
+
+`POST /api/v0/import/ipfs` starts an `import-ipfs` operation. Give a local CARv1 source with
+`{"root":"<IPFS CID>","car":"/absolute/path/root.car"}`; the daemon verifies every block
+against its original CID. Omit `car` to retrieve by Bitswap over QUIC-v1 with provider
+lookup through Amino Kademlia. `dry_run` is supported for CAR only; it traverses/verifies the root and returns the planned Nu root, file/byte totals, and a blob/outboard physical estimate (not DB/DRISL overhead) against current headroom. The CLI forms
+are `nu import ipfs --car root.car <cid>` and `nu import ipfs <cid>`; create a CAR read-only
+with `ipfs dag export <cid> > root.car`. Direct Kubo repo-internal access is not supported.
+
 Long-running work is an operation: `{id, kind, target, state, stage?, progress{done,
 total?, unit?}, created, updated, result?, error?}`. `target` is exact (a CID, path or
 link), never something that could resolve differently later. States: `running`,
@@ -86,6 +95,17 @@ waits) returns the operation once finished, else a `timeout` error with the snap
 `POST /operations/{id}/cancel` cancels a running one. The CLI follows an operation with
 `nu operations wait <id>` or by default after `nu add`/`nu pin add` (`--no-wait` prints
 the operation instead); with `--json` it prints the NDJSON events.
+
+## Connectivity status
+
+`GET /status` includes `network.connectivity` while a swarm runs: `reachability`
+(`unknown`, `private`, `public`, `disabled`), home/backup relay PeerIDs, per-relay RTT,
+reservation expiry/error, and per-peer paths (`direct-quic`, `direct`, `relay`,
+`recovering`, `offline`). Direct endpoints are proven physical addresses, never local
+virtual routing keys. `network_change_error` reports failed recovery stages;
+`physical_rebind` is currently false. Reservations failing over does not by itself
+prove an active transfer survived; Nu-path recovery is separately bounded by QUIC's
+idle timeout. Status/doctor render these same diagnostics.
 
 ## Routes (v0)
 
@@ -111,7 +131,13 @@ GET    /api/v0/cluster                     ClusterStatus {local?, network?}
 POST   /api/v0/cluster/init     {name, mode?}                    → ClusterInfo
 POST   /api/v0/cluster/invites  {role?, tags?, capacity?, peer?, expires?} → ClusterInvite
 POST   /api/v0/cluster/join     {token}                          → ClusterInfo
-DELETE /api/v0/cluster/members/{peer}      → MetadataState
+DELETE /api/v0/cluster/members/{peer}?dry_run&force → MemberRemoval {safe, removed, forced, unconfirmed, reasons}
+POST   /api/v0/cluster/members/{peer}  MemberSetRequest {state?, capacity?, store_limit?, tags?, label?} → MemberResult
+POST   /api/v0/cluster/keys            KeyRequest {did?, role?, dataset?} → KeyResult (no did: new key held here)
+DELETE /api/v0/cluster/keys/{did}      → KeyResult (revoked at its last commit held here)
+DELETE /api/v0/cluster/invites/{id}    → MetadataState
+POST   /api/v0/cluster/audit           AuditRequest {peer?, samples?, scrub?, full?} → AuditReport
+POST   /api/v0/[cluster/]datasets/{name}/release  ReleaseRequest {dry_run?} → ReleaseReport
 GET    /api/v0/cluster/datasets            [Dataset]
 POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?, collection?, facets?, merge?, expire?} → Dataset
 GET    /api/v0/cluster/datasets/{name}     Dataset
@@ -389,8 +415,41 @@ nu [cluster] dataset versions|diff|label|rollback|prune <ds> …
   a version that is not `retained-complete` are `unavailable` with `details.version` and
   `details.availability` (labels pass with `reacquire`). A rollback to the current head
   is `conflict`; a dataset without history is `invalid_argument`.
-- `prune` releases only on the local cluster; on a networked cluster it is
-  `not_supported` unless `dry_run` (0048). Released bytes go at the next store GC.
+- `prune` on a networked cluster fails `failed` (with `details.release`) unless the live
+  set is confirmed by its owners in a settled epoch (0048). Released bytes go at the next store GC.
+
+### atproto accounts as datasets (0054)
+
+```text
+nu [cluster] dataset create <ds> --archive|--mirror --source at://<handle-or-did> [--nsids a,b] [--blobs] [--publish-history]
+nu [cluster] dataset update <ds>            # no target: fetch the account's current commit now
+nu ls|cat <ds>[@<version>][/<nsid>[/<rkey>]] # collections, records, one record as JSON
+GET /c/<ds>[@<version>]/<nsid>/<rkey>       # 302 → /at/<did>@<rev>/<nsid>/<rkey> (the dataset's pins hold it)
+```
+
+- `DatasetCreateRequest.source_at` (with `nsids`, `blobs`, `publish_history`) binds the
+  dataset to the resolved DID (`source.atrepo`); a preset is required. The first version
+  is fetched synchronously (a failure is a warning, the poll loop retries). `Dataset`
+  reports `source: "atrepo"` and `atrepo` (`AtrepoSource`: account, scope, `own`,
+  `publish_history`, `redistribution`, `status`, held `rev` vs `pds_rev`, last update
+  `mode`/`error`, blob counts); heads and versions carry `rev`/`commit` (`observed`).
+- Updates run in the follow loop (startup, `follow.poll`, `dataset update` without a
+  target; polling only, never Jetstream/firehose): `getRepoStatus`, then
+  `getRepo?since=<held rev>` applied with `atrepo.ApplySince` (`mode: since`), or a
+  full export after a chain break, migration or unknown rev (`mode: full`). Heads are
+  `{target: <commit>, kind: atrepo, observed: {rev, commit}, status?}`; an update on an
+  atrepo dataset with a target is `invalid_argument`. `nsids` scopes versions (a diff
+  touching no selected collection writes none), `ls`, `diff` and blobs; the stored commit
+  is always the whole verified repository.
+- Account status: when the PDS reports the account deactivated, taken down, suspended
+  or deleted (`RepoNotFound`), `head.status` records it, updates stop, history stays;
+  reactivation clears it and resumes with a since-diff. `redistribution` is
+  `unrestricted` (own account: a login session for the DID at create time, recorded as
+  `source.own`; or `publish_history`), `current-only` (third party, active) or `private`
+  (inactive). `share` and `public add` of a retained version or of an inactive
+  account's head are `forbidden` naming the rule; `public add` of a commit is otherwise
+  `not_supported` (no public `/at/` route). `diff` between atrepo versions lists record
+  paths created/deleted/updated.
 
 ## Collections (0057)
 
@@ -450,7 +509,8 @@ nu add <https-url> [--hash sha256] [--meta meta.json]
   category.
 - Item URLs and `nu add https://…` use `httpsrc` with trusted node config
   `ingest.allow_http` (default false) and `ingest.allow_ips` (address prefixes exempt from
-  the SSRF guard). `nu add` imports a URL as a BLAKE3 file node named after the URL's last
+  the SSRF guard); RASL hints and `fisl.indexers` lookups and locations ([D21](dasl.md#fisl))
+  use the same client and keys. `nu add` imports a URL as a BLAKE3 file node named after the URL's last
   path segment (`download` otherwise), with up to 4 attempts that resume on a strong
   validator; `--hash sha256` keeps the 8 MiB limit; isolated-cluster nodes refuse it.
   `--meta` stores a metadata record (adding the provenance under `source` unless present),

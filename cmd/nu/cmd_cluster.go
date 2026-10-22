@@ -120,6 +120,20 @@ func printClusterInfo(w io.Writer, label string, c *apiv0.ClusterInfo) {
 	for _, warn := range c.Warnings {
 		fmt.Fprintf(w, "  warning: %s\n", warn)
 	}
+	if r := c.Repair; r != nil {
+		if r.Online {
+			fmt.Fprintf(w, "  repair authority online: %s\n", strings.Join(r.Authorities, ", "))
+		} else {
+			fmt.Fprintf(w, "  repair authority: none online (%s)\n", r.Detail)
+		}
+	}
+	for _, a := range c.Audits {
+		fmt.Fprintf(w, "  audits of %s: %d passed, %d failed (%d consecutive)\n", a.Peer, a.Passed, a.Failed, a.Consecutive)
+	}
+	if s := c.Scrub; s != nil {
+		fmt.Fprintf(w, "  last scrub %s: %d object(s), %d corrupt\n", s.At.Local().Format(time.RFC3339), s.Checked, len(s.Corrupt))
+	}
+	printAlerts(w, "  ", c.Alerts)
 }
 
 func printDataset(w io.Writer, d *apiv0.Dataset) {
@@ -145,7 +159,14 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 		fmt.Fprintln(w)
 	}
 	if d.Head != nil {
-		fmt.Fprintf(w, "  head %s (%s) by %s\n", d.Head.Target, d.Head.Kind, d.Head.Signer)
+		fmt.Fprintf(w, "  head %s (%s) by %s", d.Head.Target, d.Head.Kind, d.Head.Signer)
+		if d.Head.Rev != "" {
+			fmt.Fprintf(w, ", rev %s", d.Head.Rev)
+		}
+		if d.Head.Status != "" {
+			fmt.Fprintf(w, ", account %s", d.Head.Status)
+		}
+		fmt.Fprintln(w)
 	}
 	if len(d.Heads) > 1 {
 		for _, h := range d.Heads {
@@ -157,6 +178,26 @@ func printDataset(w io.Writer, d *apiv0.Dataset) {
 	}
 	if d.SourcePath != "" {
 		fmt.Fprintf(w, "  source: %s\n", d.SourcePath)
+	}
+	if a := d.Atrepo; a != nil {
+		fmt.Fprintf(w, "  source: at://%s (%s), account %s, redistribution %s", a.DID, a.Handle, a.Status, a.Redistribution)
+		if len(a.NSIDs) > 0 {
+			fmt.Fprintf(w, ", nsids %s", strings.Join(a.NSIDs, ","))
+		}
+		if a.Blobs {
+			fmt.Fprintf(w, ", blobs (%d fetched, %d oversized skipped, %d failed)", a.BlobsFetched, a.BlobsOversized, a.BlobsFailed)
+		}
+		fmt.Fprintln(w)
+		if a.PDSRev != "" && a.PDSRev != a.Rev {
+			fmt.Fprintf(w, "    lag: held rev %s, PDS rev %s\n", a.Rev, a.PDSRev)
+		}
+		if !a.Refreshed.IsZero() {
+			fmt.Fprintf(w, "    last update %s (%s)", a.Refreshed.Local().Format(time.RFC3339), a.Mode)
+			if a.Error != "" {
+				fmt.Fprintf(w, ": %s", a.Error)
+			}
+			fmt.Fprintln(w)
+		}
 	}
 	if d.Version != nil {
 		printVersion(w, *d.Version)
@@ -226,8 +267,16 @@ func printContent(w io.Writer, c apiv0.ContentState) {
 		fmt.Fprintln(w)
 	}
 	if r := c.Release; r != nil && len(r.Candidates) > 0 {
-		fmt.Fprintf(w, "  %d retained version(s) are release candidates; release.auto is off, nothing is released\n", len(r.Candidates))
+		how := "release.auto is off: `gc --dry-run` shows the evidence, `gc` releases what passes"
+		if r.Auto {
+			how = "released automatically once owners confirm the current head (release.auto)"
+		}
+		fmt.Fprintf(w, "  %d earlier version(s) are release candidates; %s\n", len(r.Candidates), how)
 	}
+	if c.Repair != "" {
+		fmt.Fprintf(w, "  repair: %s\n", c.Repair)
+	}
+	printAlerts(w, "  ", c.Alerts)
 }
 
 // datasetCommands builds `create|ls|status` for a scope.
@@ -281,7 +330,10 @@ func datasetCommands(scope string) []*command {
 				archive := fs.Bool("archive", false, "archive preset: keep versions under the default retention schedule (see --history)")
 				mirror := fs.Bool("mirror", false, "mirror preset: follow current state with the protected-version safeguard")
 				hist := fs.String("history", "", "retention schedule, e.g. keep_last=10,daily=30,monthly=12,yearly=all[,max_bytes=1T] (implies --archive)")
-				source := fs.String("source", "", "directory `"+nu.Name+" dataset update <name>` re-adds; imported now as the first version")
+				source := fs.String("source", "", "directory `"+nu.Name+" dataset update <name>` re-adds (imported now as the first version), or at://<handle-or-did>: an atproto account archived from its PDS (0054)")
+				nsids := fs.String("nsids", "", "atproto source: comma list of record collections that count as the dataset (default all)")
+				blobs := fs.Bool("blobs", false, "atproto source: also fetch the records' blobs (over 8 MiB are skipped)")
+				publishHistory := fs.Bool("publish-history", false, "atproto source: let retained history of a third-party account leave the cluster (recorded on the dataset; private by default)")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
@@ -328,7 +380,14 @@ func datasetCommands(scope string) []*command {
 						return usagef("--history: %v", err)
 					}
 				}
-				if *source != "" {
+				if strings.HasPrefix(*source, "at://") {
+					req.SourceAt, req.Blobs, req.PublishHistory = *source, *blobs, *publishHistory
+					for _, id := range strings.Split(*nsids, ",") {
+						if id = strings.TrimSpace(id); id != "" {
+							req.NSIDs = append(req.NSIDs, id)
+						}
+					}
+				} else if *source != "" {
 					if req.SourcePath, err = filepath.Abs(*source); err != nil {
 						return err
 					}
@@ -398,6 +457,13 @@ func datasetCommands(scope string) []*command {
 					cur, err := c.Dataset(ctx, scope, fs.Arg(0))
 					if err != nil {
 						return err
+					}
+					if cur.Atrepo != nil { // fetch the account's current commit now
+						d, err := c.DatasetUpdate(ctx, scope, fs.Arg(0), apiv0.DatasetUpdateRequest{Note: *note})
+						if err != nil {
+							return err
+						}
+						return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 					}
 					if cur.SourcePath == "" {
 						return usagef("dataset %s has no --source directory; give a CID or a directory", fs.Arg(0))
@@ -470,7 +536,7 @@ func datasetCommands(scope string) []*command {
 				return e.emit(d, func(w io.Writer) { printDataset(w, d) })
 			},
 		},
-	}, historyCommands(scope, get)...)
+	}, append(historyCommands(scope, get), releaseCommand(scope))...)
 }
 
 var cmdDataset = &command{
@@ -518,11 +584,26 @@ var cmdCluster = &command{
 				capacity := fs.String("capacity", "", "placement weight in bytes (K/M/G/T suffixes)")
 				peer := fs.String("peer", "", "pre-authorize this PeerId (writes its member record now)")
 				expires := fs.String("expires", "24h", "how long the token is valid")
+				revoke := fs.String("revoke", "", "revoke the outstanding secret invite with this id instead")
 				if err := parseFlags(fs, args); err != nil {
 					return err
 				}
 				if fs.NArg() != 0 {
 					return usagef("cluster invite takes only flags")
+				}
+				if *revoke != "" {
+					r, err := e.repair(ctx)
+					if err != nil {
+						return err
+					}
+					md, err := r.ClusterInviteRevoke(ctx, *revoke)
+					if err != nil {
+						return err
+					}
+					return e.emit(md, func(w io.Writer) {
+						fmt.Fprintf(w, "revoked invite %s\n", *revoke)
+						printMetadata(w, *md)
+					})
 				}
 				tm, err := parseTags(*tags)
 				if err != nil {
@@ -599,34 +680,11 @@ var cmdCluster = &command{
 		},
 		{
 			name:    "member",
-			summary: "manage members",
-			sub: []*command{{
-				name:    "rm",
-				args:    "<peerId>",
-				summary: "remove a member: it is refused by every member once the state replicates",
-				run: func(ctx context.Context, e *env, args []string) error {
-					fs := e.flags()
-					if err := parseFlags(fs, args); err != nil {
-						return err
-					}
-					if fs.NArg() != 1 {
-						return usagef("member rm needs one PeerId")
-					}
-					c, err := e.clusterLocal(ctx)
-					if err != nil {
-						return err
-					}
-					md, err := c.ClusterMemberRemove(ctx, apiv0.ClusterMemberRemoveRequest{Peer: fs.Arg(0)})
-					if err != nil {
-						return err
-					}
-					return e.emit(md, func(w io.Writer) {
-						fmt.Fprintf(w, "removed %s\n", fs.Arg(0))
-						printMetadata(w, *md)
-					})
-				},
-			}},
+			summary: "manage members: list, edit, drain, remove",
+			sub:     memberCommands(),
 		},
+		cmdClusterKey,
+		cmdClusterAudit,
 		{
 			name:    "dataset",
 			summary: "datasets of the networked cluster",

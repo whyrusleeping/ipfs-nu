@@ -8,6 +8,62 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Real daemon relay sessions and failover (0020, 2026-10-22)
+
+Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport
+and signed identify address seams. Baseline `8111314` plus address-publication
+hardening; stock quic-go v0.64.1, Go 1.26.0, rootless Linux
+user/network namespaces. These are bounded fixtures, **not field success rates**.
+
+Reproduce from the worktree root:
+
+```
+go test -race ./node/swarm ./p2p/host ./p2p/proto ./p2p/proto/circuit ./p2p/homerelay
+go test -tags natlab ./node/swarm -run '^TestDaemonNAT(ShareUpgradeAndRelayFailover|RelayMatrix)$' -v -count=1
+```
+
+The test builds the ordinary `nu` binary (no test-only transport hooks), starts two
+`nu daemon` processes in separate private namespaces behind different routers and
+two public `nu relay` processes, configures explicit full-service admission and
+exact per-peer probe destinations, and uses CLI `add --raw`, `share`, `get` and
+`status`. Share links contain both live circuit hints. A parser test rejects
+conflicting destination identities and stacked/unsupported circuit hints.
+
+| Daemon fixture | Result |
+|---|---|
+| EIM/APDF ↔ EIM/APDF; direct initially blocked | 19,500,000 bytes fetched via a real circuit share link; SHA-256 of extracted file matched |
+| Abrupt home failure during that get | SIGKILL of the provider's selected active home at 1,051,616 verified bytes (2.370 s); same caller/operation succeeded without retry/error via the other relay, 12.733 s total including failure detection/recovery |
+| EIM/APDF after removing the direct block and emitting route invalidations | Both real daemons reported authenticated direct paths with warm backup relay; 16.994 s in the recorded run (includes owner hooks/backoff), not an instantaneous-upgrade claim |
+| ADM/APDF ↔ ADM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 84 ms whole CLI operation |
+| APDM/APDF ↔ APDM/APDF | Real-daemon relay get succeeded; 273,000 verified bytes, 75 ms whole CLI operation |
+| Native Linux conntrack NAT pair | Real-daemon relay get succeeded; 273,000 verified bytes, 72 ms whole CLI operation; no RFC NAT-class promise for the kernel allocator |
+| All forwarded UDP blocked; fresh recipient daemon/new CID | Get failed `unavailable`, with the explicit online/UDP-reachability action; it did not silently satisfy the request from previously held bytes |
+
+All four daemon mapping cases connected successfully. APDM is not advertised as
+direct-hole-punch success. Loopback assembly tests separately establish crossed
+attempt convergence, active-stream failover on the **same** inner QUIC connection,
+exact endpoint authorization/negative targets, private candidate non-disclosure,
+LAN/loopback exclusion from public signed snapshots, two-observer proof aggregation
+and mapped-address publication before relay withdrawal, private/isolated shutdown
+and real D12 hook registration. An actual route event
+returns the physical-rebind limitation rather than a false successful rebind.
+
+A race-instrumented loopback assembly run measured the first five-byte application
+echo at 31.65 ms, circuit/inner-handshake setup at 23.71 ms, and the inner relay RTT
+at 2.38 ms. Its acceptance check bounds the first echo by setup + relay RTT + a
+50 ms scheduler/instrumentation allowance; this is a fast no-added-stagger check,
+not a production latency SLO or a zero-noise RTT equality assertion.
+
+The cold-route race test has a 750 ms deadline against a 1 s configured stagger:
+the relay starts immediately alongside direct setup; it cannot wait behind that
+stagger or a dead direct timeout. Disco control negotiation is background work,
+not an extra round trip before the first data stream. Whole-CLI/get-progress times
+above are **not wire TTFB measurements** (progress is throttled and Bao verification
+is chunked); no exact RTT-only numeric performance claim is inferred from them.
+No default public relay fleet, production abuse/admission rollout, physical UDP
+socket replacement, cross-family inner multipath, or public field NAT success
+rate is established by this evidence.
+
 ## Authenticated Nu path discovery (0017, 2026-10-21)
 
 Implementation: `p2p/disco`; [wire/security contract](networking.md#path-v1-control-and-probe-security-contract-0017)
@@ -1056,7 +1112,7 @@ Scaled to the v0-era test policy: a few fast tests per acceptance bullet (Linux 
 | New incomplete version vs established availability (E8) | `cluster_test.TestClusterArchive` | a head whose content exists nowhere makes the archive not ready while the older version stays `retained-complete`; reading the new version is `unavailable`; the old one lists through placement |
 | Rollback as a new head | `TestOneNodeArchive`, `TestClusterArchive` | new head and version with `restored_from`; the restored version's identity and label unchanged; metadata and content are separate results |
 | Incomplete/never-replicated/pruned never claim retrieval; skipped versions | `node.TestArchiveRetentionAvailability` | a head with unheld content is `observed`, superseded outside the live set it is `skipped`; a pruned version is `pruned`, reads (by TID or by a time selecting it) and rollback fail `unavailable` naming it, never a neighbour |
-| Shared references prevent unsafe deletion; dry-run | same | the dry run lists the candidate with free and shared bytes and changes nothing; after prune and GC the other dataset and the live version still read the shared file; networked prune is dry-run only |
+| Shared references prevent unsafe deletion; dry-run | same | the dry run lists the candidate with free and shared bytes and changes nothing; after prune and GC the other dataset and the live version still read the shared file; networked prune is dry-run only (0047; gated by owner confirmation since 0048) |
 | Labels and held copies survive budget pressure | `node.TestArchiveBudgetPressure` | an import over `store.limit` fails `insufficient_storage`; after GC the labeled and held versions are `retained-complete` and read |
 | Explicit missing-version reacquisition | `TestArchiveRetentionAvailability` | labeling pruned content fails without `--reacquire`; with it the version is live and still not retrievable until its content is complete again |
 | Immutable identity vs annotations, collisions, compaction | `cluster.TestVersionMerge` | an annotation copy merges by (hlc, signer); a later self-authored redefinition of the same TID is a reported conflict, never merged; a winning tombstone compacts; label syntax excludes TIDs and times |
@@ -1068,6 +1124,39 @@ process kill between the
 import and the head write (the import is unpinned and falls to GC after the grace),
 authenticated import-manifest export (needs 0042's manifests) and historical identity
 evidence for external sources (0045, 0054).
+
+## Repair, handoff, audits and release (0048)
+
+Scaled to the v0-era test policy (Linux, 2026-10-22): nutest scenarios on loopback QUIC
+with partitions (connection gating), kill/restart, store limits as disk pressure and
+shortened settings (`node.ClusterDefaults`, `node.EvidenceFresh`: fresh 2 s, settle
+0.3–2 s, down/up 1 s, interval 100 ms) in place of a fake clock; the rule logic itself
+has a clock-free table test. Commands: `go test ./cluster -run
+'TestReleaseRules|TestRepairAfterLoss|TestSafeRelease|TestDrainRemove|TestAuditScrub|TestClusterArchive'`
+(the four network tests passed three consecutive runs).
+
+| Row / rule | Test | Shows |
+|---|---|---|
+| R10 (S2) | `cluster_test.TestSafeRelease` | after a head update with one owner partitioned off from the other two, the previous head stays pinned on all three members for `evidence.fresh` + 3 s; after healing it is released everywhere |
+| R11 (S2) | `TestSafeRelease`, `cluster.TestReleaseRules` | the dry run during the partition lists the old head as not releasable with the partitioned owner in `shortfall` (`stale`/`absent`); table: one stale owner of `k=2` blocks and is named |
+| R12 (S3) | `TestSafeRelease` | a capacity edit (epoch change) right after the new head is ready: the dry run is `deferred: unsettled` and the old head stays pinned; it is released once the epoch settled |
+| R13 (S3) | `cluster.TestReleaseRules` | an owner reporting another epoch defers every release (`epoch_disagreement`) and does not count; also held-back records and an owner whose record changed within settle |
+| R14 (S4) | `TestSafeRelease` | b becomes a second admin (`key new` / `key grant`); a and b write heads while partitioned; after healing both see the other head in `displaced`, the dry run is `deferred: concurrent_heads`, and the previous head stays pinned on every member |
+| R16 (S6) | `cluster_test.TestDrainRemove` | `rm` of an active owner is refused (drain first); a drained member is not removable while an owner of its blobs is partitioned (`failed`, `unconfirmed` names the owner) and keeps its view pinned; after healing it releases its copies once new owners confirm them and `rm` succeeds unforced; `--force` during another partition removes and reports `forced` with the unconfirmed content |
+| R18 (E9) | `cluster_test.TestAuditScrub` | `replicas: all` with one blob that exists nowhere: a member holding the rest passes sampled verified chunk-group challenges, stays out of `confirmed`, the dataset is not ready, and cluster status shows its audits separately |
+| R20 (E8), lost node with authority | `cluster_test.TestRepairAfterLoss` | an authority restarts (`cluster.repair auto`) after a storage member died; after `down_after` it writes `{unavailable, auto}`; with no free capacity on survivors the dataset is `degraded` (not unknown) with `repair: in_progress` and a `degraded` alert, then `ready` with `copies.min ≥ 2` without the dead member once capacity frees; when the member returns it is `active` again after `up_after` |
+| No repair authority | same | the member dies with repair off everywhere: `unknown` (never `degraded`), `repair: unavailable`, `no_repair_authority` alerts in the dataset and cluster status, and the member record stays `active` past `down_after` |
+| S2 surplus release | same | the writer drops its explicit pin; `gc --dry-run` lists its non-owned blobs as `surplus`, releasable once owners confirm; `gc` removes exactly the blobs it does not own |
+| Scrub → repair | `TestAuditScrub` | a flipped byte in a stored blob file is found by `audit --full`, dropped (`scrub_failed` alert) and fetched again from members |
+| Networked prune gate (S1) | `cluster_test.TestClusterArchive` | prune with an incomplete live version fails `failed` with the shortfall |
+| CLI, one-node release | `cmd/nu.TestDatasetGCCLI` (daemonless) | `dataset gc --dry-run` lists the previous head as a releasable version (one member: nothing to settle) and changes nothing; `gc` unpins it and the current head still reads |
+
+Not covered: crash (kill) between a release decision and the store removal (removal is
+one transaction under the GC lock; the in-memory settle restarts after any restart, so a
+crash only delays release), floor-surplus release for collections (surplus items stay
+held), a Linux isolated-lab (natlab) run of repair traffic, Prometheus metrics (none in
+this build; status JSON carries the alerts), byzantine audit evasion (a member can relay
+challenge answers from another member: audits prove serving, not storage).
 
 ## Distribution, upgrades and recovery (0044)
 
@@ -1668,3 +1757,27 @@ Final, reverted-tree verification passed: gofmt, `git diff --check`,
 `go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`.
 A 64 MiB tracing-enabled `-race` download run also passed; those instrumented
 rates are excluded from the table. No backlog edits or pushes.
+
+## IPFS bridge (0042) — early fixture evidence
+
+The default bridge package tests are offline and fast (`go test ./bridge`): hand-built
+fixtures cover verified raw/dag-pb blocks, CIDv0/v1 parsing, UnixFS file/directory/symlink
+conversion, tampered CAR blocks, decoder fuzz seeds, and a retry after a source block is
+missing. The retry re-runs conversion from the CAR and relies on deterministic content addressing/store
+deduplication. A node test persists a running CAR job, closes/reopens `Local`, and confirms
+the same operation ID recovers to success; this is a restart/recovery test, not a power-loss
+or forced process-kill campaign.
+
+Opt-in Kubo test: `NU_DOCKER=1 go test ./bridge -run TestKuboCARImports -v`, using the
+same digest-pinned `ipfs/kubo:v0.40.0` image recorded in `interop/run.py`. It passed locally
+(16.4 s): Kubo created a directory with 1,201 generated entries, a 3 MiB file, raw UnixFS
+leaves, a symlink, and CARs for CIDv1/raw-leaf and CIDv0 imports; imported file bytes and
+symlink target bytes were compared against `ipfs get` output. The large directory exercised
+Kubo's sharded-directory representation and conversion completed. This is a local opt-in
+fixture result, not a CI run or production acceptance. A synthetic Bitswap `/1.2.0` exchange over two Nu QUIC hosts passes. The opt-in pinned-Kubo
+Bitswap test also passes: a Nu host requests a 1 MiB CIDv1 raw block over QUIC-v1 and receives
+and verifies the payload (about 1 s locally). That probe uses a static provider result; live Amino
+DHT provider discovery against Kubo/the public network is not verified. The CAR import is
+exposed through CLI/API and durable operation recovery is tested, but CAR jobs persist the
+request/stage/result and replay from the CAR rather than retaining per-block checkpoints.
+Cutover readiness and representative-installation reconciliation remain unverified.

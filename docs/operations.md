@@ -165,10 +165,13 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **S7 Pressure.** Disk pressure never releases protected content; it pauses acquisition
   with the bytes needed and the action. Operators may release with an explicit destructive
   command that prints the S2 shortfall per blob.
-- **S8 Pilot default.** `release.auto` defaults to `false`: candidates are reported
-  (`nu cluster dataset gc --dry-run`: blob, reason, S2/S3 evidence or shortfall) but not
-  released, until 0048's evidence tests (rows R10–R18) pass. Collections with
-  `replicas: 0` are outside S (no guaranteed copies to protect).
+- **S8 Pilot default.** `release.auto` (`cluster.release_auto` in config.toml) defaults to
+  `false`: candidates are reported (`nu cluster dataset gc --dry-run`: candidate, reason,
+  S2/S3 evidence or shortfall) and released only by an explicit `nu cluster dataset gc`.
+  0048's evidence tests (R10–R18, R20) pass, so a member may enable automatic release;
+  whether the default flips is a pilot decision. Collections with `replicas: 0` are
+  outside S (no guaranteed copies to protect); collection floor-surplus release is not
+  implemented yet (surplus items stay held).
 
 ### Negative-test matrix (readiness)
 
@@ -240,6 +243,26 @@ per blob, decided locally by the member holding it, and only under all of the fo
 - **0048 (repair, handoff, audits)**: S1–S4, S6, S8 enabling `release.auto`; E9; R10–R14,
   R16, R18, R20 passing in nutest with partitions and a fake clock before automatic
   release ships. Until then every release is dry-run only.
+  Implemented with these readings (mechanics in [cluster.md](cluster.md#sync-handoff-and-repair)):
+  a member releases two kinds of candidates, *versions* (earlier targets it keeps
+  pinned: the previous held or ready head, staged heads, a draining member's whole view;
+  unpinned, so GC reclaims what no other pin reaches) once every blob of the current
+  head and live set has `k` confirmed copies from its owners, and *surplus* blobs (held,
+  not owned in the current epoch) once their owners other than itself confirm them `k`
+  times (S2), only if every other dataset reaching the blob would release it too and no
+  non-placement pin reaches it. S3's settle clock is this member's own observation of
+  the binding `(head, live set, policy, epoch)` and of each member's record state, in
+  memory, so a restart starts every settle period again; "no owner reports another
+  epoch" is read as no fresh report from any member for the dataset naming another
+  epoch or policy. S4 defers every release of the dataset while a displaced per-signer
+  head is younger than `release.settle`; the dataset result lists `displaced` heads. With
+  `release.auto` a passing surplus blob is dropped `dataset.remove_grace` after it first
+  passed, re-checked then; an explicit `gc` releases what passes at once. A networked
+  `prune` (S1's version clause) needs the live set confirmed by owners in a settled
+  epoch. The rm check of S6 runs on the admin's evidence: every dataset's head and live
+  set must have `k` confirmed owner copies in the current epoch (where a draining member
+  owns nothing), and an active owner must be drained first; `--force` records what it
+  left unconfirmed. Evidence: [validation](validation.md#repair-handoff-audits-and-release-0048).
 
 ## Reader-visible versions
 
@@ -373,6 +396,55 @@ impossible spread, drain/replace, detect missing repair authority, restore keys/
 recover onto clean machines, and reconcile concurrent changes. Offer stable JSON output,
 exit categories, actionable status and alert conditions. Automatic repair unavailable is
 an alert, not a silent operating mode.
+
+### Alerts and recovery runbooks (0048)
+
+`nu cluster status --json` (`network.alerts`) and dataset status (`content.alerts`,
+`content.repair`) carry machine-readable alerts `{code, detail, action, peer?, dataset?}`:
+
+| Code | Condition | Action |
+|---|---|---|
+| `no_repair_authority` | content exists and no repair authority is online (this node, or a connected member whose heartbeat says `repair`) | start an admin daemon with `cluster.repair = "auto"`, or mark failed members by hand |
+| `member_silent` | an active storage member sent no heartbeat for 3 intervals + `evidence.fresh` | check it; an authority marks it unavailable after `cluster.down_after` |
+| `member_unavailable` | a member record is `unavailable` (`auto` when set by an authority) | bring it back, or drain and remove it |
+| `degraded` | E8 degraded; `content.repair` is `in_progress` with an online authority, else `unavailable` | see `copies` and `missing`; free capacity if acquisition is paused |
+| `unknown_too_long` | readiness unknown longer than `evidence.unknown_alert` (30 min) | check the stale members in `missing` |
+| `audit_failed` | consecutive failed audit challenges of a member | check its disk and network; three in a row mark it unavailable when an authority runs |
+| `scrub_failed` | this node's last scrub found corrupt objects (dropped, fetched again) | check this machine's disk |
+
+Settings live in `[cluster]` of config.toml: `repair` (`auto` default, `off`),
+`down_after` (15m), `up_after` (10m), `release_auto` (false), `release_settle` (10m),
+`remove_grace` (24h), `audit_interval` (1h), `audit_samples` (16). A daemon reads them at
+start.
+
+- **Lost node (machine dead, disk intact or not).** With an online authority the member
+  is marked `unavailable` after `down_after`; status turns `degraded` (not `unknown`) and
+  the next-ranked members re-acquire its blobs from survivors; `copies.below` shows
+  progress. If acquisition pauses (`insufficient_storage`), free space or add a member
+  (`nu cluster invite`). When the machine returns with its disk, an authority sets it
+  `active` after `up_after` of heartbeats and the temporary copies become surplus,
+  released under S1–S3. If it will not return: `nu cluster member drain <peer>` then
+  `nu cluster member rm <peer> --dry-run` until safe, then `rm`.
+- **Lost disk (machine back, store empty).** Restore its authority backup into a fresh
+  `$NU_PATH` (B5) and start it: same PeerId, placement re-acquires its owned blobs from
+  survivors (B6). Without a backup, `member rm --force` the old PeerId and invite the
+  machine as a new member.
+- **Partition.** Nothing is released from stale evidence (S2/S3): both sides keep every
+  protected version and surplus copy; readiness of the other side's copies is `unknown`.
+  An authority on one side may mark the other side's members `unavailable`, which
+  re-places their blobs on its side (transient over-replication, released after healing
+  and settling). Heal the network; run `gc --dry-run` to see releases resume.
+- **No repair authority.** Status alerts `no_repair_authority` and dataset results say
+  `repair: unavailable`; nothing is re-placed. Start a daemon holding an admin key
+  (`nu cluster key new` on an always-on member, then `nu cluster key grant <did> admin`
+  from an admin), or mark the failed member yourself with `nu cluster member set <peer>
+  --state unavailable` (an admin-set state is not lifted automatically).
+- **Bit rot.** Periodic scrubs (`audit_interval`, `audit_samples` objects) and `nu cluster
+  audit --full` verify held objects; a corrupt one is dropped, the member reports
+  incomplete and fetches it again; the `scrub_failed` alert names the count.
+- **Revoking a compromised member.** `nu cluster member rm --force <peer>` (destructive:
+  the result lists content left below `k`), then `nu cluster key revoke <did>` for any key
+  it held and `nu cluster invite --revoke <id>` for outstanding invites.
 
 ### B. Backup, export and recovery
 
@@ -773,6 +845,11 @@ required by the named task before it ships.
   the site-origin and unheld cases), DID documents and PDS endpoints go through the
   `httpsrc` policy (`atproto.TestFetch` refuses a private PDS address). Independent
   review pending.
+- **0054 (atproto archives)**: P2/P4 for atrepo datasets as [D21](dasl.md#atproto-accounts-as-archive-datasets)
+  decides: third-party history private by default, current state only while active,
+  `publish_history`/own-account override recorded on the dataset. Implemented at
+  `share` and `public add` (`node.TestAtrepoArchiveDataset`); no public `/at/` route
+  exists, so no atrepo content is public in this build.
 - **0055 (MASL bundles)**: G10 in full, N27, bundle rendering only on site origins,
   `.tile` headers through the same allowlist.
 - **First name route** (names track): G5 label encoding and N26 before any name path

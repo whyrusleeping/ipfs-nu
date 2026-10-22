@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,8 @@ import (
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/lookup"
+	"github.com/whyrusleeping/nu/p2p/magicsock"
+	"github.com/whyrusleeping/nu/p2p/portmap"
 	p2pproto "github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/proto"
@@ -60,22 +63,36 @@ type Config struct {
 	// InterfaceIPs overrides how unspecified listen addresses are expanded (tests).
 	InterfaceIPs func() []net.IP
 	Logger       *slog.Logger
+	// Public connectivity uses only explicit configured/known relays. Private and
+	// Isolated disable relay/AutoNAT/disco/default public discovery entirely.
+	Relays            []wire.Multiaddr
+	Private, Isolated bool
+	Peers             map[wire.PeerID][]wire.Multiaddr
+	// LookupSources is the public streaming resolver attachment point (0072).
+	// Sources must honor cancellation; the caller owns their service lifetimes.
+	LookupSources []lookup.Source
+	// ProbeAllowed is an independent exact-endpoint policy, never populated from
+	// peer records. Grants also permit private candidate disclosure to that peer.
+	ProbeAllowed map[wire.PeerID][]netip.AddrPort
+	// PortMapping opts in to leases at an explicitly selected gateway.
+	PortMapping *portmap.Config
 }
 
 // Swarm is a running network stack. Close it when done; it does not own the store.
 type Swarm struct {
-	cfg      Config
-	log      *slog.Logger
-	host     *host.Host
-	cache    *lookup.Cache
-	lookup   *lookup.Service
-	sessions *host.Sessions
-	identify *p2pproto.Service
-	server   *proto.Server
-	fetcher  *fetch.Fetcher
-	cancel   context.CancelFunc
-	once     sync.Once
-	closeErr error
+	cfg          Config
+	log          *slog.Logger
+	host         *host.Host
+	cache        *lookup.Cache
+	lookup       *lookup.Service
+	sessions     *host.Sessions
+	identify     *p2pproto.Service
+	server       *proto.Server
+	fetcher      *fetch.Fetcher
+	cancel       context.CancelFunc
+	once         sync.Once
+	closeErr     error
+	connectivity *connectivity
 }
 
 // Start binds the host and starts the services. The returned Swarm is independent of
@@ -91,6 +108,14 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if cfg.InterfaceIPs == nil {
 		cfg.InterfaceIPs = InterfaceIPs
 	}
+	if cfg.Private {
+		gate := cfg.AllowPeer
+		members := make(map[wire.PeerID]bool, len(cfg.Peers))
+		for id := range cfg.Peers {
+			members[id] = true
+		}
+		cfg.AllowPeer = func(id wire.PeerID) bool { return members[id] && (gate == nil || gate(id)) }
+	}
 	s := &Swarm{cfg: cfg, log: log}
 	bg, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -105,10 +130,11 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.host, err = host.New(host.Config{Key: cfg.Key, Listen: listen, AllowPeer: cfg.AllowPeer})
+	var socket *magicsock.Conn
+	s.host, socket, err = sharedHost(host.Config{Key: cfg.Key, Listen: listen, AllowPeer: cfg.AllowPeer})
 	if err != nil && cfg.Ephemeral && errors.Is(err, syscall.EADDRINUSE) {
 		log.Info("swarm port in use; using an ephemeral port", "listen", listen)
-		s.host, err = host.New(host.Config{Key: cfg.Key, Listen: ephemeral(listen), AllowPeer: cfg.AllowPeer})
+		s.host, socket, err = sharedHost(host.Config{Key: cfg.Key, Listen: ephemeral(listen), AllowPeer: cfg.AllowPeer})
 	}
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
@@ -127,7 +153,13 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 	if err != nil {
 		return nil, err
 	}
-	lcfg := lookup.Config{Cache: s.cache, DisableMDNS: !cfg.MDNS, MDNS: lookup.MDNSConfig{
+	sources := append([]lookup.Source(nil), cfg.LookupSources...)
+	if cfg.Private || cfg.Isolated {
+		sources = nil
+	} else {
+		sources = append(sources, lookup.SourceFunc(s.signedAddresses))
+	}
+	lcfg := lookup.Config{Cache: s.cache, Sources: sources, DisableMDNS: !cfg.MDNS || cfg.Private || cfg.Isolated, MDNS: lookup.MDNSConfig{
 		Peer: s.host.ID(), Addresses: s.host.Addrs, Interfaces: cfg.MDNSInterfaces}}
 	s.lookup, err = lookup.New(bg, lcfg)
 	if err != nil && cfg.MDNS {
@@ -139,11 +171,10 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		return nil, err
 	}
 	// Sessions before application handlers, so their gating is in place when peers arrive.
-	s.sessions, err = host.NewSessions(s.host, host.SessionConfig{Lookup: s.lookup, Cache: s.cache})
-	if err != nil {
+	if err := s.startConnectivity(bg, socket); err != nil {
 		return nil, err
 	}
-	s.identify, err = p2pproto.New(s.host, p2pproto.Config{AgentVersion: nu.Name + "/" + nu.Version})
+	s.sessions, err = host.NewSessions(s.host, host.SessionConfig{Lookup: s.lookup, Cache: s.cache, Dial: s.connectivity.dial, Private: cfg.Private, Peers: cfg.Peers})
 	if err != nil {
 		return nil, err
 	}
@@ -165,11 +196,17 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 // Close stops everything in reverse order. Running fetches fail.
 func (s *Swarm) Close() error {
 	s.once.Do(func() {
-		if s.identify != nil {
-			_ = s.identify.Close()
+		if s.cancel != nil {
+			s.cancel()
 		}
 		if s.sessions != nil {
 			_ = s.sessions.Close()
+		}
+		if s.connectivity != nil {
+			s.connectivity.close()
+		}
+		if s.identify != nil {
+			_ = s.identify.Close()
 		}
 		if s.lookup != nil {
 			_ = s.lookup.Close()
@@ -200,7 +237,36 @@ func (s *Swarm) ListenAddrs() []wire.Multiaddr { return s.host.Addrs() }
 // expanded over the machine's usable interface addresses of the same family; loopback
 // only when nothing else is bound, so an in-process test host advertises 127.0.0.1.
 func (s *Swarm) Addrs() []wire.Multiaddr {
-	return Advertise(s.host.Addrs(), s.cfg.InterfaceIPs)
+	addrs := Advertise(s.host.Addrs(), s.cfg.InterfaceIPs)
+	if s.connectivity != nil {
+		s.connectivity.mu.Lock()
+		homes := s.connectivity.homes
+		network, closed := s.connectivity.network, s.connectivity.closed
+		s.connectivity.mu.Unlock()
+		if network != nil && !closed {
+			network.mu.Lock()
+			confirmed := append([]wire.Multiaddr(nil), network.confirmed...)
+			network.mu.Unlock()
+			addrs = append(confirmed, addrs...)
+		}
+		if homes != nil {
+			// Links cap hints at three: keep BOTH relay routes ahead of direct
+			// expansion so a multi-interface node cannot truncate its backup.
+			addrs = append(homes.Addresses(), addrs...)
+		}
+	}
+	seen := make(map[string]bool, len(addrs))
+	unique := make([]wire.Multiaddr, 0, len(addrs))
+	for _, addr := range addrs {
+		if s.host.IsLocalOnlyMultiaddr(addr) {
+			continue
+		}
+		if !seen[addr.String()] {
+			seen[addr.String()] = true
+			unique = append(unique, addr)
+		}
+	}
+	return unique
 }
 
 // Peers counts connected peers (node.Net).
@@ -222,6 +288,9 @@ func (s *Swarm) Connected() []wire.PeerID {
 // Connect dials a peer at the given addresses (without /p2p suffix or with a matching
 // one) and waits for the authenticated connection. Addresses are remembered as hints.
 func (s *Swarm) Connect(ctx context.Context, id wire.PeerID, addrs []wire.Multiaddr) error {
+	if err := s.connectivity.admitHints(id, addrs); err != nil {
+		return err
+	}
 	if err := s.sessions.AddHints(ctx, []lookup.Hint{{Peer: id, Addresses: addrs}}); err != nil {
 		return err
 	}
@@ -253,6 +322,9 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	for _, p := range hints {
 		if p.Peer == s.host.ID() {
 			continue
+		}
+		if err := s.connectivity.admitHints(p.Peer, p.Addrs); err != nil {
+			return err
 		}
 		lh = append(lh, lookup.Hint{Peer: p.Peer, Addresses: p.Addrs})
 	}
@@ -497,7 +569,11 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}, nil
+	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile)}
+	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
+		return Config{}, err
+	}
+	return out, nil
 }
 
 // FetchPlaced fetches root for cluster placement (docs/cluster.md "Sync, handoff and

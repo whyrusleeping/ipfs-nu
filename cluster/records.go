@@ -115,7 +115,10 @@ type Member struct {
 	Addrs      []string          `drisl:"addrs,omitempty"`
 	Label      string            `drisl:"label,omitempty"`
 	State      string            `drisl:"state"`
-	HLC        string            `drisl:"hlc"`
+	// Auto marks a state written by a repair authority (0048): `unavailable` from missed
+	// heartbeats or failed audits, which the authority lifts again (not an admin's choice).
+	Auto bool   `drisl:"auto,omitempty"`
+	HLC  string `drisl:"hlc"`
 }
 
 func (Member) DRISLType() string { return NSMember }
@@ -218,7 +221,27 @@ type Source struct {
 	// write each verified target as the head (docs/follow.md). Follow holds its options.
 	Name   string  `drisl:"name,omitempty"`
 	Follow *Follow `drisl:"follow,omitempty"`
+	// 0054 (D21): Atrepo is an archived atproto account's DID; NSIDs scopes the
+	// collections that count as the dataset (all when empty); Blobs selects its blobs;
+	// Own records that the archiving operator controls the account; PublishHistory is
+	// the explicit override that lets retained third-party history leave the cluster.
+	Atrepo         string   `drisl:"atrepo,omitempty"`
+	NSIDs          []string `drisl:"nsids,omitempty"`
+	Blobs          bool     `drisl:"blobs,omitempty"`
+	Own            bool     `drisl:"own,omitempty"`
+	PublishHistory bool     `drisl:"publish_history,omitempty"`
 }
+
+// Kind of an atrepo head and version.
+const KindAtrepo = "atrepo"
+
+// Account statuses of an atrepo head (Head.Status; "" is active).
+const (
+	AccountDeactivated = "deactivated"
+	AccountTakendown   = "takendown"
+	AccountSuspended   = "suspended"
+	AccountDeleted     = "deleted"
+)
 
 // Follow are a name source's options (docs/follow.md "Follow scopes and quotas").
 type Follow struct {
@@ -312,6 +335,16 @@ func (h *History) Validate() error {
 // MaxWhere bounds a policy's tag filter (tags and values per tag).
 const MaxWhere = 16
 
+// MaxNSIDs bounds an atrepo source's collection scope.
+const MaxNSIDs = 64
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // Validate checks the policy's ranges (a record failing them is ignored).
 func (p Policy) Validate() error {
 	if p.Replicas < 0 || len(p.Where) > MaxWhere || len(p.Spread) > 64 {
@@ -337,7 +370,11 @@ type Head struct {
 	// Observed is the proof a name source's head came from (0045): the publisher's
 	// commit rev and CID, so followers accept only newer revs (docs/follow.md).
 	Observed *Observed `drisl:"observed,omitempty"`
-	HLC      string    `drisl:"hlc"`
+	// Status is an atrepo head's verified account status (0054): "" while active, else
+	// deactivated, takendown, suspended or deleted; updates stop and public serving
+	// of the current state ends while it is set.
+	Status string `drisl:"status,omitempty"`
+	HLC    string `drisl:"hlc"`
 }
 
 // Observed is name-source provenance: the signed commit a target was verified in.
@@ -359,9 +396,12 @@ type Version struct {
 	Bytes        int64  `drisl:"bytes"`
 	NewBytes     int64  `drisl:"newBytes"`
 	RestoredFrom string `drisl:"restoredFrom,omitempty"`
-	Label        string `drisl:"label,omitempty"`
-	Note         string `drisl:"note,omitempty"`
-	HLC          string `drisl:"hlc"`
+	// Observed is external-source provenance (0045 names, 0054 atrepo commits): the
+	// signed commit the version was verified in (identity field).
+	Observed *Observed `drisl:"observed,omitempty"`
+	Label    string    `drisl:"label,omitempty"`
+	Note     string    `drisl:"note,omitempty"`
+	HLC      string    `drisl:"hlc"`
 
 	identity string         // hex SHA-256 of the record without annotations
 	raw      map[string]any // the decoded record (annotation copies keep unknown fields)
@@ -678,8 +718,14 @@ func decodeValue(r *Record, v any) error {
 		if err := drisl.Assign(v, &d); err != nil {
 			return err
 		}
-		if d.Source.Local == (d.Source.Name != "") {
-			return errors.New("a dataset source is local or a name, not both or neither")
+		if srcs := btoi(d.Source.Local) + btoi(d.Source.Name != "") + btoi(d.Source.Atrepo != ""); srcs != 1 {
+			return errors.New("a dataset source is local, a name or an atproto account (atrepo), exactly one")
+		}
+		if a := d.Source.Atrepo; a != "" && (len(a) > MaxNameSource || !strings.HasPrefix(a, "did:") || len(d.Source.NSIDs) > MaxNSIDs) {
+			return errors.New("an atrepo source is a DID with at most 64 nsids")
+		}
+		if (d.Source.Blobs || d.Source.Own || d.Source.PublishHistory || len(d.Source.NSIDs) > 0) && d.Source.Atrepo == "" {
+			return errors.New("nsids, blobs, own and publish_history apply to atrepo sources")
 		}
 		if n := d.Source.Name; n != "" && (len(n) > MaxNameSource || !strings.HasPrefix(n, "at://did:") || !strings.Contains(n, "/io.ipfs.nu.name/")) {
 			return errors.New("a name source is at://<did>/io.ipfs.nu.name/<name>")
@@ -744,8 +790,11 @@ func decodeValue(r *Record, v any) error {
 		if _, err := cid.Parse(h.Target); err != nil {
 			return fmt.Errorf("target: %v", err)
 		}
-		if !oneOf(h.Kind, "tree", "file", "blob") || h.Size < 0 || len(h.Note) > 1024 {
+		if !oneOf(h.Kind, "tree", "file", "blob", KindAtrepo) || h.Size < 0 || len(h.Note) > 1024 {
 			return errors.New("kind, size or note out of range")
+		}
+		if !oneOf(h.Status, "", AccountDeactivated, AccountTakendown, AccountSuspended, AccountDeleted) || (h.Status != "" && h.Kind != KindAtrepo) {
+			return errors.New("status applies to atrepo heads: deactivated, takendown, suspended or deleted")
 		}
 		r.Value = &h
 	case NSConfig:
@@ -776,7 +825,7 @@ func decodeValue(r *Record, v any) error {
 		if _, err := cid.Parse(ver.Root); err != nil {
 			return fmt.Errorf("root: %v", err)
 		}
-		if !oneOf(ver.Kind, "tree", "file", "blob") || ver.Files < 0 || ver.Bytes < 0 || ver.NewBytes < 0 || len(ver.Note) > 1024 {
+		if !oneOf(ver.Kind, "tree", "file", "blob", KindAtrepo) || ver.Files < 0 || ver.Bytes < 0 || ver.NewBytes < 0 || len(ver.Note) > 1024 {
 			return errors.New("kind, sizes or note out of range")
 		}
 		if ver.Label != "" && !ValidLabel(ver.Label) {

@@ -94,7 +94,9 @@ type Heartbeat struct {
 	Reports *ReportDelta `drisl:"reports,omitempty"`
 	// Peers relays connected members' advertised addresses.
 	Peers []PeerAddrs `drisl:"peers,omitempty"`
-	Sig   []byte      `drisl:"sig,omitempty"`
+	// Repair says the sender runs a repair authority (an admin key with repair on, 0048).
+	Repair bool   `drisl:"repair,omitempty"`
+	Sig    []byte `drisl:"sig,omitempty"`
 }
 
 // PeerAddrs is a member's advertised addresses as relayed by another member.

@@ -235,7 +235,10 @@ func (s *Session) race(ctx context.Context) (winner *Conn, err error) {
 					queue = append(queue[:i], queue[i+1:]...)
 					launch(a)
 					recentDirect = true // only one bypass per attempt
-					ready = true
+					// Direct candidates race this cold relay immediately; a second
+					// relay still uses the ordinary short stagger, not a duplicate
+					// simultaneous circuit setup to the same peer.
+					ready = len(queue) > 0 && !IsCircuitAddress(queue[0].Addr)
 					break
 				}
 			}

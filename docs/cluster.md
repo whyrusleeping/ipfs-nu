@@ -722,7 +722,11 @@ Neither mode sends any traffic, even encrypted, through third parties.
   name-plane hosts of its `name` sources and, on members receiving collection pushes, the
   dataset's `ingest.hosts`. CI runs an isolated cluster in network namespaces
   with no default route. A packet capture must show no packets to non-member addresses and no
-  DNS queries for public names.
+  DNS queries for public names. *Implemented (0069):* the daemon of an isolated-cluster
+  member refuses to start when config sets `swarm.relays`, `swarm.portmap_gateway`,
+  `follow.jetstream`, `public.listen`, or `swarm.peers`/`swarm.probe_allow` entries whose
+  peer is not a member; the error names each key. The private-mode variant of the check
+  is not implemented yet (private nodes already run no relays or port mapping).
 - **Clocks:** HLC ordering tolerates skew. Heartbeats measure it, and status warns above
   `clock.warn_skew` (default 30 s).
 

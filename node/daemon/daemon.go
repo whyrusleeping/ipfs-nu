@@ -119,6 +119,10 @@ func Start(ctx context.Context, opts Options) (*Daemon, error) {
 		n.Atproto = atproto.New(*opts.Atproto)
 	}
 	d := &Daemon{Node: n, log: log, lock: lock, errs: make(chan error, 4)}
+	if err := checkIsolated(cfg, n.NetCluster()); err != nil {
+		d.Close()
+		return nil, err
+	}
 	if !opts.NoNetwork {
 		scfg, err := swarm.RepoConfig(opts.Repo, n.Key, n.Store)
 		if err != nil {

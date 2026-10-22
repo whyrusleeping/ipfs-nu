@@ -456,7 +456,10 @@ func (p dhtProviders) Find(ctx context.Context, c cid.CID, found func(fetch.Peer
 	if err := d.Ready(ctx); err != nil {
 		return err
 	}
-	return fetch.Kademlia{DHT: d.svc, Sessions: p.s.sessions}.Find(ctx, c, found)
+	started, n := time.Now(), 0
+	err := fetch.Kademlia{DHT: d.svc, Sessions: p.s.sessions}.Find(ctx, c, func(peer fetch.Peer) { n++; found(peer) })
+	p.s.log.Info("DHT provider lookup", "cid", c, "providers", n, "elapsed", time.Since(started).Round(time.Millisecond), "err", err)
+	return err
 }
 
 // DHTStatus reports the DHT section of the node status.

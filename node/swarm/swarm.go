@@ -417,11 +417,16 @@ func classify(root cid.CID, err error) error {
 	return apiv0.Errorf(apiv0.CodeFailed, "fetching %s failed: %v", root, err)
 }
 
-// connected offers the connected peers as session-backed providers.
+// connected offers the connected peers as session-backed providers (D15 step 4), except
+// peers whose identify snapshot shows they serve no Nu data protocol (Amino routing
+// peers, relays): asking them would only burn request timeouts.
 type connected struct{ s *Swarm }
 
 func (c connected) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) error {
 	for _, id := range c.s.Connected() {
+		if !c.s.servesNuData(ctx, id) {
+			continue
+		}
 		sess, err := c.s.sessions.Get(id)
 		if err != nil {
 			continue
@@ -429,6 +434,31 @@ func (c connected) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) 
 		found(fetch.SessionPeer(sess))
 	}
 	return nil
+}
+
+// servesNuData is true for peers whose identify snapshot advertises a /nu data
+// protocol. A peer connected a moment ago (a LAN neighbour) gets a short wait for its
+// identify; peers that never identify, or identify without Nu protocols, are skipped.
+func (s *Swarm) servesNuData(ctx context.Context, id wire.PeerID) bool {
+	if s.identify == nil {
+		return true
+	}
+	ready := func(info p2pproto.PeerInfo) bool { return len(info.Message.Protocols) > 0 }
+	info, ok := s.identify.Info(id)
+	if !ok || !ready(info) {
+		wait, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		var err error
+		if info, err = s.identify.WaitPeer(wait, id, ready); err != nil {
+			return false
+		}
+	}
+	for _, p := range info.Message.Protocols {
+		if p == proto.BytesID || p == proto.HaveID || p == proto.TreeID {
+			return true
+		}
+	}
+	return false
 }
 
 func persistence(file string) lookup.Persistence {

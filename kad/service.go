@@ -609,16 +609,7 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidates := make([]PeerInfo, 0, len(known))
-		for _, p := range known {
-			if !queried[p.ID] {
-				candidates = append(candidates, p)
-			}
-		}
-		sortPeers(candidates, target)
-		if len(candidates) > Alpha {
-			candidates = candidates[:Alpha]
-		}
+		candidates := unqueriedClosest(known, queried, target)
 		if len(candidates) == 0 {
 			break
 		}
@@ -662,6 +653,30 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 	}
 	return out, errors.Join(errs...)
 }
+
+// unqueriedClosest picks the next Alpha peers to ask: the unqueried ones among the K
+// known peers closest to target. When all of those have been asked the lookup has
+// converged (standard Kademlia termination) and nothing is returned.
+func unqueriedClosest(known map[wire.PeerID]PeerInfo, queried map[wire.PeerID]bool, target []byte) []PeerInfo {
+	all := make([]PeerInfo, 0, len(known))
+	for _, p := range known {
+		all = append(all, p)
+	}
+	sortPeers(all, target)
+	if len(all) > K {
+		all = all[:K]
+	}
+	var out []PeerInfo
+	for _, p := range all {
+		if !queried[p.ID] {
+			out = append(out, p)
+			if len(out) == Alpha {
+				break
+			}
+		}
+	}
+	return out
+}
 func sortPeers(ps []PeerInfo, target []byte) {
 	dst := key(target)
 	sort.Slice(ps, func(i, j int) bool { return closer(key(ps[i].ID.Bytes()), key(ps[j].ID.Bytes()), dst) })
@@ -687,16 +702,10 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidates := make([]PeerInfo, 0, len(known))
-		for _, p := range known {
-			if !queried[p.ID] {
-				candidates = append(candidates, p)
-			}
+		if len(providers) > 0 {
+			break // a fetch wants providers now; the K-closest sweep can stop
 		}
-		sortPeers(candidates, key)
-		if len(candidates) > Alpha {
-			candidates = candidates[:Alpha]
-		}
+		candidates := unqueriedClosest(known, queried, key)
 		if len(candidates) == 0 {
 			break
 		}

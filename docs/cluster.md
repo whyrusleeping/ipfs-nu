@@ -126,7 +126,7 @@ concurrent snapshots subject to explicit retention and content availability.
 |---|---|
 | `genesis` (`self`, root repository) | `name`, `mode` (`public`, `private`, `isolated`, or `local` for the implicit local cluster), `rootKey` (did:key), `createdAt` (datetime). No `hlc`; immutable; the cluster ID is its CID |
 | `key` (`<did:key>`) | `role` (`admin`, `writer`), `revoked?` `{after: <commit link>, rev: <TID>}` |
-| `member` (`<PeerId base58>`) | `roles` ([`storage`\|`client`]), `capacity` (int), `store_limit?`, `tags?` (string map), `addrs?` (≤ 16 multiaddrs), `label?`, `state` |
+| `member` (`<PeerId base58>`) | `roles` ([`storage`\|`client`]), `capacity` (int), `store_limit?`, `tags?` (string map), `addrs?` (≤ 16 multiaddrs), `label?`, `state`, `auto?` (true when a repair authority set `state`, 0048) |
 | `invite` (`<id>`, 16 base32 chars) | `proofKey` (32 bytes, [below](#invites-and-join)), `roles`, `tags?`, `capacity?`, `expires` (datetime) |
 | `dataset` (`<name>`, `[a-z0-9-]{1,64}`) | `source` (`{local: true}`), `policy` (`{replicas, all?: true, where?: {<tag>: [<value>…]}, spread?: <tag>}`, at most 16 `where` tags of 1–16 values; other policy fields above are later work), `writers?` ([did]), `collection?` (`{facets?: {<name>: {ptr, type}}, merge?: "union"\|"lww", expire?: {facet, after}}`, [D22](collections.md#items-and-facets)), `note?` |
 | `head` (`<name>`) | `target` (CID string), `kind` (`tree`, `file`, `blob`), `size?`, `note?` |
@@ -215,7 +215,7 @@ A collection with several writers merges their heads instead of choosing one by 
   Explicit retained snapshots remain obligations. A one-node preset can be ready at its
   explicit one-copy policy, but never implies redundant storage. The evidence and release
   rules are [E1–E10 and S1–S8](operations.md#e-readiness-evidence); `release.auto` is off
-  until 0048's tests pass, so releases are dry-run reports only.
+  by default: `gc --dry-run` reports, an explicit `gc` releases what passes (0048).
 - Without `history`, a dataset tracks current state as names do. Public `nu.name` records
   remain current-state either way; cluster history is served to members, and outside the
   cluster only through `announce` or bundles.
@@ -369,7 +369,8 @@ nu cluster dataset rollback <ds> <v>              # append restored head; existi
   set whose content is still pinned, with the bytes releasing them would free (objects no
   other pin reaches, so content shared with live versions, other datasets or explicit
   pins is reported as shared and kept) and applies only with explicit intent. On a
-  networked cluster it is dry-run only until 0048 (S8). The current head, last ready,
+  networked cluster it applies only once the live set's owners confirm it in a settled
+  epoch (S1–S3, 0048). The current head, last ready,
   held and staged targets and every live root are never pruned.
 - Inside the cluster, any retained version can serve as the `have` root for `/nu/tree/1`
   diffs. For datasets with history, this replaces D19's `retain_structure`.
@@ -478,6 +479,53 @@ over structure and records. Rules and mechanics: [D21](dasl.md#atproto-accounts-
   answer from Bao proofs against the blob CID without holding the blob. Failures are reported;
   with automatic repair, repeated failures mark the member `unavailable`. Audits show that a
   member can supply the data in time, not that it stores the data locally.
+
+**Implemented (0048).**
+
+- **Repair authority:** a daemon holding an admin key with `cluster.repair = "auto"` (the
+  default) is one; its heartbeats carry `repair: true`, and every member counts an
+  authority online when it or a connected member announced one within three heartbeat
+  intervals. Each interval it marks an `active` storage member `{state: unavailable,
+  auto: true}` when no heartbeat arrived for `down_after` (measured from the later of its
+  own start and the last heartbeat, so a restarted authority waits `down_after` first) or
+  when three of its own audit challenges of that member failed in a row, and sets an
+  `auto` record `active` again after `up_after` of continuous heartbeats (a gap over three
+  intervals restarts the count: flap damping). An admin-set `unavailable` is never lifted
+  automatically. Several authorities may write the same record; LWW keeps one. A
+  partitioned authority marks the members it cannot hear (re-placing their blobs on its
+  side), which is transient over-replication, released after healing and settling.
+  Signed-state writes need store headroom: a member whose store is full cannot write
+  member records (finding; state writes have no reserved budget yet).
+- **Release:** per member, in `replica` (`release.go`), as
+  [operations S1–S4](operations.md#s-safe-release) with the readings in the 0048 gate:
+  *version* candidates are unpinned once the head and live set are confirmed `k` times by
+  owners; *surplus* blobs (the head's and live set's held blobs this member does not own;
+  everything for a draining member) are removed from the store under the GC lock, unless
+  a pin other than a placement pin (`cluster`, `dataset/…`) reaches them or another
+  dataset reaching them would not release them. `nu cluster dataset gc <ds> --dry-run`
+  reports the binding, `deferred` reasons, `head_confirmed` and per candidate (surplus
+  grouped by owner set) `ok`, `confirmed` owners and `shortfall` with reasons (`stale`,
+  `absent`, `epoch`, `incomplete`, `member_changed`); `gc` without `--dry-run` releases
+  what passes now; `cluster.release_auto` releases automatically after `remove_grace`.
+  The pin model is unchanged: surplus copies stay protected by the dataset's tree pin
+  (the `cluster-surplus` source is used by collection floor holdings only) until released
+  per blob.
+- **Drain and remove:** `nu cluster member drain <peer>` writes `state: draining`; the
+  member owns nothing, keeps serving, and releases surplus and finally its whole view as
+  owners confirm. `nu cluster member rm <peer> [--dry-run] [--force]` evaluates on the
+  admin: refused (exit `failed`, result in `details`) while the member is an active owner
+  of a cluster holding content, or while any dataset's head/live set lacks `k` confirmed
+  owner copies in the current epoch; `--force` removes and reports `unconfirmed` per
+  dataset with the missing owners.
+- **Audits and scrub:** every `audit_interval` a member challenges each connected storage
+  member once (`/nu/bytes/1` request for one random chunk group of a random blob that
+  member owns in a placed dataset whose structure the challenger holds; BLAKE3 blobs are
+  verified from the Bao slice, SHA-256 objects whole) and scrubs `audit_samples` random
+  held objects of placed datasets (re-hash against the CID; outboards are not
+  re-verified). `nu cluster audit [--peer] [--samples n] [--scrub n | --full]` runs both
+  now. Results appear in cluster status (`audits`, `scrub`, alerts) and never in
+  readiness (E9). A corrupt object is dropped whatever pins reach it, so the member
+  reports incomplete and re-fetches it.
 
 ### Status
 
@@ -612,7 +660,7 @@ request a non-member or non-admin may not make). Requests naming another cluster
   a CARv1: the atproto repo diff from the `since` tree to the head (or to `commit`, for a
   revocation cutoff), or a full export when the server lacks the `since` tree. The client
   verifies it as a `getRepo?since` response against the tree it holds (at most 100k blocks).
-- `heartbeat {hb: {peer, seq, time (Unix ms), free, used, addrs?, sig}}` answers `{status}`; `sig` is the
+- `heartbeat {hb: {peer, seq, time (Unix ms), free, used, addrs?, repair?, sig}}` answers `{status}`; `sig` is the
   member's node-key signature over `"nu.cluster.heartbeat.v1\0" ‖ DRISL(hb without sig)`.
   Members send one to every connected member each interval (30 s).
 - `holdings {dataset, epoch?, since_seq?, snapshot?, after?, limit?}` answers `{status}`
@@ -719,9 +767,12 @@ nu cluster import update.nub [--as <ds>]
 ### Interfaces
 
 ```text
-nu cluster init | invite | join | leave | status
-nu cluster member ls | set <peer> [--capacity --store-limit --tags --state] | drain <peer> | rm <peer>
+nu cluster init | invite [--revoke <id>] | join | leave | status
+nu cluster member ls | set <peer> [--capacity --store-limit --tags --state --label] | drain <peer>
+                 | rm <peer> [--dry-run] [--force]
 nu cluster key new | grant <did> admin|writer [--dataset <ds>] | revoke <did>
+nu cluster audit [--peer <peer>] [--samples n] [--scrub n | --full]
+nu cluster dataset gc <ds> [--dry-run]
 nu cluster dataset create <ds> [--replicas k|all] [--where …] [--spread zone] [--source at://…]
                            [--history daily=30,monthly=12]
 nu cluster dataset add | edit | update | ls | status | rm
@@ -762,9 +813,12 @@ restore before a production recommendation.
   `spread` selection are specified above), rescan benchmarks, per-dataset epochs, and
   whether capacity in bytes is the right weight.
 - Storage cost and invalidation of per-epoch completeness marks.
-- `down_after`/`up_after` defaults, flap damping, and handoff when an owner is `full`.
+- `down_after`/`up_after` defaults (15m/10m are provisional), and handoff when an owner is
+  `full` (an owner paused for storage blocks release of others' surplus indefinitely).
 - Bundle size limits and splitting, and atproto proof verification against a pinned key.
-- Audit rate, deadlines and failure thresholds.
+- Audit rate, deadlines and failure thresholds (provisional: one challenge per member per
+  hour, 30 s deadline, three consecutive failures), and audit evidence shared between
+  members (each authority acts on its own challenges only).
 
 ## References
 

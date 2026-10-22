@@ -3,7 +3,8 @@
 // pins the head, fetches its structure and the blobs it owns in the current placement
 // epoch from members in placement order, checks completeness, and produces the
 // completion reports heartbeats carry. It keeps the protected versions of
-// docs/operations.md S5/S7 pinned and never releases anything (release.auto = false).
+// docs/operations.md S5/S7 pinned and releases only under S1–S4 (release.go): reported
+// by `gc --dry-run`, applied by an explicit `gc` or, with release.auto, automatically.
 package replica
 
 import (
@@ -56,6 +57,11 @@ type Config struct {
 	Interval   time.Duration // 0: DefaultInterval
 	StagingMax int           // 0: DefaultStagingMax
 	Logger     *slog.Logger
+	// Evidence returns other members' reports for a dataset (release evidence, S2); nil:
+	// none, so nothing is ever released by evidence. Release returns the release
+	// settings (nil: release.auto off, defaults). See release.go.
+	Evidence func(name string) map[wire.PeerID]cluster.Evidence
+	Release  func() ReleaseSettings
 }
 
 // Protection is the persisted protection state of one dataset (S5).
@@ -73,6 +79,9 @@ type Protection struct {
 	Versions map[string]string `json:"versions,omitempty"`
 	Complete []string          `json:"complete,omitempty"`
 	Pruned   []string          `json:"pruned,omitempty"`
+	// Releasing records when each surplus blob (CID) first passed S1–S4 (release.auto
+	// drops it dataset.remove_grace later if it still passes).
+	Releasing map[string]int64 `json:"releasing,omitempty"`
 }
 
 // Status is this member's sync state of one dataset.
@@ -118,6 +127,11 @@ type Manager struct {
 	status   map[string]*Status
 	inflight map[string]*fetching
 	fetched  map[string]fetchOutcome
+	// Release and scrub state (release.go, scrub.go), in memory: a restart starts every
+	// settle period afresh (conservative).
+	bound      map[string]boundAt
+	memberSeen map[wire.PeerID]boundAt
+	scrub      *apiv0.ScrubReport
 }
 
 type fetching struct {
@@ -143,7 +157,8 @@ func Open(cfg Config) (*Manager, error) {
 		cfg.Logger = slog.Default()
 	}
 	m := &Manager{cfg: cfg, log: cfg.Logger, kick: make(chan struct{}, 1), state: map[string]*Protection{}, status: map[string]*Status{},
-		inflight: map[string]*fetching{}, fetched: map[string]fetchOutcome{}}
+		inflight: map[string]*fetching{}, fetched: map[string]fetchOutcome{},
+		bound: map[string]boundAt{}, memberSeen: map[wire.PeerID]boundAt{}}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	b, err := os.ReadFile(filepath.Join(cfg.Dir, stateFile))
 	if err == nil {
@@ -239,6 +254,7 @@ func (m *Manager) Reconcile() {
 	m.rmu.Lock()
 	defer m.rmu.Unlock()
 	v := m.cfg.Cluster.View()
+	m.noteMembers(v)
 	changed := false
 	names := map[string]bool{}
 	for name, sd := range v.Datasets {
@@ -260,6 +276,9 @@ func (m *Manager) Reconcile() {
 	m.mu.Unlock()
 	if changed && m.cfg.Changed != nil {
 		m.cfg.Changed()
+	}
+	if m.settings().Auto {
+		m.releasePass(v, "", false)
 	}
 }
 
@@ -682,6 +701,7 @@ type checkResult struct {
 	structMissing  int
 	allHeld        bool
 	blobs          []cid.Multihash
+	held           map[cid.Multihash]int64 // held blobs with their sizes
 	err            error
 }
 
@@ -693,7 +713,7 @@ func (c checkResult) complete() bool {
 // be held, and every blob this member owns (all blobs when full). It also collects the
 // blobs. Under atrepo profiles records are leaves and blobs are not walked.
 func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full bool, profile string) checkResult {
-	res := checkResult{allHeld: true}
+	res := checkResult{allHeld: true, held: map[cid.Multihash]int64{}}
 	links := fetch.Links
 	if strings.HasPrefix(profile, "atrepo") {
 		links = func(c cid.CID, data []byte) ([]fetch.Link, error) {
@@ -729,6 +749,9 @@ func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full
 		if it.c.Codec() == cid.Raw {
 			res.blobs = append(res.blobs, mh)
 			res.allHeld = res.allHeld && held
+			if held {
+				res.held[mh] = int64(info.Size)
+			}
 			if !full && !pl.Owns(m.cfg.Self, mh) {
 				continue
 			}
@@ -836,6 +859,7 @@ func (p *Protection) clone() Protection {
 	st.Versions = maps.Clone(p.Versions)
 	st.Complete = slices.Clone(p.Complete)
 	st.Pruned = slices.Clone(p.Pruned)
+	st.Releasing = maps.Clone(p.Releasing)
 	return st
 }
 

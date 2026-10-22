@@ -32,7 +32,7 @@ type ClusterNode interface {
 	ClusterInvite(ctx context.Context, req apiv0.ClusterInviteRequest) (*apiv0.ClusterInvite, error)
 	ClusterJoin(ctx context.Context, req apiv0.ClusterJoinRequest) (*apiv0.ClusterInfo, error)
 	ClusterStatus(ctx context.Context) (*apiv0.ClusterStatus, error)
-	ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MetadataState, error)
+	ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MemberRemoval, error)
 	DatasetCreate(ctx context.Context, scope string, req apiv0.DatasetCreateRequest) (*apiv0.Dataset, error)
 	Datasets(ctx context.Context, scope string) ([]apiv0.Dataset, error)
 	Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset, error)
@@ -67,6 +67,10 @@ type clusterState struct {
 	// gated mirrors net for the connection gate, which must not take mu (the host
 	// rechecks connections while cluster operations hold it).
 	gated atomic.Pointer[cluster.Cluster]
+	// Repair, release and audit settings and state (repair.go).
+	settings    atomic.Pointer[ClusterSettings]
+	audits      auditBook
+	auditCancel context.CancelFunc
 }
 
 func (cs *clusterState) setNet(c *cluster.Cluster) {
@@ -195,7 +199,7 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 		return err
 	}
 	svc, err := cluster.StartService(cluster.ServiceConfig{Cluster: c, Host: cs.sw.Host(), Key: n.Key, Connect: cs.sw.Connect, Addrs: cs.sw.Addrs,
-		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks, Reports: n.reportsOf(c, m)})
+		Usage: n.usage, Interval: ClusterInterval, Holdings: m.Holdings, HoldingsMarks: m.HoldingsMarks, Reports: n.reportsOf(c, m), Repair: n.repairConfig})
 	if err != nil {
 		return err
 	}
@@ -203,6 +207,9 @@ func (n *Local) startServiceLocked(c *cluster.Cluster) error {
 	cs.svcPtr.Store(svc)
 	m.Start()
 	n.startReplica(c)
+	actx, cancel := context.WithCancel(context.Background())
+	cs.auditCancel = cancel
+	go n.auditLoop(actx, c)
 	return nil
 }
 
@@ -220,6 +227,10 @@ func (n *Local) closeClusters() {
 	cs.mu.Lock()
 	svc, coll := cs.svc, cs.coll
 	cs.svc, cs.sw, cs.coll = nil, nil, nil
+	if cs.auditCancel != nil {
+		cs.auditCancel()
+		cs.auditCancel = nil
+	}
 	cs.svcPtr.Store(nil)
 	cs.collPtr.Store(nil)
 	cs.mu.Unlock()
@@ -496,32 +507,6 @@ func (n *Local) ClusterStatus(ctx context.Context) (*apiv0.ClusterStatus, error)
 	return out, nil
 }
 
-func (n *Local) ClusterMemberRemove(ctx context.Context, req apiv0.ClusterMemberRemoveRequest) (*apiv0.MetadataState, error) {
-	c, err := n.netCluster()
-	if err != nil {
-		return nil, err
-	}
-	if c == nil {
-		return nil, noCluster()
-	}
-	id, err := wire.ParsePeerID(req.Peer)
-	if err != nil {
-		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "bad PeerId %q: %v", req.Peer, err)
-	}
-	m, ok := c.View().Members[id]
-	if !ok || m.Deleted {
-		return nil, apiv0.Errorf(apiv0.CodeNotFound, "%s is not a member", id.Base36())
-	}
-	rec := *m.Value
-	rec.State = cluster.StateRemoved
-	w, err := c.Write(cluster.Op{Collection: cluster.NSMember, RKey: id.String(), Value: &rec})
-	if err != nil {
-		return nil, writeErr(err)
-	}
-	md := n.ack(ctx, c, w)
-	return &md, nil
-}
-
 // ack reports which storage members hold a write's commit, waiting briefly for one.
 func (n *Local) ack(ctx context.Context, c *cluster.Cluster, w *cluster.Written) apiv0.MetadataState {
 	md := apiv0.MetadataState{Signer: w.DID, Commit: w.Commit.String(), Rev: w.Rev, Required: 1, AckedBy: []string{}}
@@ -561,7 +546,7 @@ func (n *Local) infoLocked(c *cluster.Cluster, svc *cluster.Service) *apiv0.Clus
 		if m.Deleted {
 			continue
 		}
-		mi := apiv0.MemberInfo{Peer: id.Base36(), Roles: m.Value.Roles, State: m.Value.State, Tags: m.Value.Tags, Addrs: m.Value.Addrs, Self: id == self}
+		mi := n.memberInfo(c, id)
 		if svc != nil {
 			mi.Connected = id == self || svc.Connected(id)
 		}
@@ -598,6 +583,13 @@ func (n *Local) infoLocked(c *cluster.Cluster, svc *cluster.Service) *apiv0.Clus
 	}
 	if !info.Member && c.Mode() != cluster.ModeLocal {
 		info.Warnings = append(info.Warnings, "this node has no member record (yet): it is joining, or it was removed")
+	}
+	if c.Mode() != cluster.ModeLocal {
+		info.Repair, info.Audits = n.repairInfo(svc), n.auditPeers()
+		if m := n.replicaFor(c); m != nil {
+			info.Scrub = m.LastScrub()
+		}
+		info.Alerts = n.clusterAlerts(c, svc, info)
 	}
 	return info
 }
@@ -763,6 +755,11 @@ func (n *Local) Dataset(ctx context.Context, scope, name string) (*apiv0.Dataset
 		return nil, apiv0.Errorf(apiv0.CodeNotFound, "no dataset %q in the %s cluster", name, scope).
 			WithAction("list datasets with `" + nu.Name + " dataset ls` or `" + nu.Name + " cluster dataset ls`")
 	}
+	if m := n.replicaFor(c); m != nil && c.Mode() == cluster.ModeLocal {
+		if _, ok := m.Status(name); !ok {
+			m.Reconcile() // a daemonless command: this node's own sync state is its evidence
+		}
+	}
 	return n.datasetInfo(c, name), nil
 }
 
@@ -810,6 +807,13 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 	if h, ok := v.Head(name); ok {
 		out.Head = new(apiv0.DatasetHead)
 		*out.Head = datasetHead(h.Value, h.Signer, h.HLC.String())
+		if d.Value == nil || d.Value.Collection == nil {
+			for _, o := range out.Heads {
+				if o.Target != h.Value.Target {
+					out.Displaced = append(out.Displaced, o)
+				}
+			}
+		}
 		t, err := cid.Parse(h.Value.Target)
 		if d.Value != nil && d.Value.Collection != nil {
 			// Collection readiness binds to the merged catalog root (floor placement).

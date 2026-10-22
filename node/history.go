@@ -567,8 +567,18 @@ func (n *Local) DatasetPrune(ctx context.Context, scope, name string, req apiv0.
 		m.Reconcile()
 	}
 	if !req.DryRun && hs.c.Mode() != cluster.ModeLocal {
-		return nil, apiv0.Errorf(apiv0.CodeNotSupported, "pruning a networked cluster's archive is dry-run only until safe release ships (release.auto, 0048)").
-			WithAction("run with --dry-run to see the impact")
+		// S1–S3: versions outside the live set leave only once owners confirm the live set
+		// k times in the current, settled epoch.
+		rr, ok := m.ReleaseReport(name, true)
+		if !ok || !rr.HeadConfirmed || len(rr.Deferred) > 0 {
+			var why []string
+			why = append(why, rr.Deferred...)
+			for _, s := range rr.HeadShortfall {
+				why = append(why, "owner "+s.Peer+": "+s.Reason)
+			}
+			return nil, apiv0.Errorf(apiv0.CodeFailed, "the live set is not confirmed by its owners in a settled epoch yet: %s", strings.Join(why, "; ")).
+				WithDetail("release", rr).WithAction("wait until `" + nu.Name + " cluster dataset gc " + name + " --dry-run` shows head_confirmed and nothing deferred")
+		}
 	}
 	prot := m.Protected(name)
 	liveRoots := map[string]bool{}

@@ -147,6 +147,11 @@ all 64 bits; tags, lengths and multiformats integers use `core/varint`'s 63-bit 
 
 Use one stock quic-go Transport per UDP socket, at most one socket per IP family;
 pass pluggable PacketConns directly through to preserve their OOB capabilities.
+UDP GSO (`[swarm] gso = "auto"|"on"|"off"`, default `auto`) stays on only when the
+default-route NIC offloads UDP segmentation (ethtool `tx-udp-segmentation`). quic-go
+otherwise uses kernel software segmentation whenever it exists, which halved
+single-connection throughput on NICs without the offload ([LAN benchmarks](validation.md#lan-benchmarks-add-11-and-21-get-2026-10-22)).
+An explicit `QUIC_GO_DISABLE_GSO` wins; the choice is process-wide and logged at start.
 Only QUIC-v1 is enabled; unidirectional streams, 0-RTT and TLS session resumption
 are disabled. The ALPN is `libp2p`, TLS minimum version 1.3. Certificates carry
 OID `1.3.6.1.4.1.53594.1.1` with DER SignedKey (two OCTET STRINGs: key protobuf,

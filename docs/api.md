@@ -37,7 +37,8 @@ K/M/G/T/P suffix or a bare byte count). The daemon refuses non-loopback API/gate
 listeners until authentication exists. `[public]` (off by default) configures the
 [public listener](#public-listener-0043). Relay options in `[swarm]` (`relays`,
 `peer_relay_allow`, `relay_datagram = "off"|"on"`, default off) are documented in
-[networking D10/D11c](networking.md#v0-swarm-connectivity-configuration); `nu status`
+[networking D10/D11c](networking.md#v0-swarm-connectivity-configuration); `swarm.gso =
+"auto"|"on"|"off"` (UDP segmentation offload, default auto) in [direct QUIC host](networking.md#direct-quic-host); `nu status`
 shows a relayed peer's `relay_mode` (`stream`/`datagram`) and `relay_choice`.
 
 ## Error envelope and exit categories

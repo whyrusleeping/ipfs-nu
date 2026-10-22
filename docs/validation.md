@@ -2085,6 +2085,35 @@ at 0.3/0.6/0.9 s, then a re-add (whose import cache trusts only held blobs), and
 killed at 0.5/1.0 s and then resumed. Fresh recipients fetched byte-identical trees in both
 cases.
 
+**Single-connection ceiling (0085).** `perf` on both ends of a 10 GiB 1:1 get showed neither
+side CPU-bound: about one core of 24 per side, with the sender's `quic-go (*Conn).run` busy
+~10 s of the 31 s fetch. Receiver-side changes made no difference (346–349 MB/s): 16 instead
+of 4 range requests in flight per peer, or 8× larger stream/connection receive windows.
+A minimal plain quic-go v0.64.1 tool (one connection, 1 or 4 streams, Nu's or default
+windows) reached the same ~360 MB/s alphac-2→alphac-3, and parallel connections from one
+sender shared it. The cause is the sender's UDP GSO. alphac-1/2 have Realtek r8169 10 GbE
+NICs without UDP segmentation offload (`tx-udp-segmentation: off [fixed]`), so the kernel
+segments quic-go's GSO batches in software:
+
+| Plain quic-go, one connection | GSO on (quic-go default) | `QUIC_GO_DISABLE_GSO=true` |
+|---|---|---|
+| alphac-2 (r8169, no offload) → alphac-3 | 357 MB/s | **682 MB/s** |
+| alphac-3 (Intel E810 `ice`, offload on) → alphac-2 | **1025 MB/s** | 715 MB/s |
+
+Nu now sets GSO per process from the default-route NIC's offload (`swarm.gso = "auto"`,
+[direct QUIC host](networking.md#direct-quic-host)). On these hosts it disables GSO on
+alphac-1/2 and keeps it on alphac-3. Same benchmark, `auto`:
+
+| Measurement | Before | After |
+|---|---|---|
+| `get` big 1:1 fetch | 321–348 MB/s | **555–566 MB/s** (one run 447) |
+| `get` big 2:1 fetch | 666–677 MB/s | **872–921 MB/s** |
+| `get` tree 1:1 / 2:1 total | 18.6–18.8 s / 11.6–12.3 s | 17.7–18.7 s / 9.9–10.3 s |
+
+Nu's 1:1 is ~82% of plain quic-go without GSO on the same path. The rest is Nu's
+request/verify/store pipeline: about 1 GB/s of a single connection needs a NIC with UDP
+segmentation offload on the sender.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

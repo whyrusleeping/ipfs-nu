@@ -338,6 +338,29 @@ type peer struct {
 	bad                bool // dropped (corrupt) or failing; guarded by swarm.mu
 	fails              int
 	connectionFailures map[*host.Conn]bool // bounded by maxFails; guarded by swarm.mu
+	// slots bounds this fetch's concurrent /nu/bytes requests to the peer at the server's
+	// default per-peer limit, shared by small-blob and range requests, so a fetch does
+	// not make the peer refuse it as busy (0084).
+	slots chan struct{}
+}
+
+// acquire takes one of p's request slots, waiting for one to free up.
+func (p *peer) acquire(ctx context.Context) error {
+	if p.slots == nil {
+		return nil
+	}
+	select {
+	case p.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *peer) release() {
+	if p.slots != nil {
+		<-p.slots
+	}
 }
 
 // maxFails is how many transport failures make a peer unusable for the rest of a fetch.
@@ -347,7 +370,7 @@ func (s *swarm) add(p Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.index[p.ID()] == nil {
-		pp := &peer{Peer: p}
+		pp := &peer{Peer: p, slots: make(chan struct{}, proto.DefaultMaxPeerRequests)}
 		s.index[p.ID()] = pp
 		s.peers = append(s.peers, pp)
 		s.gen++
@@ -405,8 +428,8 @@ func (s *swarm) report(ctx context.Context, p *peer, err error) bool {
 	case errors.Is(err, proto.ErrCorrupt):
 		s.drop(p, err)
 		return true
-	case errors.Is(err, proto.ErrNotFound), errors.Is(err, proto.ErrNotHeld):
-		return false
+	case errors.Is(err, proto.ErrNotFound), errors.Is(err, proto.ErrNotHeld), errors.Is(err, proto.ErrBusy):
+		return false // refusals; busy is load (other clients), not a failing peer
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -435,6 +458,11 @@ func (r *run) timeout(ctx context.Context) (context.Context, context.CancelFunc)
 
 // whole fetches one whole object from the first live peer that has it, racing the HTTPS
 // source (if any) alongside the peers.
+// oneRequest is the largest blob of known size fetched whole, in one request to one peer
+// (0084): one range request's worth. Spreading such blobs over peers beats splitting each,
+// and it skips the have round trip and the partial blob.
+func (r *run) oneRequest() uint64 { return uint64(r.f.cfg.ChunkGroups) * blob.GroupSize }
+
 func (r *run) whole(ctx context.Context, c cid.CID) error {
 	return r.wholeSized(ctx, c, 0)
 }
@@ -465,23 +493,41 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 	peers = r.ranked(c, peers)
 	var errs []error
 	won := false
-	for _, p := range peers {
-		if !r.sw.usable(p) {
-			continue
+	// A peer busy with other clients is asked again after a short wait, while only busy
+	// refusals stand between this fetch and the object.
+	for wait := 10 * time.Millisecond; ; wait = min(2*wait, time.Second) {
+		errs = errs[:0]
+		busy := false
+		for _, p := range peers {
+			if !r.sw.usable(p) {
+				continue
+			}
+			if err := p.acquire(ctx); err != nil {
+				break
+			}
+			rctx, rcancel := r.timeout(ctx)
+			err := proto.FetchWhole(rctx, p.Open, r.st, c)
+			rcancel()
+			p.release()
+			if err == nil {
+				won = true
+				cancel() // the source can stop
+				break
+			}
+			if ctx.Err() != nil {
+				break // cancelled, or the source won
+			}
+			r.sw.report(ctx, p, err)
+			busy = busy || errors.Is(err, proto.ErrBusy)
+			errs = append(errs, fmt.Errorf("%s: %w", p.ID(), err))
 		}
-		rctx, rcancel := r.timeout(ctx)
-		err := proto.FetchWhole(rctx, p.Open, r.st, c)
-		rcancel()
-		if err == nil {
-			won = true
-			cancel() // the source can stop
+		if won || !busy || ctx.Err() != nil || slices.ContainsFunc(errs, func(e error) bool { return !errors.Is(e, proto.ErrBusy) }) {
 			break
 		}
-		if ctx.Err() != nil {
-			break // cancelled, or the source won
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
 		}
-		r.sw.report(ctx, p, err)
-		errs = append(errs, fmt.Errorf("%s: %w", p.ID(), err))
 	}
 	if srcErr != nil {
 		if err := <-srcErr; err == nil {
@@ -495,6 +541,9 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 	}
 	if err := parent.Err(); err != nil {
 		return err
+	}
+	if len(errs) == 0 {
+		return fmt.Errorf("%w: %s: no usable peer", ErrNoProvider, c)
 	}
 	return fmt.Errorf("%w: %s: %w", ErrNoProvider, c, errors.Join(errs...))
 }
@@ -614,10 +663,11 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		return nil
 	}
 	r.stage(StageBlobs)
-	// Large blobs each use every peer; small ones are one request each.
+	// Large blobs each use every peer; small ones (at most one range request) are one
+	// request each and run 16× wider, which also lets their commit fsyncs share flushes.
 	var small, large []blobRef
 	for _, b := range blobs {
-		if b.c.Hash() == cid.BLAKE3 && (b.size == 0 || blob.HasOutboard(b.size)) {
+		if b.c.Hash() == cid.BLAKE3 && (b.size == 0 || b.size > r.oneRequest()) {
 			large = append(large, b)
 		} else {
 			small = append(small, b)

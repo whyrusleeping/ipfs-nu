@@ -17,11 +17,16 @@ import (
 	"github.com/whyrusleeping/nu/store"
 )
 
+// DefaultMaxPeerRequests is a server's default concurrent request limit per peer and
+// protocol. Fetchers keep their own requests to one peer within it (0084).
+const DefaultMaxPeerRequests = 16
+
 // ServerConfig bounds the data protocol servers. Zero values select the defaults.
 type ServerConfig struct {
 	// MaxRequests is the concurrent request limit per protocol (default 64).
 	MaxRequests int
-	// MaxPeerRequests is the concurrent request limit per peer and protocol (default 16).
+	// MaxPeerRequests is the concurrent request limit per peer and protocol
+	// (DefaultMaxPeerRequests).
 	MaxPeerRequests int
 	// RequestTimeout bounds reading the request (default 10s).
 	RequestTimeout time.Duration
@@ -64,7 +69,7 @@ func NewServer(st *store.Store, cfg ServerConfig) *Server {
 		cfg.MaxRequests = 64
 	}
 	if cfg.MaxPeerRequests <= 0 {
-		cfg.MaxPeerRequests = 16
+		cfg.MaxPeerRequests = DefaultMaxPeerRequests
 	}
 	if cfg.RequestTimeout <= 0 {
 		cfg.RequestTimeout = 10 * time.Second

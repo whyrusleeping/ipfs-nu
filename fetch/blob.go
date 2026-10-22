@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/whyrusleeping/nu/core/blob"
 	"github.com/whyrusleeping/nu/core/cid"
@@ -24,7 +25,7 @@ func (r *run) blob(ctx context.Context, c cid.CID, size uint64) error {
 		r.update(func(p *Progress) { p.Bytes += int64(info.Size) })
 		return nil
 	}
-	if c.Hash() != cid.BLAKE3 || (size > 0 && !blob.HasOutboard(size)) {
+	if c.Hash() != cid.BLAKE3 || (size > 0 && size <= r.oneRequest()) {
 		if err := r.wholeSized(ctx, c, size); err != nil {
 			return err
 		}
@@ -228,9 +229,13 @@ func (r *run) largeBlob(ctx context.Context, c cid.CID, size uint64) error {
 		if err != nil {
 			return err
 		}
+		if err := prover.acquire(ctx); err != nil {
+			return errors.Join(err, part.Close())
+		}
 		rctx, cancel := r.timeout(ctx)
 		err = proto.FetchRanges(rctx, prover.Open, part, []blob.Range{last})
 		cancel()
+		prover.release()
 		if cerr := part.Close(); err == nil {
 			err = cerr
 		}
@@ -411,7 +416,10 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 
 			var err error
 			if need := missingIn(part, c.r); len(need) > 0 {
-				err = proto.FetchRanges(cctx, p.Open, part, need)
+				if err = p.acquire(cctx); err == nil {
+					err = proto.FetchRanges(cctx, p.Open, part, need)
+					p.release()
+				}
 			}
 			lost := cctx.Err() != nil && ctx.Err() == nil // cancelled because another copy won
 			cancel()
@@ -435,6 +443,13 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 			}
 			s.cond.Broadcast()
 			s.mu.Unlock()
+			if errors.Is(err, proto.ErrBusy) {
+				// The peer is loaded by other clients; give it a moment before retrying.
+				select {
+				case <-time.After(20 * time.Millisecond):
+				case <-ctx.Done():
+				}
+			}
 			if won {
 				r.update(func(pr *Progress) { pr.Bytes += c.bytes })
 				if err := flush(c.bytes); err != nil {

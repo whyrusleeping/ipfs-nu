@@ -858,9 +858,15 @@ retry after 1 minute. Observers come from the owner. `nu relay --netcheck <ip:po
 [--netcheck-alt-port <port>] [--netcheck-alt-ip <ip>]` serves them (literal IPs, one set
 per family; not yet a `[relay]` config key). A public-mode daemon profiles against its
 connected configured relays that serve `/nu/netcheck/1`, registers `Monitor.Hook` at the
-`RestartProbing` stage, serves `/nu/natprofile/1` and exposes `Swarm.NATProfile()` for
-status/`nu doctor`; private/isolated mode starts none of this. Public Nu peers running
-observers and disco's use of remote profiles are not wired yet.
+`RestartProbing` stage and serves `/nu/natprofile/1`. `Swarm.NATProfile()` exposes
+the typed report; the default `swarm.Config.NAT` adapter uses it for status/`nu doctor`
+with `source: netcheck`, RFC 4787 mapping/filtering names, observer count and the
+full measured profile in `detail` (including allocation and lifetime bounds).
+Before the first report or without netcheck observers, diagnostics fall back to the
+explicitly labelled identify estimate (`source: observations`). An explicit
+`Config.NAT` overrides the default; returning nil still requests that fallback.
+Private/isolated mode starts none of this. Public Nu peers running observers and
+disco's use of remote profiles are not wired yet.
 
 **Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
 
@@ -1016,6 +1022,16 @@ After the pipeline's address push, physical peers (relays) are re-identified so 
 reflexive candidate follows the new path, and a peer that receives a new candidate
 generation re-probes its selected direct path immediately instead of at the next
 heartbeat.
+
+Measured daemon behavior (0029, post-0024): a 512 MiB relayed `nu get` survives
+recipient-only, provider-only and simultaneous interface/subnet/WAN changes from
+cone networks to APDM/APDF hotspots without daemon restart or CLI retry. Progress
+remains monotonic and the final size/SHA-256 matches. This uses the ordinary
+wildcard UDP socket, which remains bound while the kernel selects the new route;
+it does **not** demonstrate physical socket replacement or inner QUIC identity
+preservation. `physical_rebind=false` and the pipeline's rebind warning remain
+accurate for explicitly bound addresses that disappear. See the 0029 results in
+[validation](validation.md#first-magic-preview-automated-nat-lab-exit-0029-2026-10-22).
 
 `p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
 before returning. Events are bounded, coalesced invalidations: consumers re-read OS

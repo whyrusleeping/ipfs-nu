@@ -83,8 +83,8 @@ type Config struct {
 	PortMapping *portmap.Config
 	// DHT configures Amino participation and the public lookup sources (dht.go).
 	DHT DHTConfig
-	// NAT, when set, supplies the NAT profile for `nu doctor`; nil estimates it from
-	// identify observations (see NATProfiler).
+	// NAT overrides the profile for status/doctor. Nil uses the built-in netcheck
+	// monitor, falling back to identify observations until a report is available.
 	NAT NATProfiler
 }
 
@@ -129,6 +129,9 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		cfg.AllowPeer = func(id wire.PeerID) bool { return members[id] && (gate == nil || gate(id)) }
 	}
 	s := &Swarm{cfg: cfg, log: log, metrics: newNetMetrics()}
+	if s.cfg.NAT == nil {
+		s.cfg.NAT = netcheckNATProfiler{s}
+	}
 	bg, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	ok := false

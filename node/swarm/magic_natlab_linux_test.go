@@ -20,14 +20,12 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
-	"github.com/whyrusleeping/nu/core/blob"
 	"github.com/whyrusleeping/nu/node/link"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/nutest/slow"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/natlab"
 	"github.com/whyrusleeping/nu/p2p/wire"
-	"github.com/whyrusleeping/nu/store"
 )
 
 // TestMagicPreview is the automated part of 0029, not real-network or usability
@@ -320,58 +318,8 @@ func magicCase(t *testing.T, bin string, size int64, mapping natlab.Mapping) {
 			t.Logf("Wi-Fi -> hotspot at %d verified bytes; old path %+v", retained, before)
 		}
 	})
-	retried := false
-	if err != nil && changed {
-		t.Logf("SCENARIO 3 limitation: live get did not survive network change: %v", err)
-		processes[1].stop()
-		// Inspect durable verified ranges with the daemon stopped. This is not
-		// a second writer, nor a fixture injecting a synthetic partial.
-		st, e := store.Open(dirs[1], store.Options{})
-		labCheck(t, e)
-		partial, e := st.OpenPartial(shared.CID.Multihash())
-		labCheck(t, e)
-		var held int64
-		for _, r := range partial.Held() {
-			held += int64(min(r.End*blob.GroupSize, uint64(size)) - r.Start*blob.GroupSize)
-		}
-		labCheck(t, partial.Close())
-		labCheck(t, st.Close())
-		if held < retained {
-			t.Fatalf("lost verified progress on restart: held=%d before=%d", held, retained)
-		}
-		// A recipient-only restart failed in initial smoke runs. Explicitly
-		// exercise durable resumption, not transparent migration: both
-		// endpoint daemons are restarted, with the recipient on the new network.
-		processes[0].stop()
-		processes[0] = labStart(t, ns[0], bin, dirs[0], "daemon")
-		processes[1] = labStart(t, ns[1], bin, dirs[1], "daemon")
-		ready(0)
-		ready(1)
-		t.Log("SCENARIO 3 workaround: restarting both endpoint daemons before CLI retry")
-		magicDisk(t, work)
-		first := true
-		err = magicGet(t, ns[1], bin, dirs[1], output, shared.String(), func(done int64) {
-			// Fetch emits an initial zero before it opens the durable partial.
-			if first && done == 0 {
-				return
-			}
-			if first {
-				if done < held {
-					t.Fatalf("resume restarted at %d, below durable %d", done, held)
-				}
-				t.Logf("SCENARIO 3: durable verified bytes=%d; retry first progress=%d", held, done)
-				first = false
-			}
-			last = done
-		})
-		if err != nil {
-			t.Fatal("resume failed: ", err)
-		}
-		if first {
-			t.Fatal("resume did not emit verified progress")
-		}
-		retried = true
-	}
+	// Scenario 3 is a live-recovery gate now: no daemon restart or CLI retry
+	// may turn a failed movement into a passing full preview run.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +339,7 @@ func magicCase(t *testing.T, bin string, size int64, mapping natlab.Mapping) {
 		}
 		// last_connected is a connection-acquisition timestamp, not an inner QUIC ID.
 		// Do not infer inner connection survival from transparent transfer completion.
-		t.Logf("SCENARIO 3: preserved >=%d verified bytes; daemon/get retry=%t; inner connection survived=false when retry=true, otherwise unmeasured (status timestamps before=%s after=%s)", retained, retried, before.LastConnected, path.LastConnected)
+		t.Logf("SCENARIO 3: preserved >=%d verified bytes; no daemon/get retry; inner connection survival unmeasured (status timestamps before=%s after=%s)", retained, before.LastConnected, path.LastConnected)
 	}
 	if output != bigOutput {
 		labCheck(t, os.Remove(output))

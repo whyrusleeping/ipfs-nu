@@ -10,10 +10,11 @@ negative results.
 
 ## First magic preview: automated NAT-lab exit (0029, 2026-10-22)
 
-**Automated data/interop checks pass, with an important network-change limitation:
-verified progress resumes after restarting both endpoint daemons, but the live
-inner connection did not survive. Real-network and fresh-user demonstrations are
-still pending; this is not a declaration that the entire preview gate is met.**
+**Automated data/interop checks pass. The original network-change failure is now
+resolved in a focused 512 MiB rerun: recipient-only, provider-only and simultaneous
+interface/subnet switches complete without daemon restart or CLI retry. Inner QUIC
+connection preservation was not measured. Real-network and fresh-user demonstrations
+remain pending; this is not a declaration that the entire preview gate is met.**
 
 Implementation: `node/swarm/magic_natlab_linux_test.go`,
 `scripts/magic-preview.sh`, and `interop/run.py --daemon`. Recorded against
@@ -96,7 +97,7 @@ Docker build/source caches remain; no shared-machine global cache prune was run.
 | 1: cone ↔ symmetric, same full file | **PASS**, 10,000,000,000 bytes, 11m36.762s; relay fallback, same SHA-256 |
 | 1: 10k-file tree on both topologies | **PASS**, 100 directories × 100 distinct files, every output path/content compared; cone/cone 1m46.732s, cone/symmetric 28.398s |
 | 2: 10 GB from three peers in one CLI get | **PASS**, 5m41.704s; all three providers sent >1 MiB in the same sampled 64 MiB-progress interval; sampled wire byte counters 3,619,618,824 / 3,599,984,054 / 3,626,141,021; final digest matched |
-| 3: Wi-Fi → hotspot, separate 512 MiB transfer | **PASS for durable progress/resumption with manual daemon/get retry; FAIL for seamless recovery / inner-connection preservation**. Changed at 135,282,688 verified bytes. Live get exited `unavailable`; after restarting both endpoints, persisted verified ranges totaled 138,018,816 bytes and first positive retry progress was 140,525,568. Completion size/digest verified. |
+| 3: Wi-Fi → hotspot, separate 512 MiB transfer | **PASS on post-0024 rerun** (`fe2a651` + focused movement test): recipient-only switch at 136,331,264 verified bytes, completion 7.641 s later; provider-only at 135,282,688, 7.658 s later; both at 134,234,112, 7.967 s later. Each single CLI get completed 536,870,912 bytes without daemon restart or caller retry; monotonic verified progress and independent SHA-256 matched. Inner connection preservation unmeasured. |
 | 4: same-file/same-CID | **PASS**, two real nodes independently add identical 10 GB bytes to the same blob CID; separately add same-named `same.txt` bytes/inferred MIME to identical file-node CIDs |
 | 5: full-daemon wire sanity | **PASS**, Go/Rust/JS QUIC transport in both directions (6/6), plus Kubo v0.40.0 authenticated connect/identify/libp2p ping |
 
@@ -106,17 +107,23 @@ Blob CID: `bafkr4ibtidh7tnhzpqmko2g6wtc2q4zxpk62wm7tpkba4yivdgll6zgitq`.
 File-node CID: `bafyreid2ydjvcufa3t4hds3ojj5achuh5zlxzaqxswwr7v6ikrrj2conwe`.
 Tree CID: `bafyreicozbnv4eipriooariqyjpirmaohdctgjez3iwvz7j734aaoumjay`.
 
-Failures are not waived silently: several 256 MiB smoke iterations found that
-changing the interface/subnet loses the active transfer. A recipient-only restart
-also failed to resume in those iterations; restarting **both** endpoints recovered
-it without deleting the partial. The automated test explicitly logs this fallback
-and inspects durable held ranges with the receiver stopped before retrying. The
-initial progress callback can emit zero before opening the partial; the check
-uses the first positive verified-byte sample. This proves no loss of verified
-progress, not automatic migration or a satisfactory final network-change UX.
-The existing `physical_rebind=false` / socket-replacement limitation remains.
-A dedicated connection-preservation fix/measurement is still needed; this task
-does not alter the in-flux fetch/proto/store implementation.
+History: the original full run lost the live get at the interface/subnet switch;
+restarting both endpoints resumed durable verified ranges. After 0024's transient
+send-error handling and network-change fixes, `TestMagicPreviewMovement` repeats
+the same 512 MiB fixture independently (93.172 s total), including provider-only
+and simultaneous movement. Each endpoint changes from its cone router to a separate
+APDM/APDF hotspot, disables `eth0`, enables `eth1`, and replaces the default route;
+no probe grants or non-relay laptop configuration are added. All three pass with
+SHA-256 `58194481f28b2d98de6d46cb93f93c96245ca007ed3323bbc7ae986294b88a44`.
+Reproduce with `NU_SLOW=1 go test -tags natlab ./node/swarm -run
+'^TestMagicPreviewMovement$' -v -count=1 -timeout=16m`. This focused rerun does not
+repeat the 10 GB/tree/interop results above. The full preview test no longer accepts
+a daemon/get restart workaround as success. `physical_rebind=false` still truthfully
+reports that physical socket replacement is not implemented: the default wildcard
+socket survives these route/interface changes. Explicit-address socket loss and
+inner connection identity preservation remain unmeasured. The focused movement
+rerun and gofmt, `go vet ./...`, `staticcheck ./...`, `go test ./...`, depguard
+all passed with `GOMAXPROCS=8 GOFLAGS=-p=1` on the shared host.
 
 `--daemon` uses the actual `daemon.Start` assembly (not just the minimal 0011
 host): API, secured local gateway, store, serving/fetching, sessions, mDNS,
@@ -250,10 +257,16 @@ survives" is made. An earlier draft of the disco observer took the connectivity 
 under the disco lock; relay-matrix gets then took 0.7–6.7 s and one run stalled past
 its deadline. The observer now touches only atomics and a leaf history lock, and the
 matrix is back to ~80 ms gets (8–9 s for all three rows). Lock-order edges into the
-connectivity owner from protocol callbacks are a measured hazard, not a theoretical one. The NAT profile shown by
-doctor is the observation-based estimate (`source: observations`, two observers), not
-a probe-based RFC 4787 classification; the profiler package plugs into
-`swarm.Config.NAT`. Direct re-upgrade after a switch depends on exact probe grants
+connectivity owner from protocol callbacks are a measured hazard, not a theoretical one.
+In this original run doctor showed the observation-based estimate (`source:
+observations`, two observers). The subsequent netcheck diagnostics integration now
+installs the built-in profiler as the default `swarm.Config.NAT`: status/doctor show
+`source: netcheck` when a measured report exists, otherwise the observation estimate.
+`TestSwarmNATProfile` verifies both fallback without observers and measured loopback
+classification against a real netcheck-serving relay (0.213 s), plus the peer profile
+exchange. Mapping/filtering are translated to RFC 4787 names and the full profile
+(allocation, lifetime bounds, hairpin, IPv6, portmap) remains in `detail`.
+Direct re-upgrade after a switch depends on exact probe grants
 covering the new external endpoint (the test grants both). macOS network-change
 behaviour is not covered.
 

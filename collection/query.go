@@ -298,6 +298,12 @@ func (m *Manager) Items(name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[
 	if err != nil {
 		return nil, err
 	}
+	var holders map[string][]apiv0.CollectionHolder
+	if q.Holders && index {
+		if holders, err = m.pageHolders(name, page.Items); err != nil {
+			return nil, err
+		}
+	}
 	for _, p := range page.Items {
 		it := items[p]
 		if it == nil {
@@ -305,6 +311,7 @@ func (m *Manager) Items(name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[
 		}
 		ci := m.itemInfo(it)
 		ci.Local = local[p]
+		ci.Holders = holders[p]
 		if index {
 			c, u := counts[p], unknown[p]
 			ci.Copies, ci.Unknown = &c, &u
@@ -353,6 +360,36 @@ func (m *Manager) pageRows(name string, paths []string) (map[string]*itemRow, ma
 		rows.Close()
 	}
 	return items, local, nil
+}
+
+// pageHolders reads the holders the index reports for a page of paths.
+func (m *Manager) pageHolders(name string, paths []string) (map[string][]apiv0.CollectionHolder, error) {
+	fresh := m.freshness()
+	self := m.cfg.Self.String()
+	out := map[string][]apiv0.CollectionHolder{}
+	for lo := 0; lo < len(paths); lo += 500 {
+		chunk := paths[lo:min(lo+500, len(paths))]
+		args := []any{name}
+		for _, p := range chunk {
+			args = append(args, p)
+		}
+		rows, err := m.db.Query(`SELECT path, peer, state, src FROM idx WHERE ds = ? AND path IN (`+strings.Repeat(",?", len(chunk))[1:]+`) ORDER BY path, peer`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var p, peer string
+			var h apiv0.CollectionHolder
+			if err := rows.Scan(&p, &peer, &h.State, &h.Src); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			h.Peer, h.Fresh, h.Self = base36(peer), fresh[peer], peer == self
+			out[p] = append(out[p], h)
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 func parsePeer(s string) (string, error) {

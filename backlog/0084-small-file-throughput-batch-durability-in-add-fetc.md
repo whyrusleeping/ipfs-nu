@@ -1,7 +1,7 @@
 ---
 id: "0084"
 title: 'Small-file throughput: batch durability in add, fetch and extract (~85 files/s today)'
-status: proposed
+status: in_progress
 priority: 2
 created: "2026-10-22"
 updated: "2026-10-22"
@@ -19,3 +19,4 @@ Acceptance: the same benchmark (`scripts/lan-bench.sh add get1`) shows the tree 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done. store.Batch (staged blobs, parallel fsync, one transaction; nothing visible before durable), adder commits every 256 blobs/256 MiB and before pinning; Partial.Commit syncs each file once without the bitmap update; fetch takes known-size blobs ≤1 MiB whole in one request in the 64-wide pool with a per-peer limit of 16 /nu/bytes requests (proto.DefaultMaxPeerRequests), busy refusals retried and not counted against the peer (fixes 'no provider' when the pool outran the server limit); extraction syncs new files in parallel batches (replacements still synced before rename). alphac (scripts/lan-bench.sh): tree add 120 s → 7 s (~1,400 files/s), tree get 1:1 155 s → 18.7 s, 2:1 → 12 s (second source now helps); big-file numbers unchanged. kill -9 add/get then re-add/resume: byte-identical. Recorded in docs/validation.md 'LAN benchmarks'. Test: store.TestBatch.

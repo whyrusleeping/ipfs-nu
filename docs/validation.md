@@ -2065,6 +2065,26 @@ Findings:
 3. `add` of a large file runs at 1.1–1.4 GB/s with copy and 2.1 GB/s with `--nocopy`. That is
    below disk speed but CPU-light (about 3 s of user CPU per 10 GiB); memory stays at ~23 MB RSS.
 
+**After 0084** (same hosts, script and data, 2 runs each; every output digest matched).
+Changes: add stages blobs in batches and syncs each batch's files in parallel; `Partial.Commit`
+syncs each file once; blobs of known size ≤ 1 MiB are fetched whole in one request, 64 at
+a time, at most 16 per peer (the server's per-peer limit; busy refusals are retried, not
+counted against the peer); extraction syncs new files in parallel batches.
+
+| Measurement | Before | After |
+|---|---|---|
+| `add` tree, copy | 117–122 s (82–85 files/s) | **7.0–7.5 s (~1,400 files/s)**, 3.3 s CPU |
+| `add` tree, `--nocopy` | 65–70 s | **5.1–5.4 s** |
+| `get` tree 1:1 | 148–162 s (fetch 87–98 s, write-out 61–63 s) | **18.6–18.8 s** (fetch 16.3–16.4 s, write-out 2.2–2.3 s) |
+| `get` tree 2:1 | 156–163 s, no gain over 1:1 | **11.6–12.3 s** (fetch 8.4–8.7 s), split 520/519 MiB |
+| `add` big, `get` big 1:1 and 2:1 | as above | unchanged (1.4–2.1 GB/s; 314–347; 660–672 MB/s) |
+
+The 1:1 tree fetch (~610 files/s) is now bounded by the 16 concurrent requests per peer, so
+a second source doubles it. Crash check (`kill -9`, local 2,000-file tree): three adds killed
+at 0.3/0.6/0.9 s, then a re-add (whose import cache trusts only held blobs), and two gets
+killed at 0.5/1.0 s and then resumed. Fresh recipients fetched byte-identical trees in both
+cases.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

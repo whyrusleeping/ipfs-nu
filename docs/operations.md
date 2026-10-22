@@ -807,7 +807,9 @@ are bounded in total and per client address (`503` + `Retry-After`).
   with; a skipped directory's contents are skipped too. Nothing is merged or renamed
   silently. Pre-existing files of exactly the same name are replaced atomically.
 - **X5** Modes are `0644`/`0755` (executable bit only); no ownership, xattrs, times or
-  special files. Writes go to a temp file in the target directory and are renamed.
+  special files. Writes go to a temp file in the target directory and are renamed. A file
+  that replaces an existing one is synced before the rename. New files are renamed at once
+  and synced in parallel batches before the extraction reports success.
 - **X6** The report (files, dirs, bytes, skipped with reasons) is returned in the
   operation result and printed by the CLI; `get` is not "success" if skipped is non-empty
   without saying so.

@@ -181,9 +181,12 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
 - A minimal client can fetch every Nu object with this protocol and walk DRISL links itself.
 - The fetcher divides large BLAKE3 blobs across peers in 1 MiB chunks (one range request
   each, per-peer concurrency bounded), planned from `/nu/have/1`, and re-requests outstanding
-  chunks from a second peer during the endgame; the first verified copy wins. A peer that
-  sends corrupt data is dropped for the rest of the fetch; peers that lack data stay.
-  Serving reads blob data and its outboard.
+  chunks from a second peer during the endgame; the first verified copy wins. Blobs of known
+  size up to one chunk are instead fetched whole in one request, many at a time, rotating
+  over the peers. A fetch keeps its `/nu/bytes/1` requests to one peer within the servers'
+  default per-peer limit (16) and treats status 4 as load: it waits briefly and retries
+  without demoting the peer. A peer that sends corrupt data is dropped for the rest of the
+  fetch; peers that lack data stay. Serving reads blob data and its outboard.
 - Blob sizes come from an authenticated parent (tree entry, file node). Otherwise a size
   claimed in `/nu/have/1` is proven before use by verifying the blob's last group from a
   peer that claimed it (Bao binds the size to the root). A partial blob whose size differs
@@ -426,7 +429,9 @@ currently announce their root only; the swarm key is not yet provided.
   blobs of at most 16 KiB and DRISL blocks live in the database; larger blobs are files
   `blobs/<xx>/<multihash hex>` with the outboard beside them as `.obao`. Writes stream
   through `staging/` and are synced and renamed into place before their row commits, so
-  objects appear atomically and a crash leaves only orphan files, which GC removes. A partial
+  objects appear atomically and a crash leaves only orphan files, which GC removes. Adds of
+  many files stage blobs in batches (256 blobs or 256 MiB), sync a batch's files in
+  parallel so the filesystem shares the flushes, and commit its rows in one transaction. A partial
   BLAKE3 blob keeps sparse data and outboard files plus a bitmap of verified groups that is
   saved only after the data is synced; fetching resumes from it after a restart.
 - `--nocopy` blobs store only the outboard and the source's path, size and mtime. Each use

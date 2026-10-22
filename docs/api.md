@@ -661,7 +661,7 @@ These are the mechanics of rules G1–G9 of the
   `If-None-Match` work on files (a `Range` of more than 16 parts is answered whole);
   listings carry `ETag: "<dir cid>"` (with a page tag on `?from=` pages) and answer
   `If-None-Match` with `304`. Errors are plain text (`<code>: <message>`), never HTML.
-- **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (an empty
+- **Paths.** Paths with empty (`//`), `.` or `..` segments or NUL are `400` (such a
   segment is refused on every route before the mux could clean or redirect it, so
   `//host` can never become a scheme-relative `Location`); a directory URL without a trailing slash redirects (`301`) to its own
   escaped path plus `/`. Listings show the directory CID and total size below it, and each

@@ -691,7 +691,8 @@ destination.**
 - **G8** Gateway-generated pages (root, listings) carry
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`; errors are
   plain text, never HTML. Listings link only safe names; unsafe names are shown unlinked. Paths with
-  `.`, `..`, empty or NUL segments are `400`.
+  `.`, `..`, empty or NUL segments are `400` on every origin and route, checked before
+  routing so nothing cleans and redirects them.
 - **G9** Caching: CID-addressed responses are `public, max-age=31536000, immutable` with
   `ETag: "<cid>"` (listings: the directory's CID, plus a page tag for `?from=` pages) and
   answer `If-None-Match` with `304`; errors are `no-store`; name routes (G5) are
@@ -818,7 +819,7 @@ required by the named task before it ships.
 | N12 | G4 | SVG/XML/JS/PDF types on bare origin | attachment | `gateway.TestMimeRules` |
 | N13 | G7 | hostile `mime` (`text/html; charset=x-evil`, `foo`, `a/b/c`, CRLF) | sanitized or octet-stream | `gateway.TestMimeRules` |
 | N14 | G3 | `<cid>.localhost/` serves `index.html` as HTML with no listing CSP | 200 `text/html` | `gateway.TestGatewayOrigins` |
-| N15 | G8 | `/sub/../index.html`, NUL, empty segments | 400 | `gateway.TestGatewayOrigins` |
+| N15 | G8 | `/sub/../index.html`, `./`, `%2e%2e`, NUL, empty segments, on site and bare origins | 400, never a cleaning redirect | `gateway.TestGatewayOrigins` |
 | N16 | G6 | `//evil.example` on a site whose tree has `evil.example/` | 400, no `Location` | `gateway.TestGatewayOrigins` |
 | N17 | G6 | directory without slash | 301 to same-origin path | `gateway.TestGatewayOrigins` |
 | N18 | G7 | symlink entry | 422, listed | `gateway.TestGatewayOrigins` |

@@ -82,8 +82,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "method %s is not allowed", r.Method))
 		return
 	}
-	// An empty segment is refused before the mux could clean and redirect it (G6).
-	if strings.Contains(r.URL.Path, "//") {
+	// An empty, ".", ".." or NUL segment is refused before the mux could clean and
+	// redirect it (G6, G8; 0077: the bare origin redirected "/tree/<cid>/a/../b").
+	if strings.Contains(r.URL.Path, "//") || badSegment(r.URL.Path) {
 		writeError(w, apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid path %q", r.URL.Path))
 		return
 	}
@@ -93,6 +94,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.mux.ServeHTTP(w, r)
+}
+
+// badSegment reports a ".", ".." or NUL segment in an (unescaped) request path.
+func badSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." || strings.ContainsRune(seg, 0) {
+			return true
+		}
+	}
+	return false
 }
 
 type ctxKey struct{}

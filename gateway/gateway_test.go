@@ -180,6 +180,13 @@ func TestGatewayOrigins(t *testing.T) {
 	if res, _ := get(t, srv, site, "/sub/../index.html", nil); res.StatusCode != 400 {
 		t.Fatalf("traversal: %d", res.StatusCode)
 	}
+	// N15 on the bare origin too (0077): 400, never a cleaning redirect.
+	for _, p := range []string{"/tree/" + f.root + "/sub/../index.html", "/tree/" + f.root + "/./notes.txt", "/tree/" + f.root + "/..",
+		"/blob/../tree/" + f.root + "/", "/tree/" + f.root + "/%2e%2e/x"} {
+		if res, _ := get(t, srv, "", p, nil); res.StatusCode != 400 || res.Header.Get("Location") != "" {
+			t.Fatalf("bare-origin %s: %d %q", p, res.StatusCode, res.Header.Get("Location"))
+		}
+	}
 	// A directory named like a host must not turn "//evil.example" into a redirect off
 	// this origin; empty segments are refused outright.
 	if res, _ := get(t, srv, site, "//evil.example", nil); res.StatusCode != 400 || res.Header.Get("Location") != "" {

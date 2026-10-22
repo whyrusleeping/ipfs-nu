@@ -1130,7 +1130,8 @@ The transport-global CID generator has no connection/peer argument to bind later
 
 To pursue the original ≤5% total target, request an **upstream** CID-issued/retired
 callback or selective event-construction API, then remeasure; no local quic-go fork
-was introduced. Per-peer QUIC Transports with self-routing CIDs are another possible
+was introduced. (Proposed and measured on a patched build: see the
+[0070 experiment](#upstream-cid-callback-experiment-0070-2026-10-22).) Per-peer QUIC Transports with self-routing CIDs are another possible
 architecture, but change the current single-dispatcher/Host design and were not
 silently substituted during this optimization.
 
@@ -1151,6 +1152,43 @@ Two initial full-suite runs hit `nutest.TestRestartMidTransfer`'s unrelated one-
 startup assertion (13.03 s / 1.73 s); its isolated retry passed in 0.14 s and the final
 full suite passed (`nutest` 0.38 s). The changed packet-core packages are absent from
 that test's dependency graph; no nutest/node/store code or timing threshold was changed.
+
+## Upstream CID-callback experiment (0070, 2026-10-22)
+
+**The CID-observer cost disappears with a narrow quic-go callback: VirtualDirect is 3.2%
+below uninstrumented Raw (was 16–22%).** This is measured on a **patched** quic-go in an
+experiments-only module, so 0070's acceptance (a stock release) remains open; the main
+module is unchanged and still uses the qlog observer.
+
+The proposed upstream API (`quic.Config.ConnectionIDTracer` returning
+`AddedConnectionID`/`RemovedConnectionID` callbacks), the patch against v0.64.1, the
+draft issue/PR text and the human submission steps are in
+[`experiments/quicgo-cid/`](../experiments/quicgo-cid/README.md). The callbacks mirror
+the connection's own Transport routing-table updates and cost nothing per packet.
+A snapshot of `p2p/magicsock` (at `241e2ce`) with only the observer replaced runs in the
+same module. A fast test forces CID rotation over the direct path and fails if a rotated
+CID is unregistered (verified by a deliberate registration-cap mutation).
+
+Method identical to the 0015 section (same host, Go 1.26.2, `GOMAXPROCS=4`, 4 MiB
+per op, 1200-byte fixed packets, PMTUD off, eight-byte CIDs, same windows); load average
+15–25 on the shared host. Two five-repeat sets pooled (n=10), median (range) MB/s:
+
+| Case | MB/s | vs Raw | B/op; allocs/op |
+|---|---|---|---|
+| Raw | 726 (677–819) | — | 479,329; 15,308 |
+| RawObserver (no-op qlog) | 570 (497–608) | −21.5% | 2,818,348; 42,671 |
+| RawCIDTracer (no-op new hook) | 741 (690–803) | +2.0% (noise) | 477,311; 15,312 |
+| VirtualDirectQlog (current magicsock) | 568 (337–615) | −21.8% | 2,857,543; 44,502 |
+| **VirtualDirect (hook magicsock)** | **703 (654–734)** | **−3.2%** | 528,880; 17,195 |
+| RawPMTU | 836 (329–938) | +15.1% | 403,169; 12,753 |
+
+Per-set VirtualDirect deficits were 3.7% and 2.4%. Same-session stock baseline
+(`experiments/nupath`, unpatched, n=5): Raw 747, RawObserver 555, VirtualDirect 601 MB/s
+(−19.5%). Allocated bytes per op fall 81% versus the qlog observer; the remaining
+~50 KB / ~1.9k allocations per op over Raw belong to magicsock. Single 337/329 MB/s values
+are shared-host stalls and are kept in the ranges. Raw outputs:
+`experiments/quicgo-cid/bench-*.txt`. Patch tests: quic-go root/internal/qlog suites,
+new generator/config unit tests and a 50 MB rotation integration test (also `-race`).
 
 ## Early experiments
 

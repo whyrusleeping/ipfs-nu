@@ -1,0 +1,524 @@
+From a9a1f5e111d5bbceca9df3eafbfb93fa5179cc9b Mon Sep 17 00:00:00 2001
+From: whyrusleeping <why@ipfs.io>
+Date: Thu, 22 Oct 2026 03:12:12 +0000
+Subject: [PATCH] add a Config.ConnectionIDTracer to observe connection ID
+ lifecycle events
+
+Applications that demultiplex packets on a shared net.PacketConn need to know
+which connection IDs belong to which connection. So far, the only way to learn
+about connection IDs issued in NEW_CONNECTION_ID frames and retired via
+RETIRE_CONNECTION_ID frames was a qlog Tracer, which requires constructing
+qlog events for every packet sent and received.
+
+The ConnectionIDTracer is notified when a connection ID is added to or
+removed from the Transport's routing table for a connection. It is only
+invoked on connection ID lifecycle events, and costs a nil check otherwise.
+---
+ config.go                             |   1 +
+ config_test.go                        |  10 ++-
+ conn_id_generator.go                  |  26 ++++++
+ conn_id_generator_test.go             |  89 ++++++++++++++++++++
+ connection.go                         |  15 ++++
+ integrationtests/self/conn_id_test.go | 115 ++++++++++++++++++++++++++
+ interface.go                          |  30 +++++++
+ 7 files changed, 284 insertions(+), 2 deletions(-)
+
+diff --git a/config.go b/config.go
+index f107ac48..796a4736 100644
+--- a/config.go
++++ b/config.go
+@@ -128,5 +128,6 @@ func populateConfig(config *Config) *Config {
+ 		EnableStreamResetPartialDelivery: config.EnableStreamResetPartialDelivery,
+ 		Allow0RTT:                        config.Allow0RTT,
+ 		Tracer:                           config.Tracer,
++		ConnectionIDTracer:               config.ConnectionIDTracer,
+ 	}
+ }
+diff --git a/config_test.go b/config_test.go
+index 0950b8cb..6e8eda88 100644
+--- a/config_test.go
++++ b/config_test.go
+@@ -86,7 +86,7 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
+ 		}
+ 
+ 		switch fn := typ.Field(i).Name; fn {
+-		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer":
++		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer", "ConnectionIDTracer":
+ 			// Can't compare functions.
+ 		case "Versions":
+ 			f.Set(reflect.ValueOf([]Version{1, 2, 3}))
+@@ -137,7 +137,7 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
+ 
+ func TestConfigClone(t *testing.T) {
+ 	t.Run("function fields", func(t *testing.T) {
+-		var calledAllowConnectionWindowIncrease, calledTracer bool
++		var calledAllowConnectionWindowIncrease, calledTracer, calledConnIDTracer bool
+ 		c1 := &Config{
+ 			GetConfigForClient:            func(info *ClientInfo) (*Config, error) { return nil, assert.AnError },
+ 			AllowConnectionWindowIncrease: func(*Conn, uint64) bool { calledAllowConnectionWindowIncrease = true; return true },
+@@ -145,6 +145,10 @@ func TestConfigClone(t *testing.T) {
+ 				calledTracer = true
+ 				return nil
+ 			},
++			ConnectionIDTracer: func(context.Context, bool, ConnectionID) *ConnectionIDTracer {
++				calledConnIDTracer = true
++				return nil
++			},
+ 		}
+ 		c2 := c1.Clone()
+ 		c2.AllowConnectionWindowIncrease(nil, 1234)
+@@ -153,6 +157,8 @@ func TestConfigClone(t *testing.T) {
+ 		require.ErrorIs(t, err, assert.AnError)
+ 		c2.Tracer(context.Background(), true, protocol.ConnectionID{})
+ 		require.True(t, calledTracer)
++		c2.ConnectionIDTracer(context.Background(), true, protocol.ConnectionID{})
++		require.True(t, calledConnIDTracer)
+ 	})
+ 
+ 	t.Run("non-function fields", func(t *testing.T) {
+diff --git a/conn_id_generator.go b/conn_id_generator.go
+index 133932a6..86c1cd01 100644
+--- a/conn_id_generator.go
++++ b/conn_id_generator.go
+@@ -55,6 +55,8 @@ type connIDGenerator struct {
+ 	statelessResetter *statelessResetter
+ 
+ 	queueControlFrame func(wire.Frame)
++
++	tracer *ConnectionIDTracer
+ }
+ 
+ func newConnIDGenerator(
+@@ -65,6 +67,7 @@ func newConnIDGenerator(
+ 	callbacks connRunnerCallbacks,
+ 	queueControlFrame func(wire.Frame),
+ 	generator ConnectionIDGenerator,
++	tracer *ConnectionIDTracer,
+ ) *connIDGenerator {
+ 	m := &connIDGenerator{
+ 		generator:         generator,
+@@ -72,9 +75,16 @@ func newConnIDGenerator(
+ 		statelessResetter: statelessResetter,
+ 		connRunners:       map[connRunner]connRunnerCallbacks{runner: callbacks},
+ 		queueControlFrame: queueControlFrame,
++		tracer:            tracer,
+ 	}
+ 	m.activeSrcConnIDs[0] = initialConnectionID
+ 	m.initialClientDestConnID = initialClientDestConnID
++	if m.tracer != nil && m.tracer.AddedConnectionID != nil {
++		if initialClientDestConnID != nil {
++			m.tracer.AddedConnectionID(*initialClientDestConnID)
++		}
++		m.tracer.AddedConnectionID(initialConnectionID)
++	}
+ 	return m
+ }
+ 
+@@ -141,6 +151,9 @@ func (m *connIDGenerator) issueNewConnID() error {
+ 	}
+ 	m.activeSrcConnIDs[m.highestSeq+1] = connID
+ 	m.connRunners.AddConnectionID(connID)
++	if m.tracer != nil && m.tracer.AddedConnectionID != nil {
++		m.tracer.AddedConnectionID(connID)
++	}
+ 	m.queueControlFrame(&wire.NewConnectionIDFrame{
+ 		SequenceNumber:      m.highestSeq + 1,
+ 		ConnectionID:        connID,
+@@ -166,6 +179,7 @@ func (m *connIDGenerator) RemoveRetiredConnIDs(now monotime.Time) {
+ 			break
+ 		}
+ 		m.connRunners.RemoveConnectionID(c.connID)
++		m.traceRemoved(c.connID)
+ 		m.connIDsToRetire = m.connIDsToRetire[1:]
+ 	}
+ }
+@@ -173,12 +187,15 @@ func (m *connIDGenerator) RemoveRetiredConnIDs(now monotime.Time) {
+ func (m *connIDGenerator) RemoveAll() {
+ 	if m.initialClientDestConnID != nil {
+ 		m.connRunners.RemoveConnectionID(*m.initialClientDestConnID)
++		m.traceRemoved(*m.initialClientDestConnID)
+ 	}
+ 	for _, connID := range m.activeSrcConnIDs {
+ 		m.connRunners.RemoveConnectionID(connID)
++		m.traceRemoved(connID)
+ 	}
+ 	for _, c := range m.connIDsToRetire {
+ 		m.connRunners.RemoveConnectionID(c.connID)
++		m.traceRemoved(c.connID)
+ 	}
+ }
+ 
+@@ -194,6 +211,15 @@ func (m *connIDGenerator) ReplaceWithClosed(connClose []byte, expiry time.Durati
+ 		connIDs = append(connIDs, c.connID)
+ 	}
+ 	m.connRunners.ReplaceWithClosed(connIDs, connClose, expiry)
++	for _, connID := range connIDs {
++		m.traceRemoved(connID)
++	}
++}
++
++func (m *connIDGenerator) traceRemoved(connID protocol.ConnectionID) {
++	if m.tracer != nil && m.tracer.RemovedConnectionID != nil {
++		m.tracer.RemovedConnectionID(connID)
++	}
+ }
+ 
+ func (m *connIDGenerator) AddConnRunner(runner connRunner, r connRunnerCallbacks) {
+diff --git a/conn_id_generator_test.go b/conn_id_generator_test.go
+index 33ba1620..538fbd5d 100644
+--- a/conn_id_generator_test.go
++++ b/conn_id_generator_test.go
+@@ -46,6 +46,7 @@ func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID
+ 		},
+ 		func(f wire.Frame) { queuedFrames = append(queuedFrames, f) },
+ 		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		nil,
+ 	)
+ 
+ 	require.Empty(t, added)
+@@ -119,6 +120,7 @@ func TestConnIDGeneratorRetiring(t *testing.T) {
+ 		},
+ 		func(f wire.Frame) {},
+ 		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		nil,
+ 	)
+ 	require.NoError(t, g.SetMaxActiveConnIDs(6))
+ 	require.Empty(t, removed)
+@@ -182,6 +184,7 @@ func testConnIDGeneratorRemoveAll(t *testing.T, hasInitialClientDestConnID bool)
+ 		},
+ 		func(f wire.Frame) {},
+ 		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		nil,
+ 	)
+ 
+ 	require.NoError(t, g.SetMaxActiveConnIDs(1000))
+@@ -235,6 +238,7 @@ func testConnIDGeneratorReplaceWithClosed(t *testing.T, hasInitialClientDestConn
+ 		},
+ 		func(f wire.Frame) {},
+ 		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		nil,
+ 	)
+ 
+ 	require.NoError(t, g.SetMaxActiveConnIDs(1000))
+@@ -297,6 +301,7 @@ func TestConnIDGeneratorAddConnRunner(t *testing.T) {
+ 		runner1,
+ 		func(f wire.Frame) { queuedFrames = append(queuedFrames, f) },
+ 		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		nil,
+ 	)
+ 	require.NoError(t, g.SetMaxActiveConnIDs(3))
+ 	require.Len(t, tracker1.added, 2)
+@@ -342,3 +347,87 @@ func TestConnIDGeneratorAddConnRunner(t *testing.T) {
+ 	require.NotEmpty(t, tracker1.removed)
+ 	require.Equal(t, tracker1.removed, tracker2.removed)
+ }
++
++func TestConnIDGeneratorTracer(t *testing.T) {
++	t.Run("replaced with closed", func(t *testing.T) {
++		testConnIDGeneratorTracer(t, false)
++	})
++	t.Run("removed", func(t *testing.T) {
++		testConnIDGeneratorTracer(t, true)
++	})
++}
++
++func testConnIDGeneratorTracer(t *testing.T, removeAll bool) {
++	initialConnID := protocol.ParseConnectionID([]byte{1, 1, 1, 1})
++	initialClientDestConnID := protocol.ParseConnectionID([]byte{2, 2, 2, 2})
++	var (
++		runnerAdded  []protocol.ConnectionID
++		traceAdded   []protocol.ConnectionID
++		traceRemoved []protocol.ConnectionID
++		queuedFrames []wire.Frame
++	)
++	g := newConnIDGenerator(
++		&packetHandlerMap{},
++		initialConnID,
++		&initialClientDestConnID,
++		newStatelessResetter(&StatelessResetKey{1, 2, 3, 4}),
++		connRunnerCallbacks{
++			AddConnectionID:    func(c protocol.ConnectionID) { runnerAdded = append(runnerAdded, c) },
++			RemoveConnectionID: func(protocol.ConnectionID) {},
++			ReplaceWithClosed:  func([]protocol.ConnectionID, []byte, time.Duration) {},
++		},
++		func(f wire.Frame) {
++			// the connection ID must be traced before it is sent to the peer
++			require.Contains(t, traceAdded, f.(*wire.NewConnectionIDFrame).ConnectionID)
++			queuedFrames = append(queuedFrames, f)
++		},
++		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		&ConnectionIDTracer{
++			AddedConnectionID:   func(c protocol.ConnectionID) { traceAdded = append(traceAdded, c) },
++			RemovedConnectionID: func(c protocol.ConnectionID) { traceRemoved = append(traceRemoved, c) },
++		},
++	)
++	// the connection IDs used during the handshake are reported immediately
++	require.Equal(t, []protocol.ConnectionID{initialClientDestConnID, initialConnID}, traceAdded)
++
++	require.NoError(t, g.SetMaxActiveConnIDs(4))
++	require.Len(t, queuedFrames, 3)
++	require.Equal(t, runnerAdded, traceAdded[2:])
++
++	// retired connection IDs are only removed after the expiry
++	now := monotime.Now()
++	require.NoError(t, g.Retire(1, initialConnID, now.Add(time.Second)))
++	require.Len(t, traceAdded, 6) // the retired connection ID is replaced
++	g.SetHandshakeComplete(now.Add(time.Second))
++	g.RemoveRetiredConnIDs(now)
++	require.Empty(t, traceRemoved)
++	g.RemoveRetiredConnIDs(now.Add(time.Second))
++	require.ElementsMatch(t, []protocol.ConnectionID{initialClientDestConnID, traceAdded[2]}, traceRemoved)
++
++	// all remaining connection IDs are removed when the connection is closed
++	if removeAll {
++		g.RemoveAll()
++	} else {
++		g.ReplaceWithClosed([]byte("foobar"), time.Second)
++	}
++	require.ElementsMatch(t, traceAdded, traceRemoved)
++}
++
++func TestConnIDGeneratorTracerWithoutCallbacks(t *testing.T) {
++	g := newConnIDGenerator(
++		&packetHandlerMap{},
++		protocol.ParseConnectionID([]byte{1, 1, 1, 1}),
++		nil,
++		newStatelessResetter(&StatelessResetKey{1, 2, 3, 4}),
++		connRunnerCallbacks{
++			AddConnectionID:    func(protocol.ConnectionID) {},
++			RemoveConnectionID: func(protocol.ConnectionID) {},
++			ReplaceWithClosed:  func([]protocol.ConnectionID, []byte, time.Duration) {},
++		},
++		func(wire.Frame) {},
++		&protocol.DefaultConnectionIDGenerator{ConnLen: 5},
++		&ConnectionIDTracer{},
++	)
++	require.NoError(t, g.SetMaxActiveConnIDs(4))
++	g.RemoveAll()
++}
+diff --git a/connection.go b/connection.go
+index 52dcd212..bbf7449f 100644
+--- a/connection.go
++++ b/connection.go
+@@ -295,6 +295,15 @@ var newConnection = func(
+ 		runner.RemoveResetToken,
+ 		s.queueControlFrame,
+ 	)
++	var connIDTracer *ConnectionIDTracer
++	if conf.ConnectionIDTracer != nil {
++		// Use the same connection ID that is passed to the Tracer.
++		tracerConnID := clientDestConnID
++		if origDestConnID.Len() > 0 {
++			tracerConnID = origDestConnID
++		}
++		connIDTracer = conf.ConnectionIDTracer(ctx, false, tracerConnID)
++	}
+ 	s.connIDGenerator = newConnIDGenerator(
+ 		runner,
+ 		srcConnID,
+@@ -307,6 +316,7 @@ var newConnection = func(
+ 		},
+ 		s.queueControlFrame,
+ 		connIDGenerator,
++		connIDTracer,
+ 	)
+ 	s.preSetup()
+ 	s.rttStats.SetInitialRTT(rtt)
+@@ -424,6 +434,10 @@ var newClientConnection = func(
+ 		runner.RemoveResetToken,
+ 		s.queueControlFrame,
+ 	)
++	var connIDTracer *ConnectionIDTracer
++	if conf.ConnectionIDTracer != nil {
++		connIDTracer = conf.ConnectionIDTracer(ctx, true, destConnID)
++	}
+ 	s.connIDGenerator = newConnIDGenerator(
+ 		runner,
+ 		srcConnID,
+@@ -436,6 +450,7 @@ var newClientConnection = func(
+ 		},
+ 		s.queueControlFrame,
+ 		connIDGenerator,
++		connIDTracer,
+ 	)
+ 	s.ctx, s.ctxCancel = context.WithCancelCause(ctx)
+ 	s.preSetup()
+diff --git a/integrationtests/self/conn_id_test.go b/integrationtests/self/conn_id_test.go
+index 83a8fc59..cc79fc6b 100644
+--- a/integrationtests/self/conn_id_test.go
++++ b/integrationtests/self/conn_id_test.go
+@@ -6,11 +6,13 @@ import (
+ 	"fmt"
+ 	"io"
+ 	mrand "math/rand/v2"
++	"sync"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/quic-go/quic-go"
+ 	"github.com/quic-go/quic-go/internal/protocol"
++	"github.com/quic-go/quic-go/qlog"
+ 	"github.com/quic-go/quic-go/qlogwriter"
+ 
+ 	"github.com/stretchr/testify/assert"
+@@ -149,3 +151,116 @@ func testTransferWithConnectionIDs(
+ 		}
+ 	}
+ }
++
++type connIDTracer struct {
++	mx      sync.Mutex
++	active  map[quic.ConnectionID]struct{}
++	added   int
++	removed int
++}
++
++func newConnIDTracer(t *testing.T, isClient bool) (*connIDTracer, func(context.Context, bool, quic.ConnectionID) *quic.ConnectionIDTracer) {
++	tr := &connIDTracer{active: make(map[quic.ConnectionID]struct{})}
++	return tr, func(_ context.Context, client bool, _ quic.ConnectionID) *quic.ConnectionIDTracer {
++		assert.Equal(t, isClient, client)
++		return &quic.ConnectionIDTracer{
++			AddedConnectionID: func(id quic.ConnectionID) {
++				tr.mx.Lock()
++				defer tr.mx.Unlock()
++				_, ok := tr.active[id]
++				assert.False(t, ok, "connection ID %s added twice", id)
++				tr.active[id] = struct{}{}
++				tr.added++
++			},
++			RemovedConnectionID: func(id quic.ConnectionID) {
++				tr.mx.Lock()
++				defer tr.mx.Unlock()
++				_, ok := tr.active[id]
++				assert.True(t, ok, "connection ID %s removed but not active", id)
++				delete(tr.active, id)
++				tr.removed++
++			},
++		}
++	}
++}
++
++func (tr *connIDTracer) isActive(id quic.ConnectionID) bool {
++	tr.mx.Lock()
++	defer tr.mx.Unlock()
++	_, ok := tr.active[id]
++	return ok
++}
++
++func TestConnectionIDTracer(t *testing.T) {
++	serverIDs, serverTracer := newConnIDTracer(t, false)
++	clientIDs, clientTracer := newConnIDTracer(t, true)
++
++	// Every short header packet that is received must use an active connection ID.
++	// Check this when the packet is received, since connection IDs are retired during the transfer.
++	checkReceived := func(ids *connIDTracer) func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace {
++		return newTracer(&recordFunc{fn: func(ev qlogwriter.Event) {
++			if e, ok := ev.(qlog.PacketReceived); ok && e.Header.PacketType == qlog.PacketType1RTT {
++				assert.True(t, ids.isActive(e.Header.DestConnectionID), "received packet for inactive connection ID %s", e.Header.DestConnectionID)
++			}
++		}})
++	}
++
++	serverTr := &quic.Transport{Conn: newUDPConnLocalhost(t), ConnectionIDLength: 8}
++	defer serverTr.Close()
++	ln, err := serverTr.Listen(getTLSConfig(), getQuicConfig(&quic.Config{
++		ConnectionIDTracer: serverTracer,
++		Tracer:             checkReceived(serverIDs),
++	}))
++	require.NoError(t, err)
++	defer ln.Close()
++
++	clientTr := &quic.Transport{Conn: newUDPConnLocalhost(t), ConnectionIDLength: 8}
++	defer clientTr.Close()
++	ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(10*time.Second))
++	defer cancel()
++	conn, err := clientTr.Dial(ctx, ln.Addr(), getTLSClientConfig(), getQuicConfig(&quic.Config{
++		ConnectionIDTracer: clientTracer,
++		Tracer:             checkReceived(clientIDs),
++	}))
++	require.NoError(t, err)
++	serverConn, err := ln.Accept(ctx)
++	require.NoError(t, err)
++
++	// Transfer enough data that the server switches to new connection IDs (see protocol.PacketsPerConnectionID),
++	// which makes the client retire old and issue new connection IDs.
++	go func() {
++		str, err := serverConn.OpenUniStream()
++		if !assert.NoError(t, err) {
++			return
++		}
++		str.Write(PRDataLong)
++		str.Close()
++	}()
++	str, err := conn.AcceptUniStream(ctx)
++	require.NoError(t, err)
++	data, err := io.ReadAll(str)
++	require.NoError(t, err)
++	require.Equal(t, PRDataLong, data)
++
++	clientIDs.mx.Lock()
++	require.Greater(t, clientIDs.added, protocol.MaxIssuedConnectionIDs)
++	clientIDs.mx.Unlock()
++
++	conn.CloseWithError(0, "")
++	select {
++	case <-serverConn.Context().Done():
++	case <-time.After(scaleDuration(time.Second)):
++		t.Fatal("timeout")
++	}
++	for _, ids := range []*connIDTracer{clientIDs, serverIDs} {
++		ids.mx.Lock()
++		require.Empty(t, ids.active)
++		require.Equal(t, ids.added, ids.removed)
++		ids.mx.Unlock()
++	}
++}
++
++type recordFunc struct{ fn func(qlogwriter.Event) }
++
++func (r *recordFunc) RecordEvent(ev qlogwriter.Event) { r.fn(ev) }
++func (r *recordFunc) Close() error                    { return nil }
+diff --git a/interface.go b/interface.go
+index db942ac9..46bb7e53 100644
+--- a/interface.go
++++ b/interface.go
+@@ -190,6 +190,36 @@ type Config struct {
+ 	EnableStreamResetPartialDelivery bool
+ 
+ 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
++	// ConnectionIDTracer is called once for every new connection,
++	// with the same arguments as the Tracer.
++	// The returned ConnectionIDTracer (which may be nil) is notified about the lifecycle
++	// of the connection IDs that the Transport uses to route packets to this connection.
++	// Unlike the Tracer, it doesn't cause any per-packet work.
++	ConnectionIDTracer func(ctx context.Context, isClient bool, connID ConnectionID) *ConnectionIDTracer
++}
++
++// A ConnectionIDTracer is notified when local connection IDs start and stop being
++// associated with a connection, i.e. it observes the changes the connection makes to
++// the Transport's routing table. This is useful for applications that demultiplex
++// packets themselves, for example when wrapping a net.PacketConn that is shared with
++// other protocols or connections.
++//
++// For a single connection, the callbacks are never called concurrently,
++// but callbacks for different connections may be.
++// The callbacks must not block, and they must not call any methods on the connection.
++type ConnectionIDTracer struct {
++	// AddedConnectionID is called when a connection ID is associated with the connection.
++	// This happens for the connection IDs used during the handshake, and for every
++	// connection ID issued in a NEW_CONNECTION_ID frame.
++	// It is called before the connection ID is sent to the peer.
++	AddedConnectionID func(ConnectionID)
++	// RemovedConnectionID is called when a connection ID is not associated with the
++	// connection any more: some time (3 PTOs) after the peer retired it, or when the
++	// connection is closed. It is called exactly once for every connection ID passed
++	// to AddedConnectionID.
++	// After a connection is closed, the Transport might still respond to packets
++	// using this connection ID for a short while.
++	RemovedConnectionID func(ConnectionID)
+ }
+ 
+ // ClientInfo contains information about an incoming connection attempt.
+-- 
+2.34.1
+

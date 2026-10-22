@@ -730,6 +730,23 @@ and holes left by filtered/disco packets. A relay arrival wakes an idle physical
 with a private deadline, without changing the logical caller deadline. There is no
 second UDP reader or direct-path userspace receive queue. The synchronous CID observer
 still incurs stock quic-go event-construction costs; near-raw throughput is not assumed.
+
+**Planned observer switch (0070).** An upstream quic-go API,
+`Config.ConnectionIDTracer` with `AddedConnectionID`/`RemovedConnectionID` callbacks,
+has been proposed ([patch and measurements](../experiments/quicgo-cid/README.md)). It
+reports the connection's own Transport routing-table changes: handshake CIDs
+(including the server's copy of the client's original DCID), each NEW_CONNECTION_ID
+before it is sent, retired IDs 3 PTO after retirement, and all remaining IDs on
+close. Once a **stock** quic-go release contains it (or an equivalent API), bump
+quic-go and replace the qlog `Tracer` in `QUICConfigForPeer` with that callback.
+Keep the per-connection owner (only the registering connection removes a route,
+never steal a colliding CID) and the 64-CID-per-peer cap; chain any base callback.
+Leave `Config.Tracer` untouched. The qlog observer then disappears from the inner path.
+Retirement then follows quic-go's grace period instead of immediate deletion on a
+received RETIRE_CONNECTION_ID frame. Rerun the 0015 benchmark against
+uninstrumented Raw to close 0070. Until then the main module keeps the qlog observer.
+Do not use a fork or `replace`: the patched build exists only in that experiments module.
+
 See [implementation and ownership](../p2p/magicsock/README.md),
 [core measurements](validation.md#nu-path-packet-core-0015-2026-10-21) and
 [stock-stack feasibility](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).

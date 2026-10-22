@@ -403,7 +403,8 @@ cluster state are one consistent snapshot; with a daemon answering they fail `co
 - **B3 Authority backup.** `repo backup` writes a new tar file, mode 0600, holding
   `manifest.json` (`format: nu-authority-backup`, `version: 1`, SHA-256 of every file,
   each cluster's ID, name, mode, root key, held keys and heads), `node.key`, `config.toml`,
-  `tokens/*.json` and, per cluster (`local`, `net`), `state.json`, the private keys this
+  `tokens/*.json`, the atproto login sessions `auth/*.json` (a session whose refresh token
+was rotated after the backup needs `nu login` again) and, per cluster (`local`, `net`), `state.json`, the private keys this
   node holds (`keys/*.key`) and a CAR of every held state repository (`repos/*.car`). It
   holds no content and nothing derived (peer cache, replica protection state, collection
   indexes), which the node rebuilds from signed state and content.

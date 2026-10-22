@@ -391,7 +391,7 @@ type BackupManifestDoc struct {
 var clusterKinds = []string{"local", "net"}
 
 // BackupAuthority writes the node's authority and signed state to w as a tar archive:
-// node.key, config.toml, push tokens, and for each cluster its state.json, the private
+// node.key, config.toml, push tokens, atproto login sessions, and for each cluster its state.json, the private
 // keys this node holds and a CAR of every held state repository. Content is not
 // included (ExportContent). The archive holds private keys in plaintext: store it 0600
 // on media the operator protects.
@@ -420,10 +420,14 @@ func (n *Local) BackupAuthority(w io.Writer) (*BackupManifestDoc, error) {
 	if err := addFile(repo.ConfigFile, false); err != nil {
 		return nil, err
 	}
-	if ents, err := os.ReadDir(n.Repo.Path(token.Dir)); err == nil {
+	for _, dir := range []string{token.Dir, AuthDir} {
+		ents, err := os.ReadDir(n.Repo.Path(dir))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 		for _, e := range ents {
 			if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".json") {
-				if err := addFile(token.Dir+"/"+e.Name(), true); err != nil {
+				if err := addFile(dir+"/"+e.Name(), true); err != nil {
 					return nil, err
 				}
 			}
@@ -503,7 +507,7 @@ func backupPathOK(rel string) bool {
 	switch {
 	case rel == repo.KeyFile || rel == repo.ConfigFile:
 		return true
-	case len(parts) == 2 && parts[0] == token.Dir:
+	case len(parts) == 2 && (parts[0] == token.Dir || parts[0] == AuthDir):
 		return strings.HasSuffix(parts[1], ".json")
 	case len(parts) >= 3 && parts[0] == "cluster" && (parts[1] == "local" || parts[1] == "net"):
 		switch {

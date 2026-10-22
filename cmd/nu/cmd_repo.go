@@ -128,7 +128,7 @@ var cmdRepo = &command{
 		{
 			name:    "backup",
 			args:    "<file>",
-			summary: "write the node key, config, push tokens, cluster keys and signed cluster state to a new 0600 tar file (plaintext keys: keep it safe)",
+			summary: "write the node key, config, push tokens, login sessions, cluster keys and signed cluster state to a new 0600 tar file (plaintext keys: keep it safe)",
 			run: func(ctx context.Context, e *env, args []string) error {
 				fs := e.flags()
 				if err := parseFlags(fs, args); err != nil {

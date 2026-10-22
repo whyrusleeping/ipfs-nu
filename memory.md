@@ -34,3 +34,4 @@
 
 ## Codebase gotchas
 - 2026-10-22 [measured observation] Interrupted NAT-lab daemon tests can leave orphaned `nu daemon`/`nu relay` processes under /tmp/TestDaemonNAT*; check with `pgrep -x nu -a` (not `pkill -f`, which can match the calling shell) before manual multi-daemon runs on default ports. <!-- ycc-memory id=m-dmb4qxogarqe kind=observation session=s_ce5d367a91139809 event=130 actor=coordinator scope=workspace classified=model -->
+- 2026-10-22 [measured observation] alphac-1/2 have Realtek r8169 NICs without UDP segmentation offload (alphac-3 has an Intel E810 with it); quic-go GSO halves send throughput there, so Nu's swarm.gso=auto disables it—check `UDP GSO` in daemon logs when comparing benchmarks. <!-- ycc-memory id=m-dmbo2u4iqnia kind=observation session=s_ce5d367a91139809 event=790 actor=coordinator scope=workspace classified=model -->

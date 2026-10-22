@@ -1056,7 +1056,7 @@ Scaled to the v0-era test policy: a few fast tests per acceptance bullet (Linux 
 | New incomplete version vs established availability (E8) | `cluster_test.TestClusterArchive` | a head whose content exists nowhere makes the archive not ready while the older version stays `retained-complete`; reading the new version is `unavailable`; the old one lists through placement |
 | Rollback as a new head | `TestOneNodeArchive`, `TestClusterArchive` | new head and version with `restored_from`; the restored version's identity and label unchanged; metadata and content are separate results |
 | Incomplete/never-replicated/pruned never claim retrieval; skipped versions | `node.TestArchiveRetentionAvailability` | a head with unheld content is `observed`, superseded outside the live set it is `skipped`; a pruned version is `pruned`, reads (by TID or by a time selecting it) and rollback fail `unavailable` naming it, never a neighbour |
-| Shared references prevent unsafe deletion; dry-run | same | the dry run lists the candidate with free and shared bytes and changes nothing; after prune and GC the other dataset and the live version still read the shared file; networked prune is dry-run only |
+| Shared references prevent unsafe deletion; dry-run | same | the dry run lists the candidate with free and shared bytes and changes nothing; after prune and GC the other dataset and the live version still read the shared file; networked prune is dry-run only (0047; gated by owner confirmation since 0048) |
 | Labels and held copies survive budget pressure | `node.TestArchiveBudgetPressure` | an import over `store.limit` fails `insufficient_storage`; after GC the labeled and held versions are `retained-complete` and read |
 | Explicit missing-version reacquisition | `TestArchiveRetentionAvailability` | labeling pruned content fails without `--reacquire`; with it the version is live and still not retrievable until its content is complete again |
 | Immutable identity vs annotations, collisions, compaction | `cluster.TestVersionMerge` | an annotation copy merges by (hlc, signer); a later self-authored redefinition of the same TID is a reported conflict, never merged; a winning tombstone compacts; label syntax excludes TIDs and times |
@@ -1068,6 +1068,38 @@ process kill between the
 import and the head write (the import is unpinned and falls to GC after the grace),
 authenticated import-manifest export (needs 0042's manifests) and historical identity
 evidence for external sources (0045, 0054).
+
+## Repair, handoff, audits and release (0048)
+
+Scaled to the v0-era test policy (Linux, 2026-10-22): nutest scenarios on loopback QUIC
+with partitions (connection gating), kill/restart, store limits as disk pressure and
+shortened settings (`node.ClusterDefaults`, `node.EvidenceFresh`: fresh 2 s, settle
+0.3–2 s, down/up 1 s, interval 100 ms) in place of a fake clock; the rule logic itself
+has a clock-free table test. Commands: `go test ./cluster -run
+'TestReleaseRules|TestRepairAfterLoss|TestSafeRelease|TestDrainRemove|TestAuditScrub|TestClusterArchive'`
+(the four network tests passed three consecutive runs).
+
+| Row / rule | Test | Shows |
+|---|---|---|
+| R10 (S2) | `cluster_test.TestSafeRelease` | after a head update with one owner partitioned off from the other two, the previous head stays pinned on all three members for `evidence.fresh` + 3 s; after healing it is released everywhere |
+| R11 (S2) | `TestSafeRelease`, `cluster.TestReleaseRules` | the dry run during the partition lists the old head as not releasable with the partitioned owner in `shortfall` (`stale`/`absent`); table: one stale owner of `k=2` blocks and is named |
+| R12 (S3) | `TestSafeRelease` | a capacity edit (epoch change) right after the new head is ready: the dry run is `deferred: unsettled` and the old head stays pinned; it is released once the epoch settled |
+| R13 (S3) | `cluster.TestReleaseRules` | an owner reporting another epoch defers every release (`epoch_disagreement`) and does not count; also held-back records and an owner whose record changed within settle |
+| R14 (S4) | `TestSafeRelease` | b becomes a second admin (`key new` / `key grant`); a and b write heads while partitioned; after healing both see the other head in `displaced`, the dry run is `deferred: concurrent_heads`, and the previous head stays pinned on every member |
+| R16 (S6) | `cluster_test.TestDrainRemove` | `rm` of an active owner is refused (drain first); a drained member is not removable while an owner of its blobs is partitioned (`failed`, `unconfirmed` names the owner) and keeps its view pinned; after healing it releases its copies once new owners confirm them and `rm` succeeds unforced; `--force` during another partition removes and reports `forced` with the unconfirmed content |
+| R18 (E9) | `cluster_test.TestAuditScrub` | `replicas: all` with one blob that exists nowhere: a member holding the rest passes sampled verified chunk-group challenges, stays out of `confirmed`, the dataset is not ready, and cluster status shows its audits separately |
+| R20 (E8), lost node with authority | `cluster_test.TestRepairAfterLoss` | an authority restarts (`cluster.repair auto`) after a storage member died; after `down_after` it writes `{unavailable, auto}`; with no free capacity on survivors the dataset is `degraded` (not unknown) with `repair: in_progress` and a `degraded` alert, then `ready` with `copies.min ≥ 2` without the dead member once capacity frees; when the member returns it is `active` again after `up_after` |
+| No repair authority | same | the member dies with repair off everywhere: `unknown` (never `degraded`), `repair: unavailable`, `no_repair_authority` alerts in the dataset and cluster status, and the member record stays `active` past `down_after` |
+| S2 surplus release | same | the writer drops its explicit pin; `gc --dry-run` lists its non-owned blobs as `surplus`, releasable once owners confirm; `gc` removes exactly the blobs it does not own |
+| Scrub → repair | `TestAuditScrub` | a flipped byte in a stored blob file is found by `audit --full`, dropped (`scrub_failed` alert) and fetched again from members |
+| Networked prune gate (S1) | `cluster_test.TestClusterArchive` | prune with an incomplete live version fails `failed` with the shortfall |
+
+Not covered: crash (kill) between a release decision and the store removal (removal is
+one transaction under the GC lock; the in-memory settle restarts after any restart, so a
+crash only delays release), floor-surplus release for collections (surplus items stay
+held), a Linux isolated-lab (natlab) run of repair traffic, Prometheus metrics (none in
+this build; status JSON carries the alerts), byzantine audit evasion (a member can relay
+challenge answers from another member: audits prove serving, not storage).
 
 ## Distribution, upgrades and recovery (0044)
 

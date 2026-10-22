@@ -111,7 +111,13 @@ GET    /api/v0/cluster                     ClusterStatus {local?, network?}
 POST   /api/v0/cluster/init     {name, mode?}                    → ClusterInfo
 POST   /api/v0/cluster/invites  {role?, tags?, capacity?, peer?, expires?} → ClusterInvite
 POST   /api/v0/cluster/join     {token}                          → ClusterInfo
-DELETE /api/v0/cluster/members/{peer}      → MetadataState
+DELETE /api/v0/cluster/members/{peer}?dry_run&force → MemberRemoval {safe, removed, forced, unconfirmed, reasons}
+POST   /api/v0/cluster/members/{peer}  MemberSetRequest {state?, capacity?, store_limit?, tags?, label?} → MemberResult
+POST   /api/v0/cluster/keys            KeyRequest {did?, role?, dataset?} → KeyResult (no did: new key held here)
+DELETE /api/v0/cluster/keys/{did}      → KeyResult (revoked at its last commit held here)
+DELETE /api/v0/cluster/invites/{id}    → MetadataState
+POST   /api/v0/cluster/audit           AuditRequest {peer?, samples?, scrub?, full?} → AuditReport
+POST   /api/v0/[cluster/]datasets/{name}/release  ReleaseRequest {dry_run?} → ReleaseReport
 GET    /api/v0/cluster/datasets            [Dataset]
 POST   /api/v0/cluster/datasets {name, replicas?, writers?, note?, collection?, facets?, merge?, expire?} → Dataset
 GET    /api/v0/cluster/datasets/{name}     Dataset
@@ -389,8 +395,8 @@ nu [cluster] dataset versions|diff|label|rollback|prune <ds> …
   a version that is not `retained-complete` are `unavailable` with `details.version` and
   `details.availability` (labels pass with `reacquire`). A rollback to the current head
   is `conflict`; a dataset without history is `invalid_argument`.
-- `prune` releases only on the local cluster; on a networked cluster it is
-  `not_supported` unless `dry_run` (0048). Released bytes go at the next store GC.
+- `prune` on a networked cluster fails `failed` (with `details.release`) unless the live
+  set is confirmed by its owners in a settled epoch (0048). Released bytes go at the next store GC.
 
 ## Collections (0057)
 

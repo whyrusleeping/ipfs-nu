@@ -8,6 +8,50 @@ import (
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
+// RelayPeer validates a supported explicit relay endpoint. DNS relay resolution
+// belongs to lookup; this transport currently requires literal QUIC-v1 routes.
+func RelayPeer(a wire.Multiaddr) (wire.PeerID, error) {
+	m, err := ma.NewMultiaddrBytes(a.Bytes())
+	if err != nil || len(m) != 4 || m[3].Code() != ma.P_P2P {
+		return "", wire.ErrFormat
+	}
+	id, err := wire.ParsePeerID(m[3].Value())
+	if err != nil {
+		return "", err
+	}
+	return id, relayAddress(a, id)
+}
+
+// Address is a public circuit hint, not a local qpath virtual address.
+func Address(relay wire.Multiaddr, peer wire.PeerID) (wire.Multiaddr, error) {
+	if _, err := RelayPeer(relay); err != nil {
+		return wire.Multiaddr{}, err
+	}
+	if _, err := wire.PeerIDFromBytes(peer.Bytes()); err != nil {
+		return wire.Multiaddr{}, err
+	}
+	return wire.ParseMultiaddr(relay.String()+"/p2p-circuit/p2p/"+peer.String(), 2048)
+}
+
+// ParseAddress accepts exactly one literal relay hop and a bound destination.
+// Callers still apply relay and destination policy before opening any sockets.
+func ParseAddress(a wire.Multiaddr) (relay wire.Multiaddr, relayPeer, peer wire.PeerID, err error) {
+	m, err := ma.NewMultiaddrBytes(a.Bytes())
+	if a.Opaque() || err != nil || len(m) != 6 || m[4].Code() != ma.P_CIRCUIT || m[5].Code() != ma.P_P2P {
+		return relay, "", "", wire.ErrFormat
+	}
+	peer, err = wire.ParsePeerID(m[5].Value())
+	if err != nil {
+		return relay, "", "", err
+	}
+	relay, err = wire.MultiaddrFromBytes(m[:4].Bytes(), 2048)
+	if err != nil {
+		return relay, "", "", err
+	}
+	relayPeer, err = RelayPeer(relay)
+	return relay, relayPeer, peer, err
+}
+
 func relayAddress(a wire.Multiaddr, id wire.PeerID) error {
 	if a.Opaque() {
 		return wire.ErrFormat

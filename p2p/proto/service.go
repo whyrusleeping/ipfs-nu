@@ -23,7 +23,8 @@ type Config struct {
 	// The callback must be concurrency-safe and return promptly.
 	Addresses func() []wire.Multiaddr
 	// OnPeerRecord receives fresh, authenticated signed records outside service
-	// locks. Callbacks may be concurrent/out of sequence; consumers must compare
+	// locks. It must return promptly. Callbacks may be concurrent/out of sequence;
+	// consumers must compare
 	// Seq, bound their storage, and must not treat addresses as dial authorization.
 	OnPeerRecord func(wire.PeerRecord)
 }

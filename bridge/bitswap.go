@@ -56,6 +56,7 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 			continue
 		}
 		conn, ok := s.Host.Connection(p.ID)
+		var dialErr error
 		if !ok {
 			for _, raw := range p.Addrs {
 				a, er := wire.MultiaddrFromBytes(raw, 2048)
@@ -74,13 +75,18 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 					continue
 				}
 				conn, er = s.Host.Dial(ctx, ma)
+				dialErr = er
 				if er == nil {
 					break
 				}
 			}
 		}
 		if conn == nil {
-			errs = append(errs, fmt.Sprintf("%s: no usable address", p.ID))
+			if dialErr != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", p.ID, dialErr))
+			} else {
+				errs = append(errs, fmt.Sprintf("%s: no usable address", p.ID))
+			}
 			continue
 		}
 		st, er := s.Host.OpenStream(ctx, p.ID, BitswapProtocol)
@@ -116,7 +122,8 @@ func bitswapRequest(st *host.Stream, id IPFSCID) ([]byte, error) {
 	if e := writeDelimited(st, msg); e != nil {
 		return nil, e
 	}
-	_ = st.CloseWrite()
+	// Bitswap is a persistent full-duplex stream; keep the write side open while the
+	// peer services the wantlist, then reset/close the stream after the block arrives.
 	r := bufio.NewReader(st)
 	for {
 		m, e := readDelimited(r, maxBitswapMessage)

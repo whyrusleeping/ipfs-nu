@@ -145,12 +145,16 @@ Operators test scripts against Nu APIs/CLI, validate fresh-client retrieval and 
 then redirect writers/readers deliberately. Back up Kubo and keys separately. Cutover never
 automatically stops Kubo, removes pins, deletes blocks or transfers identity/cluster authority.
 
-CLI/API and acceptance follow this contract: `nu import ipfs <cid> [--car file]` imports one
-root; `nu import ipfs --kubo-repo path` inventories pins and emits CAR-based per-root
-operations using the documented `ipfs dag export` command. Every invocation supports
-`--dry-run`, JSON report, stable operation ID/resume, and explicit source path. Long work is
-an operation resource, not a blocking untracked conversion. Production Linux/macOS builds
-include the bridge; minimal builds expose an explicit unavailable-feature result.
+CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino; `nu import ipfs --car file
+<cid>` imports a local CARv1. The local API's `POST /import/ipfs` accepts the same request
+and returns a durable operation ID. `--dry-run` verifies/inventories CAR inputs; it is not
+available for a network source. A Kubo repo is inventoried with `ipfs pin ls --type
+recursive --enc`; each selected root is exported using `ipfs dag export <root> > root.car`
+and imported as a separate operation. Nu does not directly open the Kubo repo or automate
+pinset enumeration in this version. Operation request/stage/result survive daemon restarts;
+interrupted CAR jobs replay from the CAR and reuse deterministic store objects. Production
+Linux/macOS builds include the bridge; minimal builds expose an explicit unavailable-feature
+result.
 
 ## Acceptance
 

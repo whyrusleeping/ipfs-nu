@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/node"
 	"io"
 	"path/filepath"
 )
 
 var cmdImport = &command{name: "import", summary: "verified, one-way content migration", sub: []*command{cmdImportIPFS}}
-var cmdImportIPFS = &command{name: "ipfs", args: "--car <file> [--dry-run] <ipfs-cid>", summary: "verify and convert one IPFS UnixFS root from a CARv1 archive", run: func(ctx context.Context, e *env, args []string) error {
+var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] <ipfs-cid>", summary: "verify and convert one IPFS UnixFS root from a CARv1 archive", run: func(ctx context.Context, e *env, args []string) error {
 	fs := e.flags()
 	req := apiv0.IPFSImportRequest{}
 	fs.StringVar(&req.CAR, "car", "", "CARv1 source (create with ipfs dag export <cid> > root.car)")
@@ -17,16 +18,27 @@ var cmdImportIPFS = &command{name: "ipfs", args: "--car <file> [--dry-run] <ipfs
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 || req.CAR == "" {
-		return usagef("import ipfs needs --car <file> and one IPFS root CID")
+	if fs.NArg() != 1 {
+		return usagef("import ipfs needs one IPFS root CID")
+	}
+	if req.DryRun && req.CAR == "" {
+		return usagef("--dry-run requires --car <file>")
 	}
 	req.Root = fs.Arg(0)
-	p, err := filepath.Abs(req.CAR)
-	if err != nil {
-		return err
+	if req.CAR != "" {
+		p, err := filepath.Abs(req.CAR)
+		if err != nil {
+			return err
+		}
+		req.CAR = p
 	}
-	req.CAR = p
-	n, err := e.nodeOrLocalWrite(ctx)
+	var n node.Node
+	var err error
+	if req.CAR == "" {
+		n, err = e.nodeOrLocal(ctx)
+	} else {
+		n, err = e.nodeOrLocalWrite(ctx)
+	}
 	if err != nil {
 		return err
 	}

@@ -341,7 +341,7 @@ scale and complete air-gap features do not delay first sharing or basic trusted 
   span-index encoding, canonical placement and tombstone/revocation behavior.
 - **Connectivity:** [network verification](docs/networking.md#details-still-to-verify), stock
   path recovery/MTU/congestion, HTTPS-compatible fallback and independent security review.
-- **Migration:** supported UnixFS/DAG profile, installation adapters and provenance manifest.
+- **Migration:** implementation and evidence remain open for representative Kubo pinset reconciliation, production cutover/readiness workflows, and live Bitswap-over-QUIC interoperability; the v1 import profile and manifest are specified in [migration.md](docs/migration.md).
 - **Lifecycle/portability:** DID-wide following, quotas for future names, macOS metadata,
   filename/symlink safety, export stability, upgrades and key/state recovery procedures.
 - **Deferred:** PDS file serving remains deferred/disfavored; upstream QUIC multipath may be

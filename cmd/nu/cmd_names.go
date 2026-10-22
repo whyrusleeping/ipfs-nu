@@ -381,6 +381,16 @@ func printFollow(w io.Writer, f *apiv0.Follow) {
 	root("observed:", f.Observed)
 	root("syncing:", f.Syncing)
 	root("held:", f.Held)
+	if sel := f.Selection; sel != nil {
+		fmt.Fprintf(w, "  selection: %d of %d items selected by %d rule(s): %d held (%d bytes), %d fetching, %d paused", sel.Selected, sel.Items, sel.Rules, sel.Held, sel.HeldBytes, sel.Fetching, sel.Paused)
+		if sel.Shortfall > 0 {
+			fmt.Fprintf(w, " (shortfall %d bytes)", sel.Shortfall)
+		}
+		fmt.Fprintln(w)
+		for _, wn := range sel.Warnings {
+			fmt.Fprintf(w, "  warning: %s\n", wn)
+		}
+	}
 	for _, b := range f.Blockers {
 		fmt.Fprintf(w, "  blocker: %s\n", b)
 	}
@@ -394,8 +404,8 @@ func printFollow(w io.Writer, f *apiv0.Follow) {
 
 var cmdFollow = &command{
 	name:    "follow",
-	args:    "<handle-or-did>/<name> [--dataset ds] [--cluster] [--all] [--replicas k] [--max-size n] [--no-announce]",
-	summary: "mirror a public name as a local dataset that tracks its current target (`follow ls`, `follow refresh`)",
+	args:    "<handle-or-did>/<name> [--dataset ds] [--cluster] [--all] [--replicas k] [--max-size n] [--no-announce] [--select rules.toml]",
+	summary: "mirror a public name as a local dataset that tracks its current target (`follow ls`, `follow refresh`); --select follows a collection by local rules",
 	run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		ds := fs.String("dataset", "", "dataset name (derived from the handle and name by default)")
@@ -406,11 +416,19 @@ var cmdFollow = &command{
 		noAnnounce := fs.Bool("no-announce", false, "follow without announcing (not privacy)")
 		path := fs.String("path", "", "scoped follow (not supported yet)")
 		lazy := fs.Bool("lazy", false, "lazy follow (not supported yet)")
+		sel := fs.String("select", "", "collections: hold only the items these rules (TOML [[rule]] or JSON) select; the catalog is held whole. Repeating it replaces the rules")
 		if err := parseFlags(fs, args); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
 			return usagef("follow needs one name (or `follow ls`)")
+		}
+		var rules json.RawMessage
+		if *sel != "" {
+			var err error
+			if rules, err = readRules(*sel); err != nil {
+				return usagef("--select: %v", err)
+			}
 		}
 		var size int64
 		if *maxSize != "" {
@@ -431,7 +449,7 @@ var cmdFollow = &command{
 		if err != nil {
 			return err
 		}
-		f, err := nn.Follow(ctx, apiv0.FollowRequest{Target: fs.Arg(0), Dataset: *ds, Scope: scope, All: *all, Replicas: *replicas, MaxSize: size, NoAnnounce: *noAnnounce, Path: *path, Lazy: *lazy})
+		f, err := nn.Follow(ctx, apiv0.FollowRequest{Target: fs.Arg(0), Dataset: *ds, Scope: scope, All: *all, Replicas: *replicas, MaxSize: size, NoAnnounce: *noAnnounce, Path: *path, Lazy: *lazy, Select: rules})
 		if err != nil {
 			return err
 		}

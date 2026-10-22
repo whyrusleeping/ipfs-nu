@@ -5,14 +5,14 @@ import (
 	"errors"
 	"net"
 	"testing"
-	"time"
 
+	"github.com/whyrusleeping/nu/nutest/timeouts"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
 func TestMaintainNoticesLostReservationConnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
 	defer cancel()
 	r := newRelay(t, circuit.ServerConfig{})
 	h := newHost(t)

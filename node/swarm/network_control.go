@@ -13,6 +13,7 @@ import (
 	"github.com/whyrusleeping/nu/p2p/disco"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/magicsock"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/netmon"
 	"github.com/whyrusleeping/nu/p2p/portmap"
 	"github.com/whyrusleeping/nu/p2p/proto/autonat"
@@ -37,6 +38,7 @@ type networkControl struct {
 	generation   uint64
 	lastReaction netmon.Reaction
 	confirm      chan struct{}
+	natProfile   *netcheck.Monitor // 0018, see netcheck.go
 }
 
 func literalEndpoint(a wire.Multiaddr) (netip.AddrPort, bool) {
@@ -58,7 +60,7 @@ func (c *connectivity) initNetwork() error {
 		}
 	}
 	var err error
-	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize})
+	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize, Observe: c.observe})
 	if err != nil {
 		return err
 	}
@@ -238,6 +240,13 @@ func (c *connectivity) runNetwork() error {
 				if err := c.s.identify.Push(ctx, conn.PeerID()); err != nil {
 					errs = append(errs, err)
 				}
+				// Physical peers (relays) also re-report our observed address, so the
+				// reflexive candidate follows the new path instead of the stale one.
+				if !c.s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
+					if _, err := c.s.identify.Identify(ctx, conn.PeerID()); err != nil {
+						errs = append(errs, err)
+					}
+				}
 			}
 			return errors.Join(errs...)
 		},
@@ -251,6 +260,9 @@ func (c *connectivity) runNetwork() error {
 		if _, err := pipeline.Register(netmon.Stage(stage), hook); err != nil {
 			return err
 		}
+	}
+	if err := c.startNetcheck(pipeline); err != nil { // 0018 NAT profile
+		return err
 	}
 	mon, err := netmon.Start(c.ctx, netmon.Options{})
 	if err != nil {
@@ -324,13 +336,14 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 		if err != nil {
 			continue
 		}
-		if _, ok := n.c.s.host.Connection(id); !ok {
+		// AutoNAT's current observer profile requires an outer UDP endpoint.
+		// A WSS (possibly proxied) connection is not a UDP reachability witness.
+		if conn, ok := n.c.s.host.Connection(id); !ok || conn.Transport() != "quic-v1" {
 			continue
 		}
 		var reqs []autonat.Request
 		for _, candidate := range n.candidates("") {
-			ip := candidate.Addr.Addr()
-			if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() {
+			if !IsPublicIP(candidate.Addr.Addr()) {
 				continue
 			}
 			addr, err := host.UDPAddress(net.UDPAddrFromAddrPort(candidate.Addr))
@@ -387,6 +400,7 @@ func (n *networkControl) confirmAddresses(ctx context.Context, _ netmon.Event) e
 	if changed {
 		n.c.s.identify.AddressesChanged()
 	}
+	n.c.s.dhtReachable(reach == "public")
 	n.c.mu.Lock()
 	homes := n.c.homes
 	n.c.mu.Unlock()
@@ -402,7 +416,7 @@ func confirmedAddresses(proofs map[netip.AddrPort]map[netip.Addr]bool) []wire.Mu
 	var out []wire.Multiaddr
 	for endpoint, servers := range proofs {
 		ip := endpoint.Addr().Unmap()
-		if len(servers) < 2 || endpoint.Port() == 0 || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || magicsock.IsVirtual(endpoint) {
+		if len(servers) < 2 || endpoint.Port() == 0 || !IsPublicIP(ip) || magicsock.IsVirtual(endpoint) {
 			continue
 		}
 		if addr, err := host.UDPAddress(net.UDPAddrFromAddrPort(endpoint)); err == nil {

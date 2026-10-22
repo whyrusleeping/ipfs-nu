@@ -22,7 +22,6 @@ import (
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
-	"github.com/whyrusleeping/nu/core/atrepo"
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/fetch"
 	"github.com/whyrusleeping/nu/p2p/wire"
@@ -49,6 +48,8 @@ type Config struct {
 	Dir string
 	// Fetch brings content; nil when offline (only held content is used).
 	Fetch FetchFunc
+	// FetchProfile carries the dataset profile and held structure roots for tree diffs.
+	FetchProfile func(context.Context, cid.CID, []wire.PeerID, func(cid.CID) bool, func(cid.CID) []wire.PeerID, []cid.CID, string) error
 	// Ready reports whether target is policy-ready (E6) for dataset name as this node
 	// evaluates it; nil: never (the node then keeps S5 first-held protection).
 	Ready func(name string, target cid.CID) bool
@@ -231,8 +232,8 @@ func pinFor(name string, c cid.CID) store.Pin {
 
 // Profile is the walk profile a dataset's content is pinned and checked under: nu-tree,
 // or for an atproto-account source (0054) atrepo (atrepo+blobs when blobs are selected,
-// so GC keeps them; completeness still means structure and records, since blobs out of
-// the 8 MiB limit are skipped by design).
+// so GC keeps them). Selected in-limit blobs participate in placement completeness;
+// refs declaring more than 8 MiB are skipped by design.
 func Profile(d *cluster.Dataset) string {
 	switch {
 	case d == nil || d.Source.Atrepo == "":
@@ -389,7 +390,7 @@ func (m *Manager) reconcileOne(v *cluster.View, name string, d *cluster.Dataset)
 				s.Reason, s.Detail = "fetch", err.Error()
 			}
 		}
-		if !running && s.Mode == cluster.ModeOwned && m.cfg.Fetch != nil {
+		if !running && s.Mode == cluster.ModeOwned && (m.cfg.Fetch != nil || m.cfg.FetchProfile != nil) {
 			m.startFetch(name, work, pl, v)
 		}
 	}
@@ -501,7 +502,7 @@ func (m *Manager) history(v *cluster.View, name string, d *cluster.Dataset, s *S
 	_ = m.saveLocked()
 	running := m.inflight[name] != nil
 	m.mu.Unlock()
-	if fetchNext.Defined() && s.Complete && !running && !full && m.cfg.Fetch != nil {
+	if fetchNext.Defined() && s.Complete && !running && !full && (m.cfg.Fetch != nil || m.cfg.FetchProfile != nil) {
 		m.startFetch(name, fetchNext, pl, v)
 	}
 }
@@ -657,6 +658,14 @@ func (m *Manager) startFetch(name string, work cid.CID, pl *cluster.Placement, v
 		return
 	}
 	m.inflight[name] = &fetching{target: work, cancel: cancel}
+	var have []cid.CID
+	if st := m.state[name]; st != nil {
+		if c, err := cid.Parse(st.Held); err == nil && c != work {
+			have = append(have, c)
+		}
+	}
+	d, _ := v.Dataset(name)
+	profile := Profile(d)
 	m.wg.Add(1)
 	m.mu.Unlock()
 	self := m.cfg.Self
@@ -679,7 +688,16 @@ func (m *Manager) startFetch(name string, work cid.CID, pl *cluster.Placement, v
 	}
 	go func() {
 		defer m.wg.Done()
-		err := m.cfg.Fetch(ctx, work, members, want, rank)
+		var err error
+		// A prior fetch can finish between reconcile's completeness check and
+		// the inflight check. Do not transfer a whole tree again on that stale result.
+		if !m.check(work, 0, pl, false, profile).complete() {
+			if m.cfg.FetchProfile != nil {
+				err = m.cfg.FetchProfile(ctx, work, members, want, rank, have, profile)
+			} else {
+				err = m.cfg.Fetch(ctx, work, members, want, rank)
+			}
+		}
 		m.mu.Lock()
 		delete(m.inflight, name)
 		if ctx.Err() == nil {
@@ -711,18 +729,13 @@ func (c checkResult) complete() bool {
 
 // check walks target's structure in the store under profile: every structure node must
 // be held, and every blob this member owns (all blobs when full). It also collects the
-// blobs. Under atrepo profiles records are leaves and blobs are not walked.
+// blobs. Atrepo records are leaves except for selected in-limit blob references.
 func (m *Manager) check(target cid.CID, size uint64, pl *cluster.Placement, full bool, profile string) checkResult {
 	res := checkResult{allHeld: true, held: map[cid.Multihash]int64{}}
 	links := fetch.Links
 	if strings.HasPrefix(profile, "atrepo") {
 		links = func(c cid.CID, data []byte) ([]fetch.Link, error) {
-			ls, err := atrepo.Links(c, data)
-			out := make([]fetch.Link, len(ls))
-			for i, l := range ls {
-				out[i] = fetch.Link{CID: l}
-			}
-			return out, err
+			return fetch.AtrepoLinks(c, data, profile == "atrepo+blobs")
 		}
 	}
 	st := m.cfg.Store

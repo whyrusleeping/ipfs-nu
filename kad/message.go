@@ -24,10 +24,22 @@ const (
 
 var ErrMessage = errors.New("kad: malformed message")
 
+// MaxMessage bounds messages this node sends and requests it serves.
 const MaxMessage = 64 << 10
+
+// MaxResponse bounds a response this node reads: GET_PROVIDERS answers for popular keys
+// exceed MaxMessage (upstream accepts 4 MiB).
+const MaxResponse = 1 << 20
 const MaxKey = 80 // upstream go-libp2p Amino rejects provider keys longer than 80 bytes
 const MaxPeers = 20
 const MaxAddrs = 32
+
+// MaxProviders caps the provider entries kept from one response; further entries (and
+// closer peers beyond MaxPeers) are skipped, not an error.
+const MaxProviders = 64
+
+// maxAddrBytes bounds one multiaddr.
+const maxAddrBytes = 1024
 
 type Peer struct {
 	ID    wire.PeerID
@@ -146,7 +158,7 @@ func (p *parser) skip(w int) error {
 		p.off += 8
 		return nil
 	case 2:
-		_, e := p.data(MaxMessage)
+		_, e := p.data(len(p.b))
 		return e
 	case 5:
 		if len(p.b)-p.off < 4 {
@@ -157,6 +169,46 @@ func (p *parser) skip(w int) error {
 	}
 	return ErrMessage
 }
+
+// decodeResponsePeer is decodePeer for responses: addresses over maxAddrBytes or beyond
+// MaxAddrs are dropped instead of failing the entry.
+func decodeResponsePeer(b []byte) (Peer, error) {
+	p := parser{b: b}
+	var out Peer
+	for p.off < len(p.b) {
+		t, e := p.vi()
+		if e != nil {
+			return out, e
+		}
+		n, w := int(t>>3), int(t&7)
+		if n == 2 && w == 2 {
+			x, e := p.data(len(p.b))
+			if e != nil {
+				return out, e
+			}
+			if len(x) <= maxAddrBytes && len(out.Addrs) < MaxAddrs {
+				out.Addrs = append(out.Addrs, x)
+			}
+			continue
+		}
+		if n == 1 && w == 2 {
+			x, e := p.data(44)
+			if e != nil {
+				return out, e
+			}
+			if out.ID, e = wire.PeerIDFromBytes(x); e != nil {
+				return out, e
+			}
+		} else if e = p.skip(w); e != nil {
+			return out, e
+		}
+	}
+	if out.ID == "" {
+		return out, ErrMessage
+	}
+	return out, nil
+}
+
 func decodePeer(b []byte) (Peer, error) {
 	p := parser{b: b}
 	var out Peer
@@ -194,11 +246,23 @@ func decodePeer(b []byte) (Peer, error) {
 	return out, nil
 }
 
-// Decode parses an Amino message, skips supported protobuf unknown fields and
+// Decode parses an Amino request, skips supported protobuf unknown fields and
 // rejects oversized/repeated collections before allocation.
-func Decode(b []byte) (Message, error) {
+func Decode(b []byte) (Message, error) { return decode(b, false) }
+
+// DecodeResponse parses an Amino response of at most MaxResponse bytes. It keeps the first
+// MaxPeers valid closer peers and MaxProviders valid providers and skips the rest; an
+// entry with a bad peer ID is dropped, and addresses beyond the per-peer bounds are
+// dropped. Protobuf framing errors still fail the message.
+func DecodeResponse(b []byte) (Message, error) { return decode(b, true) }
+
+func decode(b []byte, resp bool) (Message, error) {
 	var m Message
-	if len(b) > MaxMessage {
+	limit := MaxMessage
+	if resp {
+		limit = MaxResponse
+	}
+	if len(b) > limit {
 		return m, wire.ErrLimit
 	}
 	p := parser{b: b}
@@ -236,22 +300,31 @@ func Decode(b []byte) (Message, error) {
 			if w != 2 {
 				return m, ErrMessage
 			}
-			x, e := p.data(MaxMessage)
+			x, e := p.data(limit)
 			if e != nil {
 				return m, e
 			}
-			peer, e := decodePeer(x)
-			if e != nil {
-				return m, e
-			}
-			list := &m.Closer
+			list, limitN := &m.Closer, MaxPeers
 			if n == 9 {
 				list = &m.Providers
+				if resp {
+					limitN = MaxProviders
+				}
 			}
-			if len(*list) >= MaxPeers {
-				return m, wire.ErrLimit
+			if !resp {
+				peer, e := decodePeer(x)
+				if e != nil {
+					return m, e
+				}
+				if len(*list) >= limitN {
+					return m, wire.ErrLimit
+				}
+				*list = append(*list, peer)
+			} else if len(*list) < limitN {
+				if peer, e := decodeResponsePeer(x); e == nil {
+					*list = append(*list, peer)
+				}
 			}
-			*list = append(*list, peer)
 		case 10:
 			if w != 0 {
 				return m, ErrMessage

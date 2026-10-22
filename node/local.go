@@ -314,10 +314,17 @@ func (n *Local) Ls(ctx context.Context, t string) (*apiv0.Listing, error) {
 		}
 		return n.atrepoListing(r, root, d, pt.Path, label)
 	}
-	nd, root, p, err := n.resolveOrFetch(ctx, t)
+	pt, root, err := n.parseTarget(ctx, t)
 	if err != nil {
 		return nil, err
 	}
+	// A listing needs the directory's structure, not the content below it (a select
+	// follow lists its whole catalog while holding only selected items).
+	nd, err := n.ensureWith(ctx, root, pt.Path, targetHints(pt), nil, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	p := pt.Path
 	l := &apiv0.Listing{Target: root.String(), Entries: []apiv0.Entry{}}
 	if p != "" {
 		l.Target += "/" + p
@@ -426,6 +433,9 @@ func (n *Local) PinAdd(ctx context.Context, req apiv0.PinRequest) (*apiv0.Operat
 		if err := n.Store.Pin(p); err != nil {
 			return nil, err
 		}
+		if err := n.pinned(c, false); err != nil {
+			return nil, err
+		}
 		return apiPin(p), nil
 	}), nil
 }
@@ -453,7 +463,7 @@ func (n *Local) PinRm(ctx context.Context, s string) error {
 	if removed == 0 {
 		return apiv0.Errorf(apiv0.CodeNotFound, "%s is not pinned", c).WithAction("list pins with `" + nu.Name + " pin ls`")
 	}
-	return nil
+	return n.Repo.SetNoAnnounce(c.String(), false)
 }
 
 func (n *Local) Pins(ctx context.Context, cursor string, limit int) (*apiv0.Page[apiv0.Pin], error) {

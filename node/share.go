@@ -148,6 +148,9 @@ func (n *Local) networkStatus() *apiv0.NetworkStatus {
 		}); ok {
 			ns.Connectivity = live.ConnectivityStatus()
 		}
+		if d, ok := n.Net.(interface{ DHTStatus() *apiv0.DHTStatus }); ok {
+			ns.DHT = d.DHTStatus()
+		}
 	}
 	return ns
 }

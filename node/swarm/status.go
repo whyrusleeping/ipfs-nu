@@ -2,8 +2,10 @@ package swarm
 
 import (
 	"sort"
+	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
+	"github.com/whyrusleeping/nu/p2p/disco"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -13,6 +15,9 @@ import (
 // direct sessions and the cluster's dynamic membership gate remain in force.
 // Re-enabling public networking requires a restart, not an implicit gate clear.
 func (s *Swarm) DisablePublic() {
+	if s.dht != nil {
+		s.dht.close()
+	}
 	if s.connectivity != nil {
 		s.connectivity.close()
 	}
@@ -60,7 +65,8 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 			out.Backup = state.Backup.Base36()
 		}
 		for _, r := range state.Relays {
-			out.Relays = append(out.Relays, apiv0.RelayStatus{PeerID: r.Peer.Base36(), Address: r.Address.String(), RTTMillis: float64(r.RTT.Microseconds()) / 1000, Expires: r.Expires, LastError: r.LastError})
+			id := r.Peer.Base36()
+			out.Relays = append(out.Relays, apiv0.RelayStatus{PeerID: id, Address: r.Address.String(), Role: relayRole(id, state.Home, state.Backup), Reserved: !r.HeldSince.IsZero() && r.Expires.After(time.Now()), RTTMillis: float64(r.RTT.Microseconds()) / 1000, Expires: r.Expires, HeldSince: r.HeldSince, LastError: r.LastError, Transport: r.Transport, UDPError: r.UDPError})
 		}
 	}
 	// Include ordinary wire-compatible peers and outer relay connections too.
@@ -69,6 +75,9 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 		row := apiv0.PeerPathStatus{PeerID: conn.PeerID().Base36(), Path: "recovering"}
 		if !s.host.IsLocalOnlyAddress(conn.RemoteAddr()) {
 			row.Path = "direct-quic"
+			if conn.Transport() == "wss" {
+				row.Path = "relay-wss"
+			}
 			row.Direct = conn.RemoteAddr().String()
 		}
 		paths[conn.PeerID()] = row
@@ -93,6 +102,9 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 				row = previous
 			}
 		}
+		c.mu.Lock()
+		row.RelayMode, row.RelayChoice = p.datagram, p.relayChoice
+		c.mu.Unlock()
 		select {
 		case p.gate <- struct{}{}:
 			if p.relay != "" {
@@ -103,11 +115,26 @@ func (s *Swarm) ConnectivityStatus() *apiv0.ConnectivityStatus {
 			p.unlock()
 		default:
 		}
+		row.History = c.events(id)
+		var st disco.Status
+		session := false
+		if c.network != nil && !closed && c.network.disco != nil {
+			st, session = c.network.disco.Status(id)
+		}
+		if session {
+			row.Candidates, row.Validated = st.Candidates, st.Validated
+			row.ProbesSent, row.ProbesReceived, row.ProbesRejected = st.Sent, st.Received, st.Rejected
+			row.TimeToDirectMillis = float64(st.TimeToDirect.Microseconds()) / 1000
+		}
+		row.Why = explain(row, st, session, out.Reachability)
 		paths[id] = row
 	}
 	for _, p := range paths {
 		out.Paths = append(out.Paths, p)
 	}
 	sort.Slice(out.Paths, func(i, j int) bool { return out.Paths[i].PeerID < out.Paths[j].PeerID })
+	if !closed {
+		c.diagnostics(out)
+	}
 	return out
 }

@@ -42,9 +42,11 @@ func TestIsolatedRefusesExternalEndpoints(t *testing.T) {
 		}
 	}
 	set(map[string]string{
-		"swarm.peers":      `["/ip4/10.0.0.2/udp/4171/quic-v1/p2p/` + self.String() + `", "/ip4/10.0.0.3/udp/4171/quic-v1/p2p/` + stranger.String() + `"]`,
-		"swarm.relays":     `["/ip4/1.2.3.4/udp/4171/quic-v1/p2p/` + stranger.String() + `"]`,
-		"follow.jetstream": "wss://jetstream.example/subscribe",
+		"swarm.peers":       `["/ip4/10.0.0.2/udp/4171/quic-v1/p2p/` + self.String() + `", "/ip4/10.0.0.3/udp/4171/quic-v1/p2p/` + stranger.String() + `"]`,
+		"swarm.relays":      `["/ip4/1.2.3.4/udp/4171/quic-v1/p2p/` + stranger.String() + `"]`,
+		"follow.jetstream":  "wss://jetstream.example/subscribe",
+		"swarm.dht":         "client",
+		"swarm.routing_url": "https://routing.example",
 	})
 	opts := Options{Repo: r, APIListen: "127.0.0.1:0", GatewayListen: "127.0.0.1:0", NoNetwork: true, Logger: slog.New(slog.DiscardHandler)}
 	_, err = Start(ctx, opts)
@@ -52,7 +54,7 @@ func TestIsolatedRefusesExternalEndpoints(t *testing.T) {
 		t.Fatalf("isolated start with external endpoints: %v", err)
 	}
 	msg := err.Error()
-	for _, want := range []string{"swarm.relays", stranger.String(), "follow.jetstream"} {
+	for _, want := range []string{"swarm.relays", stranger.String(), "follow.jetstream", "swarm.dht", "swarm.routing_url"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("refusal does not name %s: %s", want, msg)
 		}
@@ -60,7 +62,7 @@ func TestIsolatedRefusesExternalEndpoints(t *testing.T) {
 	if strings.Contains(msg, "10.0.0.2") {
 		t.Fatalf("member peer refused: %s", msg)
 	}
-	set(map[string]string{"swarm.peers": `["/ip4/10.0.0.2/udp/4171/quic-v1/p2p/` + self.String() + `"]`, "swarm.relays": "[]", "follow.jetstream": `""`})
+	set(map[string]string{"swarm.peers": `["/ip4/10.0.0.2/udp/4171/quic-v1/p2p/` + self.String() + `"]`, "swarm.relays": "[]", "follow.jetstream": `""`, "swarm.dht": "off", "swarm.routing_url": `""`})
 	d, err := Start(ctx, opts)
 	if err != nil {
 		t.Fatalf("isolated start with member peers only: %v", err)

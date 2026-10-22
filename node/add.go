@@ -152,7 +152,10 @@ func (a *adder) pin(c cid.CID) error {
 		return nil
 	}
 	a.o.Stage("pinning")
-	return a.n.Store.Pin(pinFor(c, ""))
+	if err := a.n.Store.Pin(pinFor(c, "")); err != nil {
+		return err
+	}
+	return a.n.pinned(c, a.req.NoAnnounce)
 }
 
 func (a *adder) file(fi os.FileInfo) (*apiv0.AddResult, error) {

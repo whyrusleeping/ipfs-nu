@@ -1,10 +1,10 @@
 ---
 id: "0024"
 title: '0b exit: `nu doctor`, connectivity metrics, NAT-lab exit scenarios in CI'
-status: todo
+status: done
 priority: 2
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-10-22"
 depends_on:
     - "0020"
     - "0014"
@@ -26,3 +26,4 @@ Operability for connectivity, plus the Phase 0b exit gate.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Done (35a3a8a..92f241d; merged 2a26d11, coordinator unioned with 0072 DHT and 0029 workflow). Fixes: transient send errors (ENETUNREACH etc.) no longer kill QUIC connections across address changes; new remote candidate generation re-probes immediately; netmon identify stage re-identifies peers. nu doctor (udp, nat, relays, port mapping, ipv6, per-session why-relayed + history), GET /metrics (hand-rolled exposition, no new dep), NAT-lab gate in .github/workflows/natlab.yml on networking paths. Evidence: real-daemon natlab suite — relay matrix with doctor 'why' rows, home relay SIGKILL failover (same get), direct upgrade + metrics/doctor assertions, Wi-Fi→hotspot switch mid-get completes without restart, UDP-blocked doctor diagnosis; coordinator re-ran TestDaemonNAT* on the merged tree: pass. Remaining: wire swarm.Config.NAT to the p2p/netcheck profiler; CI not yet observed on GitHub.

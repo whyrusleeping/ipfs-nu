@@ -4,6 +4,13 @@ A separate Go module for spikes and interop smoke tests. It may depend on go-lib
 or other reference implementations; the main module never imports it. Run its tests from
 this directory (`cd experiments && go test ./...`); they are not part of the root suite.
 
+## quic-go CID callback (0070)
+
+`quicgo-cid/` is a **separate nested module** (not covered by `go test ./...` here) that
+builds against a locally patched quic-go created by `quicgo-cid/setup.sh`. It holds the
+proposed upstream patch, submission text and the before/after Nu-path benchmark; see
+[its README](quicgo-cid/README.md).
+
 ## Circuit relay v2 (0013)
 
 `go test -run '^TestCircuitV2$' -v .` checks actual go-libp2p reservation clients

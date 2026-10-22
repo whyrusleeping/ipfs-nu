@@ -31,6 +31,16 @@ python3 interop/run.py blackbox --out interop/results/blackbox
 python3 interop/run.py amino --public --out interop/results/amino
 ```
 
+For the 0029 preview sanity, add `--daemon` to `transport` and `blackbox
+--client kubo`. Both Nu transport roles and the black-box dialer then use the
+actual `daemon.Start` assembly (local API/gateway/store, serving/fetching,
+sessions, mDNS, magicsock, disco, AutoNAT, netmon), not the minimal host fixture.
+No replacement protocol handlers or private/NoNetwork switches are used. The
+probe still does not enable operator-only public HTTPS, producer listeners,
+cluster membership or invent a default relay fleet. `results.json` records
+`fullDaemon: true`; logs list the live protocols. The image includes the complete
+daemon code in either mode. See [0029 results/limitations](../docs/validation.md#first-magic-preview-automated-nat-lab-exit-0029-2026-10-22).
+
 The runner records `results.json`, raw peer/probe logs, build logs, source pins,
 Nu HEAD and dirty state. Each pair must have a successful dialer exit **and**
 finite latency measurements with ms units (positive handshake, nonnegative ping).

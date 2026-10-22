@@ -744,6 +744,7 @@ Neither mode sends any traffic, even encrypted, through third parties.
   with no default route. A packet capture must show no packets to non-member addresses and no
   DNS queries for public names. *Implemented (0069):* the daemon of an isolated-cluster
   member refuses to start when config sets `swarm.relays`, `swarm.portmap_gateway`,
+  `swarm.dht` (other than `off`), `swarm.lookup_domain`, `swarm.routing_url`,
   `follow.jetstream`, `public.listen`, or `swarm.peers`/`swarm.probe_allow` entries whose
   peer is not a member; the error names each key. The private-mode variant of the check
   is not implemented yet (private nodes already run no relays or port mapping).

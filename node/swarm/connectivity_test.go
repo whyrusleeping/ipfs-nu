@@ -3,11 +3,14 @@ package swarm
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/whyrusleeping/nu/node"
 	"github.com/whyrusleeping/nu/p2p/homerelay"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/proto"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 	"github.com/whyrusleeping/nu/relay"
@@ -22,8 +25,13 @@ func swarmKey(t *testing.T) *wire.NodeKey {
 	return k
 }
 func relayFor(t *testing.T, ids ...wire.PeerID) *relay.Server {
+	return relayWithDelay(t, 0, ids...)
+}
+
+// relayWithDelay simulates distance on loopback through ping reply latency.
+func relayWithDelay(t *testing.T, delay time.Duration, ids ...wire.PeerID) *relay.Server {
 	t.Helper()
-	r, err := relay.New(relay.Config{Host: host.Config{Key: swarmKey(t), Listen: []string{"127.0.0.1:0"}}, Server: circuit.ServerConfig{Admitted: ids}})
+	r, err := relay.New(relay.Config{Host: host.Config{Key: swarmKey(t), Listen: []string{"127.0.0.1:0"}}, Server: circuit.ServerConfig{Admitted: ids}, Core: proto.Config{PingReplyDelay: delay}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +114,42 @@ func TestSwarmCircuitAssembly(t *testing.T) {
 		t.Fatalf("first byte delayed beyond setup + relay RTT: first=%v setup=%v rtt=%v", firstEcho, setup, rtt)
 	}
 	t.Logf("cold relay first echo=%v; measured circuit/inner handshake=%v; relay RTT=%v (50ms scheduler allowance)", firstEcho, setup, rtt)
-	for _, path := range a.ConnectivityStatus().Paths {
+	status := a.ConnectivityStatus()
+	for _, path := range status.Paths {
 		if path.PeerID == b.ID().Base36() && (path.Path != "relay" || path.Direct != "") {
 			t.Fatal("status published a virtual key as a physical path", path)
 		}
+		// Doctor material: the session history records the circuit setup and Why
+		// explains the relayed path (loopback candidates are private, hence undisclosed).
+		if path.PeerID == b.ID().Base36() && (len(path.History) == 0 || !strings.Contains(path.History[0].Event, "relay circuit via "+r.Host.ID().Base36()) || path.Why == "") {
+			t.Fatalf("session history/why missing: %+v", path)
+		}
+	}
+	if status.UDP == nil || status.UDP.Outbound != "ok" || status.NAT == nil || status.PortMapping == nil || status.PortMapping.Enabled || status.IPv6 == nil {
+		t.Fatalf("doctor diagnostics incomplete: %+v %+v %+v %+v", status.UDP, status.NAT, status.PortMapping, status.IPv6)
+	}
+	var reserved int
+	for _, rs := range status.Relays {
+		if rs.Reserved && rs.Role == "home" && !rs.HeldSince.IsZero() {
+			reserved++
+		}
+	}
+	if reserved != 1 {
+		t.Fatalf("home reservation state not reported: %+v", status.Relays)
+	}
+	var m node.Metrics
+	a.Metrics(ctx, &m)
+	var page strings.Builder
+	if _, err := m.WriteTo(&page); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# TYPE nu_net_bytes_total counter", `nu_net_bytes_total{direction="sent",path="relay"} `, `nu_net_paths{path="relay"} 1`, `nu_net_relay_reserved{relay="` + r.Host.ID().Base36() + `",role="home"} 1`, "nu_net_session_setup_seconds_count 1", `nu_net_probes_total{outcome="sent"}`} {
+		if !strings.Contains(page.String(), want) {
+			t.Fatalf("metrics page lacks %q:\n%s", want, page.String())
+		}
+	}
+	if strings.Contains(page.String(), `nu_net_bytes_total{direction="sent",path="relay"} 0`) {
+		t.Fatal("relayed bytes not counted")
 	}
 	for _, addr := range a.Addrs() {
 		if a.Host().IsLocalOnlyMultiaddr(addr) {

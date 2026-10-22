@@ -104,6 +104,9 @@ func newTreeWalk(req *TreeRequest, get func(cid.CID) ([]byte, error)) *treeWalk 
 }
 
 func (w *treeWalk) run() error {
+	if w.req.Profile == ProfileAtrepo {
+		return w.atrepo()
+	}
 	if len(w.req.Nodes) > 0 {
 		for _, c := range w.req.Nodes {
 			k := kindNode

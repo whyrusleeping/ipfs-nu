@@ -179,7 +179,7 @@ edits, not insertions.
 | (default) | Full tree and all blobs pinned |
 | `--path <prefix>` | Pin the proof chain plus one subtree (e.g. one language, one namespace) |
 | `--lazy` | Pin all structure; fetch blobs on access and cache them unpinned |
-| `--select <rules>` | Collections only: pin all structure (the catalog) plus items chosen by local metadata rules ([D22](collections.md#following-collections)) |
+| `--select <rules>` | Collections only: pin all structure (the catalog) plus items chosen by local metadata rules ([D22](collections.md#following-collections); built in 0058) |
 | `--max-size <bytes>` | Logical referenced-byte quota for the selected dataset/scope; not cumulative download allowance |
 
 Before syncing B, estimate logical size and additional unique physical bytes/headroom where
@@ -292,7 +292,10 @@ W2 `held` wait on it. Config `[follow] jetstream = "wss://…/subscribe"` (off b
 hint source: the daemon subscribes to exactly the followed DIDs and
 `io.ipfs.nu.name`, re-subscribes when the follow set changes, and each event for a
 followed name triggers the same verified PDS re-resolution (`node.TestFollowJetstreamHint`);
-nothing from the stream is stored. `[follow] poll` sets the backstop. Not built: scoped
+nothing from the stream is stored. `[follow] poll` sets the backstop. Select follows
+(`--select rules`, 0058) are collection datasets held by local rules: see
+[D22 "Following collections"](collections.md#following-collections) for their roots,
+completeness marks and status. Not built: scoped
 (`--path`) and lazy follows (refused with `not_supported`), DID-wide follows,
 `/nu/name/1` peer push, the random pre-PDS delay, the dataset swarm key, transfer
 budgets, and size verification during fetch (the claim is trusted for the quota check

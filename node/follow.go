@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/whyrusleeping/nu"
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/cluster"
+	"github.com/whyrusleeping/nu/collection"
 	"github.com/whyrusleeping/nu/follow"
 	"github.com/whyrusleeping/nu/names"
 	"github.com/whyrusleeping/nu/node/target"
@@ -88,6 +90,26 @@ func (n *Local) Follow(ctx context.Context, req apiv0.FollowRequest) (*apiv0.Fol
 	if req.MaxSize < 0 {
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "max_size must not be negative")
 	}
+	var rules []collection.Rule
+	if len(req.Select) > 0 {
+		if err := json.Unmarshal(req.Select, &rules); err != nil {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "bad selection rules: %v", err).
+				WithAction("rules are a list of flat rule objects, see docs/collections.md \"Selection\"")
+		}
+		if req.All || req.Replicas != 0 {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "--select holds items by rules on this node; --all and --replicas do not apply")
+		}
+		if len(rules) == 0 {
+			return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "--select needs at least one rule").
+				WithAction("a rule with no predicates (`[[rule]]` alone) selects every item")
+		}
+		for i := range rules {
+			if rules[i].Rescue != nil {
+				return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "rule %d: %v", i+1, collection.ErrRescueFollow).
+					WithAction("rescue needs a cluster holdings index; follow with plain selection rules")
+			}
+		}
+	}
 	scope := req.Scope
 	if scope == "" {
 		scope = ScopeLocal
@@ -131,6 +153,11 @@ func (n *Local) Follow(ctx context.Context, req apiv0.FollowRequest) (*apiv0.Fol
 		}
 		for name, d := range oc.View().Datasets {
 			if !d.Deleted && d.Value != nil && d.Value.Source.Name == uri {
+				if rules != nil && collection.IsFollow(d.Value) && (req.Dataset == "" || req.Dataset == name) {
+					// The same name followed by selection again: the rules (and the
+					// budget) are replaced.
+					return n.selectRules(ctx, other, oc, name, d.Value, rules, req.MaxSize)
+				}
 				return nil, apiv0.Errorf(apiv0.CodeConflict, "%s is already followed as dataset %q (%s)", req.Target, name, other).
 					WithAction("see `" + nu.Name + " follow ls`")
 			}
@@ -140,7 +167,7 @@ func (n *Local) Follow(ctx context.Context, req apiv0.FollowRequest) (*apiv0.Fol
 		return nil, apiv0.Errorf(apiv0.CodeConflict, "dataset %q already exists", ds).WithAction("pass --dataset <other-name>")
 	}
 	pol := cluster.Policy{Replicas: req.Replicas, All: req.All}
-	if pol.Replicas == 0 && !pol.All {
+	if pol.Replicas == 0 && !pol.All && rules == nil {
 		pol.Replicas = 2
 		if scope == ScopeLocal {
 			pol.Replicas = 1
@@ -150,20 +177,69 @@ func (n *Local) Follow(ctx context.Context, req apiv0.FollowRequest) (*apiv0.Fol
 		pol.Replicas = 0
 	}
 	src := cluster.Source{Name: uri}
-	if req.MaxSize > 0 || req.NoAnnounce {
-		src.Follow = &cluster.Follow{MaxSize: req.MaxSize, NoAnnounce: req.NoAnnounce}
+	if req.MaxSize > 0 || req.NoAnnounce || rules != nil {
+		src.Follow = &cluster.Follow{MaxSize: req.MaxSize, NoAnnounce: req.NoAnnounce, Select: rules != nil}
 	}
 	note := "follow of " + pt.Authority + "/" + pt.Name
-	if _, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: ds, Value: &cluster.Dataset{Source: src, Policy: pol, Note: note}}); err != nil {
+	rec := &cluster.Dataset{Source: src, Policy: pol, Note: note}
+	if rules != nil {
+		// A select follow is a collection whose single writer is the followed name (D22
+		// "Following collections"); its facets come from the published header.
+		rec.Collection = &cluster.CollectionPolicy{}
+	}
+	if _, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: ds, Value: rec}); err != nil {
 		if errors.Is(err, cluster.ErrNoKey) {
 			return nil, writeErr(err)
 		}
 		return nil, apiv0.Errorf(apiv0.CodeInvalidArgument, "cannot write the dataset record: %v", err)
 	}
+	if rules != nil {
+		cm, _ := n.collectionsOf(c)
+		if cm == nil {
+			return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the collection state for the follow")
+		}
+		if _, err := cm.SetRules(ds, rules, false); err != nil {
+			_, _ = c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: ds, Delete: true})
+			return nil, err
+		}
+	}
 	d, _ := c.View().Dataset(ds)
 	n.applyResolution(ctx, scope, c, ds, d, res, deleted)
 	n.names.wake()
 	return n.followInfo(ctx, scope, c, ds), nil
+}
+
+// selectRules replaces a select follow's rules and re-evaluates the selection; held
+// items that the new rules keep are not fetched again.
+func (n *Local) selectRules(ctx context.Context, scope string, c *cluster.Cluster, ds string, d *cluster.Dataset, rules []collection.Rule, maxSize int64) (*apiv0.Follow, error) {
+	cm, started := n.collectionsOf(c)
+	if cm == nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the collection state for the follow")
+	}
+	if _, err := cm.SetRules(ds, rules, false); err != nil {
+		return nil, err
+	}
+	if maxSize != d.Source.Follow.MaxSize {
+		upd := *d
+		fo := *d.Source.Follow
+		fo.MaxSize = maxSize
+		upd.Source.Follow = &fo
+		if _, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: ds, Value: &upd}); err != nil {
+			return nil, writeErr(err)
+		}
+	}
+	n.syncFollowCollection(ctx, cm, started)
+	return n.followInfo(ctx, scope, c, ds), nil
+}
+
+// syncFollowCollection moves a select follow along: a started manager is kicked, one
+// without loops (no daemon) runs a synchronous pass.
+func (n *Local) syncFollowCollection(ctx context.Context, cm *collection.Manager, started bool) {
+	if started {
+		cm.Kick()
+		return
+	}
+	_ = cm.Sync(ctx)
 }
 
 // applyResolution writes a newer verified target as the head (D19 version ordering: only
@@ -193,7 +269,7 @@ func (n *Local) applyResolution(ctx context.Context, scope string, c *cluster.Cl
 		n.followNote(ds, func(f *followState) { f.refreshed, f.err, f.ended, f.paused = now, "", nil, "" })
 		return
 	}
-	if f := d.Source.Follow; f != nil && f.MaxSize > 0 && res.Size > f.MaxSize {
+	if f := d.Source.Follow; f != nil && f.MaxSize > 0 && res.Size > f.MaxSize && !f.Select {
 		n.followNote(ds, func(f *followState) {
 			f.refreshed, f.err, f.ended = now, "", nil
 			f.paused = fmt.Sprintf("quota: the publisher claims %d bytes, over the follow's max_size %d", res.Size, d.Source.Follow.MaxSize)
@@ -224,6 +300,12 @@ func (n *Local) writeHeadObserved(ctx context.Context, c *cluster.Cluster, ds st
 	}
 	if _, err := c.Write(ops...); err != nil {
 		return nil, err
+	}
+	if collection.IsFollow(d) {
+		if cm, started := n.collectionsOf(c); cm != nil {
+			n.syncFollowCollection(ctx, cm, started)
+		}
+		return n.datasetInfo(c, ds), nil
 	}
 	if m := n.replicaFor(c); m != nil {
 		if c.Mode() == cluster.ModeLocal {
@@ -264,6 +346,30 @@ func (n *Local) followInfo(ctx context.Context, scope string, c *cluster.Cluster
 		f.Held = &apiv0.FollowRoot{Target: rel.Held}
 		if h, ok := v.Head(ds); ok && h.Value.Target == rel.Held {
 			f.Held.Rev = headRev
+		}
+	}
+	if collection.IsFollow(d) {
+		// A select follow holds its catalog whole and items by rules: held is the head
+		// whose catalog was synced, syncing a head not yet synced.
+		if cm, _ := n.collectionsOf(c); cm != nil {
+			if sel, err := cm.FollowSummary(ds); err == nil {
+				f.Selection = sel
+				f.Content.Detail = fmt.Sprintf("%d items in the catalog, %d selected (%d held, %d fetching, %d paused)", sel.Items, sel.Selected, sel.Held, sel.Fetching, sel.Paused)
+				f.Content.State = "selecting"
+				if sel.CatalogSynced && sel.Fetching == 0 {
+					f.Content.State = "ready"
+				}
+			}
+			if synced, ok := cm.SyncedHead(ds); ok {
+				f.Held = &apiv0.FollowRoot{Target: synced.String()}
+				if h, ok := v.Head(ds); ok && h.Value.Target == synced.String() {
+					f.Held.Rev = headRev
+				} else if ok {
+					f.Syncing = &apiv0.FollowRoot{Target: h.Value.Target, Rev: headRev}
+				}
+			} else if h, ok := v.Head(ds); ok {
+				f.Syncing = &apiv0.FollowRoot{Target: h.Value.Target, Rev: headRev}
+			}
 		}
 	}
 	switch {
@@ -358,15 +464,24 @@ func (n *Local) Unfollow(ctx context.Context, key string) (*apiv0.Follow, error)
 		return nil, err
 	}
 	f := n.followInfo(ctx, scope, c, ds)
+	d, _ := c.View().Dataset(ds)
 	if _, err := c.Write(cluster.Op{Collection: cluster.NSDataset, RKey: ds, Delete: true}); err != nil {
 		return nil, writeErr(err)
 	}
 	if m := n.replicaFor(c); m != nil {
 		m.Reconcile()
 	}
+	var released []string
+	if collection.IsFollow(d) {
+		if cm, _ := n.collectionsOf(c); cm != nil {
+			released, _ = cm.Forget(ds)
+		}
+	}
+	if released == nil {
+		released = []string{}
+	}
 	pins, err := n.Store.Pins()
 	if err == nil {
-		released := []string{}
 		for _, p := range pins {
 			if p.Source == store.SourceCluster && p.Name == "dataset/"+ds {
 				if _, err := n.Store.Unpin(p); err == nil {

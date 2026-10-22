@@ -51,21 +51,11 @@ func (n *Local) collectionsLocked(c *cluster.Cluster) (*collection.Manager, erro
 	if cs.coll != nil {
 		return cs.coll, nil
 	}
-	cfg := collection.Config{DBPath: filepath.Join(n.clusterDir("net"), "collections.db"), Store: n.Store, Cluster: c, Self: n.PeerID(),
-		Service: n.ClusterServiceNoLock, Index: CollectionIndex || n.configIndex(), Interval: ClusterInterval, HTTP: n.httpClient(),
-		IngestBackoff: IngestBackoff, HeadInterval: HeadInterval,
-		GC: func(ctx context.Context) { _, _ = n.Store.GC(ctx, store.GCOptions{Grace: GCGrace}) },
-		Changed: func() {
-			if svc := n.clusters.svcPtr.Load(); svc != nil {
-				svc.KickHeartbeat()
-			}
-		}}
-	if f := n.Fetcher; f != nil {
-		if _, none := f.(NoFetcher); !none {
-			cfg.FetchItem = func(ctx context.Context, root cid.CID) error { return f.Fetch(ctx, root, nil, nil) }
-			if cf, ok := f.(CatalogFetcher); ok {
-				cfg.FetchCatalog = cf.FetchCatalog
-			}
+	cfg := n.collectionConfig(c, "net")
+	cfg.Service, cfg.Index, cfg.HTTP = n.ClusterServiceNoLock, CollectionIndex || n.configIndex(), n.httpClient()
+	cfg.Changed = func() {
+		if svc := n.clusters.svcPtr.Load(); svc != nil {
+			svc.KickHeartbeat()
 		}
 	}
 	m, err := collection.Open(cfg)
@@ -75,6 +65,115 @@ func (n *Local) collectionsLocked(c *cluster.Cluster) (*collection.Manager, erro
 	cs.coll = m
 	cs.collPtr.Store(m)
 	return m, nil
+}
+
+// collectionConfig is the manager configuration shared by both scopes: the store, the
+// cluster, the fetchers networking provides and the release GC.
+func (n *Local) collectionConfig(c *cluster.Cluster, kind string) collection.Config {
+	cfg := collection.Config{DBPath: filepath.Join(n.clusterDir(kind), "collections.db"), Store: n.Store, Cluster: c, Self: n.PeerID(),
+		Interval: ClusterInterval, IngestBackoff: IngestBackoff, HeadInterval: HeadInterval,
+		GC: func(ctx context.Context) { _, _ = n.Store.GC(ctx, store.GCOptions{Grace: GCGrace}) }}
+	if f := n.Fetcher; f != nil {
+		if _, none := f.(NoFetcher); !none {
+			cfg.FetchItem = func(ctx context.Context, root cid.CID) error { return f.Fetch(ctx, root, nil, nil) }
+			if cf, ok := f.(CatalogFetcher); ok {
+				cfg.FetchCatalog = cf.FetchCatalog
+			}
+		}
+	}
+	return cfg
+}
+
+// localCollectionsLocked opens the local cluster's collection manager (select follows,
+// 0058; cs.mu held). It runs no cluster service, index or ingest.
+func (n *Local) localCollectionsLocked() (*collection.Manager, error) {
+	cs := &n.clusters
+	if cs.lcoll != nil {
+		return cs.lcoll, nil
+	}
+	if cs.local == nil {
+		c, err := cluster.Open(n.clusterOpts("local"))
+		if err != nil {
+			return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the local cluster: %v", err)
+		}
+		cs.local = c
+	}
+	m, err := collection.Open(n.collectionConfig(cs.local, "local"))
+	if err != nil {
+		return nil, apiv0.Errorf(apiv0.CodeFailed, "cannot open the local collection state: %v", err)
+	}
+	cs.lcoll = m
+	cs.lcollPtr.Store(m)
+	return m, nil
+}
+
+// startLocalCollectionsLocked runs the local manager's loops once networking is
+// attached (cs.mu held). A manager opened before attach is reopened with the fetchers.
+func (n *Local) startLocalCollectionsLocked() {
+	cs := &n.clusters
+	if cs.sw == nil || cs.lcollStarted {
+		return
+	}
+	if cs.lcoll != nil {
+		_ = cs.lcoll.Close()
+		cs.lcoll = nil
+		cs.lcollPtr.Store(nil)
+	}
+	m, err := n.localCollectionsLocked()
+	if err != nil {
+		return
+	}
+	m.Start()
+	cs.lcollStarted = true
+}
+
+// collectionsOf returns the collection manager of cluster c (opening it), and whether
+// its loops run; nil for an unknown cluster.
+func (n *Local) collectionsOf(c *cluster.Cluster) (*collection.Manager, bool) {
+	cs := &n.clusters
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	switch {
+	case c != nil && c == cs.net:
+		m, _ := n.collectionsLocked(c)
+		return m, cs.svc != nil
+	case c != nil && c == cs.local:
+		n.startLocalCollectionsLocked()
+		m, _ := n.localCollectionsLocked()
+		return m, cs.lcollStarted
+	}
+	return nil, false
+}
+
+// collectionsPtr is collectionsOf for readers that must not take cs.mu.
+func (n *Local) collectionsPtr(c *cluster.Cluster) *collection.Manager {
+	if c != nil && c.Mode() == cluster.ModeLocal {
+		return n.clusters.lcollPtr.Load()
+	}
+	return n.clusters.collPtr.Load()
+}
+
+// collectionsFor finds the manager holding collection name: the networked cluster's,
+// else the local cluster's (a select follow).
+func (n *Local) collectionsFor(name string) (*collection.Manager, error) {
+	if c, _ := n.netCluster(); c != nil {
+		if d, ok := c.View().Dataset(name); ok && d.Collection != nil {
+			m, _ := n.collectionsOf(c)
+			if m != nil {
+				return m, nil
+			}
+		}
+	}
+	if cluster.Exists(n.clusterDir("local")) {
+		if c, err := n.localCluster(); err == nil {
+			if d, ok := c.View().Dataset(name); ok && d.Collection != nil {
+				if m, _ := n.collectionsOf(c); m != nil {
+					return m, nil
+				}
+			}
+		}
+	}
+	return n.collections()
 }
 
 // configIndex reads cluster.index from the repo config.
@@ -145,7 +244,7 @@ func collectionPolicy(req apiv0.DatasetCreateRequest) (*cluster.CollectionPolicy
 }
 
 func (n *Local) CollectionStatus(ctx context.Context, name string) (*apiv0.CollectionStatus, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +252,7 @@ func (n *Local) CollectionStatus(ctx context.Context, name string) (*apiv0.Colle
 }
 
 func (n *Local) CollectionItems(ctx context.Context, name string, q apiv0.CollectionItemsQuery) (*apiv0.Page[apiv0.CollectionItem], error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +260,7 @@ func (n *Local) CollectionItems(ctx context.Context, name string, q apiv0.Collec
 }
 
 func (n *Local) CollectionItem(ctx context.Context, name, path string) (*apiv0.CollectionItem, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +268,7 @@ func (n *Local) CollectionItem(ctx context.Context, name, path string) (*apiv0.C
 }
 
 func (n *Local) CollectionRules(ctx context.Context, name string) (*apiv0.CollectionRules, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +280,7 @@ func (n *Local) CollectionRules(ctx context.Context, name string) (*apiv0.Collec
 }
 
 func (n *Local) CollectionSetRules(ctx context.Context, name string, raw json.RawMessage, dryRun bool) (*apiv0.CollectionRules, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +295,7 @@ func (n *Local) CollectionSetRules(ctx context.Context, name string, raw json.Ra
 }
 
 func (n *Local) CollectionHold(ctx context.Context, name, path string, hold bool) (*apiv0.CollectionItem, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +311,7 @@ func (n *Local) CollectionHold(ctx context.Context, name, path string, hold bool
 }
 
 func (n *Local) CollectionConflicts(ctx context.Context, name string) ([]apiv0.CollectionConflict, error) {
-	m, err := n.collections()
+	m, err := n.collectionsFor(name)
 	if err != nil {
 		return nil, err
 	}

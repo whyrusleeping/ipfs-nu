@@ -28,6 +28,7 @@ func (c *connectivity) prune() {
 					}
 					c.socket.RemovePeer(id)
 					delete(c.peers, id)
+					c.forget(id)
 					p.unlock()
 				default:
 				}

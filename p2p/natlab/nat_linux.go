@@ -56,6 +56,11 @@ type NATConfig struct {
 	// Lifetime bounds idle fixture pinholes/learned filters, not conntrack flows.
 	// Existing conntrack flows can outlive this; FlushMappings destroys both.
 	Lifetime time.Duration
+	// ExpireFlows also expires idle established UDP conntrack flows after
+	// Lifetime by setting this router namespace's UDP conntrack timeouts, so
+	// the whole mapping (not only unsolicited pinholes) has that idle lifetime.
+	// Per-network-namespace sysctls only; it affects all UDP flows of this router.
+	ExpireFlows bool
 }
 type Binding struct {
 	Inside netip.AddrPort
@@ -124,8 +129,15 @@ func (n *Namespace) NAT(cfg NATConfig) (*NAT, error) {
 	if _, err := n.Run("sysctl", "-qw", "net.ipv4.ip_forward=1", "net.ipv4.conf.all.rp_filter=0", "net.ipv4.conf.default.rp_filter=0"); err != nil {
 		return nil, err
 	}
-	if err := n.NFT(nat.rules); err != nil {
+	if err := nat.install(""); err != nil {
 		return nil, err
+	}
+	if cfg.ExpireFlows {
+		// Conntrack is loaded by the NAT table above; these are per-netns.
+		secs := int(cfg.Lifetime.Seconds())
+		if _, err := n.Run("sysctl", "-qw", fmt.Sprintf("net.netfilter.nf_conntrack_udp_timeout=%d", secs), fmt.Sprintf("net.netfilter.nf_conntrack_udp_timeout_stream=%d", secs)); err != nil {
+			return nil, err
+		}
 	}
 	return nat, nil
 }
@@ -232,6 +244,41 @@ func (n *NAT) render() string {
 	fmt.Fprintln(&b, "}\n}")
 	return b.String()
 }
+
+// install loads the rendered table: first sets and empty chains, then the rules
+// in bounded batches. Large fixtures (many inside x destination bindings) would
+// otherwise exceed one netlink batch ("Message too long").
+func (n *NAT) install(prefix string) error {
+	var skeleton strings.Builder
+	var rules []string
+	skeleton.WriteString(prefix)
+	chain := ""
+	for _, line := range strings.Split(n.rules, "\n") {
+		switch {
+		case strings.HasPrefix(line, "chain "):
+			chain = strings.Fields(line)[1]
+			skeleton.WriteString(line + "\n")
+		case chain != "" && strings.HasPrefix(line, "}"):
+			chain = ""
+			skeleton.WriteString(line + "\n")
+		case chain != "" && strings.TrimSpace(line) != "":
+			rules = append(rules, "add rule ip nu_natlab "+chain+" "+line)
+		default:
+			skeleton.WriteString(line + "\n")
+		}
+	}
+	if err := n.NS.NFT(skeleton.String()); err != nil {
+		return err
+	}
+	for len(rules) > 0 {
+		batch := rules[:min(64, len(rules))]
+		rules = rules[len(batch):]
+		if err := n.NS.NFT(strings.Join(batch, "\n") + "\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (n *NAT) outboundMatch(m Binding) string {
 	match := fmt.Sprintf("iifname %q oifname %q ip saddr %s udp sport %d", n.Config.LAN, n.Config.WAN, m.Inside.Addr(), m.Inside.Port())
 	if m.Remote.IsValid() {
@@ -266,7 +313,7 @@ func (n *NAT) Rebind(ip netip.Addr) error {
 		n.Bindings[i].Outside = netip.AddrPortFrom(ip, n.Bindings[i].Outside.Port())
 	}
 	n.rules = n.render()
-	if err := n.NS.NFT("delete table ip nu_natlab\n" + n.rules); err != nil {
+	if err := n.install("delete table ip nu_natlab\n"); err != nil {
 		return err
 	}
 	return n.FlushMappings()

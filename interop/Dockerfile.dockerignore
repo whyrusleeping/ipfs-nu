@@ -1,0 +1,13 @@
+**
+!**/
+!**/*.go
+!**/go.mod
+!**/go.sum
+!api/openapi.json
+.git
+.worktrees
+.ycc
+interop/.cache
+interop/results
+interop/js/node_modules
+experiments

@@ -55,6 +55,12 @@ type Config struct {
 	// ManualStreams disables automatic protocol routing for transport-level users.
 	ManualStreams bool
 	AllowPeer     ConnectionGater
+	// InitialPacketSize overrides quic-go's outer initial packet size (default
+	// 1280) and DisablePathMTUDiscovery pins it. Inner virtual-address connections
+	// are configured by the socket policy instead. Used by relay budget tests and
+	// constrained operators; a 1200-byte outer budget cannot carry datagram relaying.
+	InitialPacketSize       uint16
+	DisablePathMTUDiscovery bool
 }
 type endpoint struct {
 	socket    net.PacketConn
@@ -129,7 +135,7 @@ func New(cfg Config) (h *Host, err error) {
 		}
 		return h.checkPeer(key.PeerID())
 	}
-	h.quic = &quic.Config{Versions: []quic.Version{quic.Version1}, HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: time.Minute, KeepAlivePeriod: 20 * time.Second, MaxIncomingStreams: int64(h.limits.MaxStreamsPerConnection), MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: 64 << 10, MaxStreamReceiveWindow: 1 << 20, InitialConnectionReceiveWindow: 256 << 10, MaxConnectionReceiveWindow: 4 << 20}
+	h.quic = &quic.Config{Versions: []quic.Version{quic.Version1}, HandshakeIdleTimeout: 5 * time.Second, MaxIdleTimeout: time.Minute, KeepAlivePeriod: 20 * time.Second, MaxIncomingStreams: int64(h.limits.MaxStreamsPerConnection), MaxIncomingUniStreams: -1, InitialStreamReceiveWindow: 64 << 10, MaxStreamReceiveWindow: 1 << 20, InitialConnectionReceiveWindow: 256 << 10, MaxConnectionReceiveWindow: 4 << 20, EnableDatagrams: true, InitialPacketSize: cfg.InitialPacketSize, DisablePathMTUDiscovery: cfg.DisablePathMTUDiscovery}
 	listen := cfg.Listen
 	if len(listen) == 0 && len(cfg.PacketConns) == 0 {
 		listen = []string{"127.0.0.1:0"}
@@ -333,6 +339,21 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		}
 	}
 	c := &Conn{host: h, quic: qc, peer: key.PeerID(), key: key, outbound: outbound, streams: make(map[*Stream]struct{})}
+	c, err = h.registerConnection(c)
+	if err == nil && c.SupportsDatagrams() {
+		// Only Nu peers negotiate RFC 9221; the reader answers budget probes and
+		// dispatches relay channels for the life of this connection.
+		c.dmu.Lock()
+		c.startDatagramReader()
+		c.dmu.Unlock()
+	}
+	return c, err
+}
+
+// registerConnection applies the same peer gates and resource accounting to
+// authenticated QUIC and WSS connections.
+func (h *Host) registerConnection(c *Conn) (*Conn, error) {
+	outbound := c.outbound
 	for {
 		version, err := h.checkPeerVersion(c.peer)
 		if err != nil {
@@ -372,13 +393,13 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		if h.limits.MaxConnectionsPerPeer != 1 || !preferred || list[0].outbound == outbound {
 			return nil, ErrLimit
 		}
-		_ = list[0].quic.CloseWithError(0, "duplicate connection")
+		_ = list[0].Close()
 		list = nil
 	}
 	h.peers[c.peer] = append(list, c)
 	h.signalChangedLocked()
 	h.wg.Add(1)
-	go func() { defer h.wg.Done(); <-qc.Context().Done(); h.removeConnection(c) }()
+	go func() { defer h.wg.Done(); <-c.Context().Done(); h.removeConnection(c) }()
 	if !h.manualStreams {
 		h.wg.Add(1)
 		go c.routeStreams()
@@ -525,7 +546,7 @@ func (h *Host) Close() error {
 		h.cancel()
 		for _, list := range h.peers {
 			for _, c := range list {
-				_ = c.quic.CloseWithError(0, "host closed")
+				_ = c.Close()
 			}
 		}
 		h.mu.Unlock()

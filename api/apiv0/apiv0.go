@@ -304,6 +304,8 @@ type NetworkStatus struct {
 	// Connected lists the connected peers' base36 PeerIds.
 	Connected    []string            `json:"connected,omitempty"`
 	Connectivity *ConnectivityStatus `json:"connectivity,omitempty"`
+	// DHT is the Amino DHT state while a swarm runs.
+	DHT *DHTStatus `json:"dht,omitempty"`
 }
 
 // StoreStatus is the store section of Status (D17 A8). Byte fields are physical: what

@@ -1,10 +1,10 @@
 ---
 id: "0021"
 title: '0b+: Port prediction + guard-railed birthday spraying for hard NATs'
-status: todo
+status: in_progress
 priority: 3
 created: "2026-09-24"
-updated: "2026-10-21"
+updated: "2026-10-22"
 depends_on:
     - "0017"
     - "0018"
@@ -29,3 +29,4 @@ The hard-NAT strategies (D11c step 4), selected from both peers' NAT profiles.
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-22: Two attempts with an opus agent were declined by the model (no output) — likely the 'spraying' framing tripping a safety filter despite the consent-based scope (authenticated peers of one session, probes only to the peer-reported NAT IP, MAC'd, bounded). Back to todo; next try with the disco author (sol) after 0029, framed as cooperative ICE-style rendezvous.

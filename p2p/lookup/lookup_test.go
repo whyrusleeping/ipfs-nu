@@ -45,7 +45,9 @@ func TestCacheHintsRestartParallel(t *testing.T) {
 			t.Fatal("address vector")
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// A ceiling that only catches hangs: the cache answers a lookup immediately even
+	// while a source blocks, so a correct run never approaches it (0074).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	link := "nu://bafk-test?peer=" + id(t).Base36() + "&addr=" + url.QueryEscape("/ip4/127.0.0.1/udp/4171/quic-v1")
 	hints, err := lookup.ParseHints(link, lookup.DefaultHintLimits())

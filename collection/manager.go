@@ -353,6 +353,9 @@ func (m *Manager) heldCatalog(ctx context.Context, p store.Pin) bool {
 // writerDIDs returns the writer heads to merge: every ranked writer for union, the LWW
 // winner otherwise.
 func writerDIDs(v *cluster.View, name string, d *cluster.Dataset) []string {
+	if IsFollow(d) {
+		return followWriter(v, name)
+	}
 	if d.Collection.MergeMode() == cluster.MergeUnion {
 		return v.Writers(name)
 	}
@@ -370,13 +373,20 @@ func (m *Manager) syncCatalog(ctx context.Context, name string, d *cluster.Datas
 		return nil, err
 	}
 	specs := facetSpecs(d)
-	specJSON, _ := json.Marshal(specs)
 	var changed []string
-	if string(specJSON) != row.facets {
-		if changed, err = m.reextract(name, specs); err != nil {
-			return nil, err
+	syncSpecs := func() error {
+		specJSON, _ := json.Marshal(specs)
+		if string(specJSON) == row.facets {
+			return nil
 		}
-		if _, err := m.db.Exec(`UPDATE coll SET facets = ? WHERE ds = ?`, string(specJSON), name); err != nil {
+		if changed, err = m.reextract(name, specs); err != nil {
+			return err
+		}
+		_, err := m.db.Exec(`UPDATE coll SET facets = ? WHERE ds = ?`, string(specJSON), name)
+		return err
+	}
+	if !IsFollow(d) {
+		if err := syncSpecs(); err != nil {
 			return nil, err
 		}
 	}
@@ -430,6 +440,18 @@ func (m *Manager) syncCatalog(ctx context.Context, name string, d *cluster.Datas
 			continue
 		}
 		next = append(next, writerState{DID: did, Head: target, Root: root})
+	}
+	if IsFollow(d) {
+		// The publisher's header declares the facets (D22 merged header); a follow has no
+		// declarations of its own.
+		if len(next) > 0 {
+			specs = m.headerFacets(next[0].Head)
+		} else {
+			specs = m.specs(name, d)
+		}
+		if err := syncSpecs(); err != nil {
+			return nil, err
+		}
 	}
 	drops := v.DropPaths(name)
 	var nextWriters []Writer
@@ -728,10 +750,11 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 	if err != nil {
 		return err
 	}
-	if err := Compile(rules, facetSpecs(d)); err != nil {
+	if err := Compile(rules, m.specs(name, d)); err != nil {
 		m.log.Warn("collection rules do not fit the facets; ignoring rules", "collection", name, "err", err)
 		rules = nil
 	}
+	limit := followLimit(d)
 	now := m.now()
 	set := map[string]bool{}
 	for _, p := range changed {
@@ -781,13 +804,13 @@ func (m *Manager) evaluate(name string, d *cluster.Dataset, changed []string) er
 		return err
 	}
 	paths := slices.Sorted(maps.Keys(set))
-	own, err := m.ownHeads(name)
+	own, err := m.ownHeads(name, d)
 	if err != nil {
 		return err
 	}
 	released := false
 	for _, p := range paths {
-		r, err := m.evalItem(name, p, rules, now, own, fl)
+		r, err := m.evalItem(name, p, rules, now, own, fl, limit)
 		if err != nil {
 			_, _ = m.db.Exec(`UPDATE coll SET floor = '' WHERE ds = ?`, name) // re-decide everything next pass
 			return err
@@ -808,13 +831,18 @@ type want struct {
 
 // ownHeads answers whether this node's own writer heads, as last merged, have an entry
 // at a path: such items are held with source `writer` (the writer is their first
-// source), whichever writer the merged view credits with the entry.
+// source), whichever writer the merged view credits with the entry. A followed
+// collection has none: the follower's admin signs the head it rebuilt from the
+// publisher's proof, but it is no writer.
 type ownHeads struct {
 	roots []cid.CID
 	dir   func(cid.CID) *mst.Tree[tree.Entry]
 }
 
-func (m *Manager) ownHeads(name string) (*ownHeads, error) {
+func (m *Manager) ownHeads(name string, d *cluster.Dataset) (*ownHeads, error) {
+	if IsFollow(d) {
+		return &ownHeads{}, nil
+	}
 	row, err := m.loadColl(name)
 	if err != nil {
 		return nil, err
@@ -848,7 +876,7 @@ func (o *ownHeads) has(path string, entry cid.CID) bool {
 
 // evalItem decides one item's holding and applies it; it reports a release. fl is the
 // collection's floor placement (nil: replicas 0).
-func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, own *ownHeads, fl *cluster.Placement) (bool, error) {
+func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, own *ownHeads, fl *cluster.Placement, limit int64) (bool, error) {
 	it, err := m.item(name, path)
 	if err != nil {
 		return false, err
@@ -894,7 +922,7 @@ func (m *Manager) evalItem(name, path string, rules []Rule, now time.Time, own *
 	if w == nil {
 		return m.release(name, path, cur)
 	}
-	return false, m.hold(name, it, cur, *w, rules)
+	return false, m.hold(name, it, cur, *w, rules, limit)
 }
 
 func pinSource(src string) string {
@@ -917,10 +945,21 @@ func held(h *holding) bool {
 	return h != nil && h.state != StatePaused
 }
 
-// hold makes the item held under w, within the rule's budget.
-func (m *Manager) hold(name string, it *itemRow, cur *holding, w want, rules []Rule) error {
+// hold makes the item held under w, within the rule's budget and, for a followed
+// collection, the follow's max_size over every holding (limit; 0: none).
+func (m *Manager) hold(name string, it *itemRow, cur *holding, w want, rules []Rule, limit int64) error {
 	if held(cur) && cur.entry == it.entry && cur.src == w.src && cur.rule == w.rule {
 		return nil
+	}
+	pause := func() error {
+		if held(cur) {
+			if _, err := m.release(name, it.path, cur); err != nil {
+				return err
+			}
+		}
+		_, err := m.db.Exec(`INSERT OR REPLACE INTO holdings (ds, path, entry, state, src, rule, bytes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			name, it.path, it.entry.Bytes(), StatePaused, w.src, w.rule, it.size)
+		return err
 	}
 	if w.rule >= 0 && (!held(cur) || cur.rule != w.rule) {
 		if budget := rules[w.rule].Budget(); budget > 0 {
@@ -930,15 +969,18 @@ func (m *Manager) hold(name string, it *itemRow, cur *holding, w want, rules []R
 				return err
 			}
 			if used+int64(it.size) > budget {
-				if held(cur) {
-					if _, err := m.release(name, it.path, cur); err != nil {
-						return err
-					}
-				}
-				_, err := m.db.Exec(`INSERT OR REPLACE INTO holdings (ds, path, entry, state, src, rule, bytes) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					name, it.path, it.entry.Bytes(), StatePaused, w.src, w.rule, it.size)
-				return err
+				return pause()
 			}
+		}
+	}
+	if limit > 0 && (!held(cur) || cur.entry != it.entry) {
+		var used int64
+		if err := m.db.QueryRow(`SELECT COALESCE(SUM(bytes), 0) FROM holdings WHERE ds = ? AND state != ? AND path != ?`,
+			name, StatePaused, it.path).Scan(&used); err != nil {
+			return err
+		}
+		if used+int64(it.size) > limit {
+			return pause()
 		}
 	}
 	if err := m.cfg.Store.Pin(itemPin(name, it.path, w.src, it.entry)); err != nil {

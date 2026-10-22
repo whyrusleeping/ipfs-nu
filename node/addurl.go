@@ -99,6 +99,9 @@ func (n *Local) addURL(req apiv0.AddRequest) (*apiv0.Operation, error) {
 			if err := n.Store.Pin(pinFor(root, "")); err != nil {
 				return nil, err
 			}
+			if err := n.pinned(root, req.NoAnnounce); err != nil {
+				return nil, err
+			}
 		}
 		res := &apiv0.AddResult{CID: root.String(), Name: name, Size: imp.Size, Files: 1, Link: n.Link(root, "").String(), Source: src}
 		return res, n.addMeta(res, imp.CID, tree.KindFile, uint64(imp.Size), req.Meta, src)

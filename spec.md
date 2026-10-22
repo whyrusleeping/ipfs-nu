@@ -280,8 +280,11 @@ leaf modules, `github.com/decred/dcrd/dcrec/secp256k1/v4` (libp2p secp256k1 veri
 stdlib does not implement that curve), `modernc.org/sqlite` (metadata, DRISL blocks, pins, indexes; blobs are files),
 `miekg/dns`, `BurntSushi/toml`, Prometheus client. Adapt Tailscale's
 BSD-3 portmapper/netmon instead of importing `tailscale.com`. WSS/Noise/yamux, when needed
-for reach, belong to networking rather than an import-only build tag. Retain stock QUIC/TLS;
-own security-critical code requires parser fuzzing, interop, NAT lab and independent review.
+for reach, belong to networking rather than an import-only build tag. The TCP relay profile
+uses Nu-owned bounded WebSocket and yamux implementations, stdlib `crypto/ecdh` X25519 and
+SHA-256, and the existing `golang.org/x/crypto/chacha20poly1305` for libp2p Noise XX; no
+additional module is selected. Retain stock QUIC/TLS; own security-critical code requires
+parser fuzzing, interop, NAT lab and independent review.
 
 ## Milestones
 

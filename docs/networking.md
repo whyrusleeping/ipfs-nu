@@ -34,16 +34,42 @@ Client mode registers no Kademlia handler and therefore does not advertise
 messages because Amino peers may reuse one stream for multiple RPCs; `ADD_PROVIDER` is
 one-way and the server continues reading until EOF.
 
-Wire/runtime limits: 64 KiB message, 80-byte key (matching upstream's provider-key
-limit), 20 peers/message and 32 addresses/peer (1024 bytes/address); routing k=20,
+Wire/runtime limits: requests (sent and served) are at most 64 KiB with 20 peers/message
+and 32 addresses/peer (1024 bytes/address), violations rejecting the message. Responses read
+are at most 1 MiB (upstream accepts 4 MiB; popular `GET_PROVIDERS` answers exceed 64 KiB) and
+are truncated, not rejected: the first 64 valid provider and 20 valid closer-peer entries
+are kept and later ones skipped, an entry with an invalid peer ID is dropped, and addresses
+over 1024 bytes or beyond 32 per peer are dropped; protobuf framing errors still fail the
+response. Keys are at most 80 bytes (matching upstream's provider-key limit); routing k=20,
 lookup alpha=3 and at most 16 rounds. Server defaults are 32 concurrent requests,
 4 per authenticated peer and 4096 provider records. Provider records expire after
 48 h; `ProvideAndRepublish` refreshes local announcements every 22 h. Client APIs
 are `FindNode`, `FindProviders`, `Provide`, `ProvidePinned`, plus `Service.Lookup`
-for the lookup.Source hook; `fetch.Kademlia` adapts GET_PROVIDERS. The owner must
-pass only pinned blob/file-node/tree-root CIDs to `ProvidePinned` (never interior
-shards) and supply usable advertised addresses. Node/CLI wiring and automatic pin
-enumeration are not installed yet; hint/LAN/private lookup remains independent.
+for the lookup.Source hook; `fetch.Kademlia` adapts GET_PROVIDERS. Lookups stop when
+the K closest known peers have been asked; a provider lookup returns as soon as a round
+yields providers. Servers learn inbound peers only when their identify snapshot
+advertises `/ipfs/kad/1.0.0` at usable addresses (`Config.ServerAddrs`).
+
+**Daemon wiring (0072, `node/swarm/dht.go`).** Public-mode swarms run the service
+according to `swarm.dht`: `auto` (default) runs it when a non-loopback address is bound
+(a loopback-only socket cannot reach Amino), `client` always, `off` never; private and
+isolated swarms never construct it. Bootstrap resolves the deployed `bootstrap.libp2p.io`
+peers, then does a self lookup; the table is refreshed every 5 minutes and re-bootstrapped
+when it holds fewer than K peers. Server mode follows the connectivity owner's AutoNAT
+verdict (`reach == "public"` → handler registered; anything else → client). The service
+is a lookup source (D13 step 7) beside optional `swarm.lookup_domain` (dnsaddr) and
+`swarm.routing_url` (routing/v1) sources, and `fetch.Kademlia` is a fetch provider source
+beside connected peers (which are now limited to peers whose identify advertises a `/nu`
+data protocol). Providing follows D15: on every pin and every 22 h the daemon announces
+each public-intent pin's root (sources explicit, public, my-names, follow; never cluster,
+surplus, collection or IPFS-import pins, whose content is member-only per
+[cluster.md](cluster.md#network-modes)) plus, for recursive nu-tree pins, every file node
+and blob beneath it (never directory shards), at most 4096 keys per cycle, with the publication address set
+(confirmed/public interface addresses and known relay circuits; nothing is announced,
+and status says so, when that set is empty). `--no-announce` roots are recorded in
+`$NU_PATH/no-announce.json` and skipped. `nu status`/`doctor` and `GET /status`
+(`network.dht`) show mode, routing-table size, last bootstrap and last provide.
+Hint/LAN/private lookup remains independent of all of this.
 
 Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, Helia and
 Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus
@@ -53,12 +79,72 @@ participation. Joining Amino does not imply UnixFS/Bitswap data support.
 peers. Standard non-Nu relayed secure connections await Noise/yamux. `nu doctor` explains
 limitations and next actions. Basic routed/private archival does not depend on relays/NAT.
 
-**Production public reach:** HTTPS-compatible Nu relay fallback (planned WSS/TCP 443 with
-appropriate security/multiplexing) precedes broad public recommendation, rather than waiting
-for hard-NAT tuning, advanced clusters or browser-native p2p. Its exact wire/security mapping
-and endpoint/proxy requirements must be specified and tested; “HTTPS works somewhere” is
-not a guarantee the admitted relay is reachable. Public HTTPS gateway reads arrive earlier
-and do not themselves provide peer connectivity.
+**Production public reach:** the TCP fallback is libp2p WebSocket over ordinary Web-PKI
+TLS (`/dns/<name>/tcp/443/tls/ws`, equivalently `/wss`), then multistream-select
+`/noise` (Noise XX, X25519, ChaCha20-Poly1305, SHA-256), then `/yamux/1.0.0`.
+Noise's static X25519 key is signed by the libp2p identity key using
+`noise-libp2p-static-key:`; dialing MUST verify the configured relay PeerID, independently
+of TLS's DNS certificate validation. Neither plaintext WS nor a Nu-specific TCP security
+protocol is a public fallback. Noise early-data/muxer negotiation is not required: negotiate
+yamux after the handshake. This path belongs to networking, not optional IPFS import.
+
+Nu nodes maintain ordinary circuit-v2 reservations over that connection. CONNECT/STOP
+streams select `/nu/qpath/1` and carry the existing framed inner QUIC connection; no new
+content transport or resume format is introduced. The outer Noise identity authenticates
+the relay hop, while inner QUIC authenticates the destination. Disco/direct upgrades and
+verified transfer checkpoints retain their existing ownership and semantics. Standard peers
+can use the outer WSS/Noise/yamux connection and circuit-v2 without understanding qpath.
+
+The operator MUST declare admitted relay endpoints (DNS name, TCP port, relay PeerID and
+certificate), alongside any QUIC endpoint for the same relay. Remote identify or peer records
+MUST NOT enlarge this authorization list. UDP failure may select a declared WSS alternative;
+status/doctor must expose the selected transport and UDP failure reason. Never silently
+fall back to plaintext, disable certificate checking, or use ambient proxy credentials.
+
+The daemon accepts these endpoints in `swarm.relays` (a string array): at most 16
+relay identities, each with one literal `/ip4|ip6/.../udp/.../quic-v1/p2p/<relay>`
+and one `/dns|dns4|dns6|ip4|ip6/.../tcp/.../tls/ws/p2p/<relay>` (or `/wss`)
+endpoint. An explicit share-link hint may authorize a relay endpoint, but each
+identity still has at most one endpoint per transport (32 known identities total).
+Identify/lookup records may select an already authorized endpoint, not add one.
+Each UDP and WSS setup attempt has its own two-second budget; caller cancellation
+still bounds the entire operation. Reservations reuse the selected live connection;
+WSS is not periodically torn down just to retry UDP.
+
+`swarm.proxy = "http://proxy.example:8080"` explicitly configures HTTP CONNECT for
+WSS; optional URL user/password supplies Basic proxy authentication. Environment
+proxy discovery, PAC, SOCKS, HTTPS-to-proxy and NTLM are not supported. TLS uses the
+system trust store, including an explicitly installed operator CA; certificate
+hostname verification is always enabled. `swarm.relay_cert_pins` optionally contains
+`"<relay-PeerID>@<64-hex-SHA256-of-leaf-certificate-DER>"` entries for configured WSS
+relays. Pins are additional checks, never replacements for certificate/hostname
+validation, and must be updated when the certificate rotates. Status reports
+`transport` (`quic-v1`/`wss`) and `udp_error`; a failed UDP attempt is not by itself
+proof that a firewall blocked UDP. Doctor reports failed CONNECT/TLS/Upgrade stages
+without proxy credentials. WSS-only relays are not UDP AutoNAT witnesses.
+
+| Endpoint / middlebox | Production contract |
+|---|---|
+| Direct TCP 443 with valid DNS certificate and HTTP/1.1 Upgrade | Supported target; operator supplies certificate/key and explicit endpoint |
+| Explicit HTTP CONNECT proxy allowing the admitted host:443 | Supported target; tunnel first, then end-to-end TLS, WebSocket, Noise and yamux; no proxy auto-discovery |
+| TLS-intercepting proxy | Unsupported; certificate/identity failures identify the failed stage; no insecure retry. Operators must not install interception roots for relay dialing. A locally trusted interception CA cannot be distinguished automatically from the operator's CA; deployments needing that guarantee must pin the relay certificate via TLS verification policy |
+| Proxy denying CONNECT or stripping WebSocket Upgrade | Fail clearly with CONNECT/Upgrade status, without leaking credentials |
+| HTTPS permitted only to other domains, HTTP/2-only gateways, captive portals | No reach guarantee; configure an admitted accessible relay or change network policy |
+
+Listener admission MUST bound unauthenticated connections and handshake time, HTTP headers,
+WebSocket frames, Noise records and yamux streams/windows before allocating peer-controlled
+sizes. WebSocket compression and text messages are not negotiated. Circuit reservations,
+per-peer/per-observed-IP slots, full-service allow-list and byte/duration limits apply unchanged
+to WSS; outer transport authentication grants no content or unlimited relay authorization.
+Proxy clients share the proxy's observed-IP budget. Connection closure must release all stream,
+reservation and handshake slots. Rate/account admission and production fleet operation remain
+0039, not an implication of transport availability.
+
+This normative mapping precedes broad public recommendation. Implementation acceptance still
+requires both-direction standard-peer interop, bounded decoder seeds/security review, and a
+verified resumable Nu transfer with UDP blocked on both ends (including CONNECT proxy). It
+is not a claim those gates have passed. “HTTPS works somewhere” does not imply an admitted
+relay is reachable. Public HTTPS gateway reads do not themselves provide peer connectivity.
 
 **Extensions:** standard-peer DCUtR, browser-facing WebTransport/WebRTC-direct, optional
 gossipsub, HTTP over libp2p and further interop. IPFS one-way import has its own adoption gate.
@@ -332,6 +418,34 @@ direction apply by default. Global/per-peer/per-observed-IP slots still constrai
 admitted traffic. Production operator/admission policy remains 0039; ordinary
 Noise/yamux relayed connections and Nu qpath upgrades are separate work.
 
+### WSS relay listener and wire implementation (0041)
+
+`nu relay` can additionally listen on TCP using `--wss-listen 0.0.0.0:443`,
+`--wss-cert /path/fullchain.pem`, `--wss-key /path/key.pem`, and an explicit
+`--advertise /dns/relay.example/tcp/443/tls/ws` (the relay PeerID is appended).
+Equivalent `[relay]` keys are `wss_listen`, `wss_cert`, `wss_key` and
+`wss_max_connections`. QUIC `--listen` remains independent. Certificates are
+operator-provisioned; no automatic ACME or project relay fleet is implied.
+The listener serves WebSocket Upgrade only at `/`, disables HTTP/2 and WebSocket
+compression, rejects browser Origin requests, and caps TCP/TLS/HTTP connections
+at 128 by default (including idle or unauthenticated connections). HTTP header
+setup and transport negotiation each have ten-second bounds. HTTP headers are
+bounded to 16 KiB (plus net/http's fixed parser read-ahead allowance), WebSocket
+frames to 1 MiB and fragmented messages to 4 MiB, Noise handshake messages to
+16 KiB and transport records to 65535 bytes. Yamux defaults to 64 streams with
+fixed 256 KiB receive windows and a bounded 128-frame output/control queue.
+Host peer gates and connection/stream limits apply identically to QUIC and WSS;
+circuit per-IP accounting uses the actual TCP source address, never proxy headers.
+Hijacked WebSocket connections remain listener-owned and are closed on shutdown.
+
+The wire packages and `Host.DialWSS`/`AcceptWSS` are implemented and tested against
+go-libp2p's full WebSocket + Noise + yamux stack in both directions. A real WSS
+relay reservation/voucher/CONNECT/STOP echo is covered by `relay/wss_test.go`.
+These are foundations, not the UDP-blocked resumable-transfer acceptance gate:
+relay-manager fallback, swarm integration, doctor reporting, and NAT-lab evidence
+must be completed before claiming production fallback. Rust interop and independent
+security review remain unverified.
+
 ### v0 swarm connectivity configuration
 
 `[swarm]` accepts `relays = ["/ip4/<ip>/udp/<port>/quic-v1/p2p/<relay>", ...]`
@@ -354,13 +468,24 @@ reflexive observations never grant probe permission. Without suitable grants pee
 remain relayed: safe relay sharing does not depend on hole punching. No ranges,
 prediction, DNS target resolution or blanket-true authorization are installed.
 
+`peer_relay_allow = ["<peerID>", ...]` (public mode only) makes this node a bounded
+circuit relay for exactly those peers; see [D11c §5](#5-relay-optimization).
+
+`dht = "auto" | "client" | "off"` (default `auto`) selects Amino participation, and
+`lookup_domain = "<peer domain>"` / `routing_url = "https://…"` add a dnsaddr and a
+routing/v1 peer-address source; see [D8](#d8-wire-profile-and-compatibility) for the
+daemon wiring. None of the three applies in private/isolated mode.
+
 `portmap_gateway = "<literal IP>"` optionally enables PCP/NAT-PMP/UPnP leases at
 that operator-selected gateway for the shared socket's port. Mappings remain tentative
 candidates; no automatic gateway discovery is claimed. Two independent observer IPs
 must AutoNAT-verify the same endpoint before public reachability withdraws reservations.
 Those verified public endpoints enter the address snapshot before withdrawal. Public
-signed identify records omit LAN/loopback literals; explicit user share links can
-still carry LAN hints. Network invalidation revokes confirmed endpoints and restores
+signed identify records and DHT provider records omit LAN/loopback literals and the
+CGNAT range 100.64.0.0/10 (RFC 6598; also tailnets such as Tailscale), which is
+reachable only inside its carrier/tailnet (`swarm.IsPublicIP`); the same filter applies
+to AutoNAT candidates/proofs and to Amino routing referrals. Explicit user share links
+can still carry LAN, tailnet and loopback hints. Network invalidation revokes confirmed endpoints and restores
 relay demand before rechecking reachability.
 D12 runs real invalidation/confirmation/mapping-refresh/renewal/push/probing hooks.
 Physical socket replacement is **not implemented**: route/address changes revoke
@@ -450,7 +575,9 @@ removed reserved addresses to the OS. They are never reused within a socket's li
 `AddPeer`/`RemovePeer`, `SetDirectPaths`, `UseDirect`/`UseRelay` and `Paths` provide the
 control-plane seam: path candidates are not authorization. Defaults bound the socket to
 128 peers, 256 queued relay receive datagrams, 32 direct endpoints and 64 routed CIDs per peer.
-Each peer has at most one relay with a 64-datagram transmit queue and two I/O workers.
+Each peer has at most one relay with a 64-datagram transmit queue and two I/O workers;
+a negotiated datagram packet leg (D11c §5) may be attached to it and is used per packet
+with automatic fallback to the stream.
 `Relay.Done` signals failure; `Relay.Close` cancels/joins the leg without closing the
 logical PacketConn. The Host socket-policy hooks select the conservative inner config
 while keeping real-address outer/standard connections on their normal config. Existing
@@ -608,6 +735,23 @@ and holes left by filtered/disco packets. A relay arrival wakes an idle physical
 with a private deadline, without changing the logical caller deadline. There is no
 second UDP reader or direct-path userspace receive queue. The synchronous CID observer
 still incurs stock quic-go event-construction costs; near-raw throughput is not assumed.
+
+**Planned observer switch (0070).** An upstream quic-go API,
+`Config.ConnectionIDTracer` with `AddedConnectionID`/`RemovedConnectionID` callbacks,
+has been proposed ([patch and measurements](../experiments/quicgo-cid/README.md)). It
+reports the connection's own Transport routing-table changes: handshake CIDs
+(including the server's copy of the client's original DCID), each NEW_CONNECTION_ID
+before it is sent, retired IDs 3 PTO after retirement, and all remaining IDs on
+close. Once a **stock** quic-go release contains it (or an equivalent API), bump
+quic-go and replace the qlog `Tracer` in `QUICConfigForPeer` with that callback.
+Keep the per-connection owner (only the registering connection removes a route,
+never steal a colliding CID) and the 64-CID-per-peer cap; chain any base callback.
+Leave `Config.Tracer` untouched. The qlog observer then disappears from the inner path.
+Retirement then follows quic-go's grace period instead of immediate deletion on a
+received RETIRE_CONNECTION_ID frame. Rerun the 0015 benchmark against
+uninstrumented Raw to close 0070. Until then the main module keeps the qlog observer.
+Do not use a fork or `replace`: the patched build exists only in that experiments module.
+
 See [implementation and ownership](../p2p/magicsock/README.md),
 [core measurements](validation.md#nu-path-packet-core-0015-2026-10-21) and
 [stock-stack feasibility](validation.md#stock-quic-go-nu-path-spike-0038-2026-10-21).
@@ -635,6 +779,135 @@ At startup, on network changes and periodically, measure:
 - Hairpinning, IPv6 and firewall behavior, UDP blocking and available port-mapping protocols.
 
 Exchange the compact NAT profile during candidate exchange and display it in `nu doctor`.
+
+#### v1 netcheck observers and profile (0018)
+
+`p2p/netcheck` implements this step. AutoNAT v2 and circuit v2 are **not** extended: AutoNAT
+answers reachability from a fresh port only, and NAT profiling needs replies from a chosen
+alternate IP/port and to a chosen port, so it has its own small observer protocol.
+
+**Descriptor stream `/nu/netcheck/1`.** On an authenticated connection the client writes the
+single byte `01` and half-closes; the observer replies `version=1:u8 | count:u8 (1–6) |
+count × (role:u8, endpoint:19)` and closes (endpoint encoding as in `/nu/path/1`). Roles are
+primary=1, alternate port=2 (same IP, different port) and alternate IP=3 (same family and port,
+different IP); at most one set per family, primary first, roles in order, sets contiguous.
+Other encodings are rejected. Handler concurrency is 16 streams; 5 s deadline. `nu relay`
+serves it when configured with literal (never wildcard) observer sockets; a set may advertise
+1:1-NAT public addresses that differ from its bound addresses. The descriptor only names
+UDP sockets: it is not reachability evidence and grants nothing.
+
+**UDP probes.** Every packet in either direction is exactly 64 bytes:
+
+```
+0-3   magic 02 6e 63 01        // no QUIC fixed bit, not the disco envelope
+4     type: 1 request, 2 response, 3 hairpin (client-to-client)
+5     request flags: 1 reply from alternate port, 2 from alternate IP (at most one)
+6-7   request target port, 0 = reply to the source port
+8-23  random transaction ID
+24-39 cookie (requests: zero for plain requests); response: fresh cookie for the source IP
+40-58 response: observed source endpoint of the request
+59    response: role of the replying socket
+60-63 reserved zero
+```
+
+Fields that are not defined for a type must be zero. Observers answer a plain request from
+the receiving socket to its source. A request with flags or a target port needs an unexpired
+cookie issued to the **same source IP**: `expiry:u32 (unix seconds) | HMAC-SHA256(key,
+"nu-netcheck-1 cookie" | expiry | ip16)[:12]`, a per-process random key, 10-minute default
+lifetime (1 min–1 h). Cookies prove return routability to an IP, never a port. Change flags
+are honoured only on the primary socket and only for roles the observer has; the target port
+always uses the requester's observed IP. Replies are never larger than requests (no
+amplification) and leave from the observer's own sockets only. Budgets: 20 replies/s per
+source IP (burst 40, at most 4096 tracked IPs) and 2000/s globally (burst 4000). Malformed,
+unauthorised and over-budget requests are dropped silently. An observer is thus at most an
+equal-size reflector toward an IP that already proved it receives its replies, like STUN
+with CHANGE-REQUEST/RESPONSE-PORT; it cannot be aimed at other hosts. Hosts sharing one
+CGNAT IP can receive these fixed-format packets on their mappings; that is accepted.
+
+**Measurement** (one family at a time, dedicated sockets, never the shared QUIC socket):
+
+1. A mapping socket asks each observer's primary (≤ 4 observers per family, preferring those
+   with an alternate IP, then an alternate port), then the first answering observer's
+   alternates. Equal mapped endpoints everywhere: EIM (`none` when equal to the local
+   endpoint). Different across ports of one IP: APDM. Equal per IP but different across IPs:
+   ADM; if no same-IP pair exists, unresolved EDM. At least three observer endpoints on two
+   IPs are needed for a full class. Differing external IPs set `varying-ip`.
+2. Five fresh sockets map toward that observer back to back. Preserving when most keep their
+   local port; otherwise delta = median consecutive port difference, jitter = maximum
+   deviation; sequential when 0 < |delta| ≤ 256 and jitter ≤ 64, else random.
+3. The first of those sockets is the filtering socket: it never contacts anything else. It
+   requests an alternate-port reply, and an alternate-IP reply when available; otherwise
+   another observer IP (never contacted from it) sends to its mapping via a target-port
+   request from the mapping socket. Both received: EIF; port only: ADF; neither: APDF.
+4. Hairpin: one fresh socket sends a type-3 packet to another's external endpoint. Received:
+   yes; missing under EIF: no; missing under ADF/APDF: unknown (filtering may drop it).
+5. Lifetime (IPv4): one fresh socket per rung maps once and idles. At rung time a separate
+   control socket asks the observer to send, from the endpoint the rung contacted, to that
+   rung's mapping (the rung never sends again). Coarse rungs double from 5 s to 240 s; three
+   fine rungs split the failing octave in quarter-octave steps; the estimate is the geometric
+   mean of the alive/expired bracket (≤ 9 % bracket error). Never expired: `>=max`; already
+   expired at the first rung: `<min`. Keepalive owners may shorten the 25 s default from it.
+6. UDP blocked: IPv4 sockets work but no observer answers. IPv6: `unavailable` without a
+   routed IPv6 socket, `blocked` without answers, else `ok` with its mapping/filtering (a
+   stateful IPv6 firewall shows as ADF/APDF with mapping `none`). Port mapping protocols come
+   from the socket owner's `p2p/portmap` client, not from netcheck.
+
+A quick IPv4 profile sends about 15 requests (unanswered probes are retransmitted up to three times within
+their 1 s wait) and takes roughly 1–3 s; the lifetime ladder adds 11 sockets (one per rung
+plus a control socket) and takes up to about 3 × the measured lifetime.
+`netcheck.Monitor` runs the quick profile on start, after each network-change hook
+(`Monitor.Hook`, register on the D12 pipeline; it only triggers and returns) and every 30
+minutes; the ladder runs on start, after network changes and at most every 6 h. A network
+change cancels an in-flight run and discards the old lifetime; runs without observers
+retry after 1 minute. Observers come from the owner. `nu relay --netcheck <ip:port>
+[--netcheck-alt-port <port>] [--netcheck-alt-ip <ip>]` serves them (literal IPs, one set
+per family; not yet a `[relay]` config key). A public-mode daemon profiles against its
+connected configured relays that serve `/nu/netcheck/1`, registers `Monitor.Hook` at the
+`RestartProbing` stage and serves `/nu/natprofile/1`. `Swarm.NATProfile()` exposes
+the typed report; the default `swarm.Config.NAT` adapter uses it for status/`nu doctor`
+with `source: netcheck`, RFC 4787 mapping/filtering names, observer count and the
+full measured profile in `detail` (including allocation and lifetime bounds).
+Before the first report or without netcheck observers, diagnostics fall back to the
+explicitly labelled identify estimate (`source: observations`). An explicit
+`Config.NAT` overrides the default; returning nil still requests that fallback.
+Private/isolated mode starts none of this. Public Nu peers running observers and
+disco's use of remote profiles are not wired yet.
+
+**Profile v1** is 18 bytes, address-free, big-endian, every enum zero = not measured:
+
+```
+0 version=1 | 1 udp4 (ok=1, blocked=2) | 2 mapping4 | 3 filtering4 | 4 allocation4 |
+5-6 delta:int16 | 7-8 jitter:u16 | 9-10 lifetime seconds:u16 |
+11 flags (bit0 lifetime is a lower bound, bit1 an upper bound, bit2 varying external IP) |
+12 hairpin (yes=1, no=2) | 13 ipv6 (unavailable=1, blocked=2, ok=3) | 14 mapping6 |
+15 filtering6 | 16 portmap (bit0 PCP, bit1 NAT-PMP, bit2 UPnP, bit7 checked) | 17 observer IPs
+```
+
+Mapping: none=1, EIM=2, ADM=3, APDM=4, unresolved EDM=5. Filtering: EIF=1, ADF=2, APDF=3.
+Allocation: preserving=1, sequential=2, random=3. Decoders accept exactly one canonical
+encoding: other versions/lengths, out-of-range enums, reserved bits, delta/jitter outside
+sequential allocation, bounds without a lifetime, or IPv4/IPv6 results without working UDP
+are errors, never guessed. Vectors and fuzz seeds are in `p2p/netcheck`; a new field or
+enum value needs version 2. The doctor form is one line, e.g. `udp=ok mapping=apdm
+filtering=apdf allocation=sequential(delta=+1,jitter=0) lifetime=30s hairpin=no
+ipv6=unavailable portmap=none observers=3`.
+
+**Exchange `/nu/natprofile/1`.** The requester writes `max_version:u8` (≥ 1) and half-closes;
+the responder writes `len:u8 | profile` (len 0 = not measured yet). Any Nu peer may serve
+it; it is a separate protocol rather than an identify field (no libp2p field-number
+squatting) or a `/nu/path/1` frame (v1 forbids profile payloads). Path owners fetch it when
+a path session starts and when the peer's candidate generation changes; a profile informs
+probe scheduling and escalation only, never destination authorization. Reports with
+mapped addresses stay local (`nu doctor`).
+
+Evidence (`go test -tags natlab -run TestNetcheckNATLab ./p2p/netcheck`, about 31 s with
+scenarios in parallel): real packets through rootless netns fixtures, observers running
+`relay.New` with the descriptor stream. EIM/EIF/preserving/hairpin, EIM/EIF/sequential via a
+cross-observer (no alternate IP), ADM/ADF/sequential, APDM/APDF/random, EIM/APDF/random,
+APDM/EIF/preserving, EIM home NAT behind an ADM/ADF/sequential CGNAT, and UDP blocking
+(descriptor fetched first) are each classified exactly, with the fixture's sequential
+delta, and lifetimes of 4–9 s within ±20 %. The fixture ports are reserved in advance, so
+this does not show allocator jitter; real routers and IPv6 firewalls remain field work.
 
 ### 2. Candidates
 
@@ -705,17 +978,124 @@ gates for first sharing or trusted archival.
 
 ### 5. Relay optimization
 
-- Offer a negotiated Nu-only datagram relay extension carrying inner QUIC packets as outer
-  QUIC DATAGRAMs. Enable a leg only when its current DATAGRAM payload budget can carry
-  the complete 1200-byte inner packet plus extension overhead. A 1200-byte outer QUIC
-  packet cannot do this; do not silently truncate or fragment, or assume DATAGRAM support
-  alone is sufficient. Recheck the budget on outer path changes. Retain standard circuit
-  streams as fallback; outer fragmentation/reassembly would require a separate bounded
-  protocol.
-- Select relays by pair latency, RTT(A→relay) + RTT(relay→B), rather than home-relay latency
-  alone.
-- Public Nu nodes can offer peer relaying for their owner's devices or an allow-list.
-- Continue direct probing while relayed and switch when a direct path becomes available.
+Three Nu-only mechanisms (0019) improve the relayed fallback without changing what
+standard libp2p peers see. All of them require the baseline circuit/qpath leg first;
+none replaces it.
+
+#### Datagram relay extension (`/nu/relay/datagram/1`)
+
+A client with a live **admitted** circuit to a peer asks its relay to carry that pair's
+inner QUIC packets as outer QUIC DATAGRAM frames (RFC 9221) instead of bytes on the
+circuit stream. The relay offers the other half to the target over the target's own
+reservation connection. The stream leg stays attached as the fallback for the whole
+life of the pair; the relay never fragments, truncates or reorders deliberately.
+
+**Prerequisite negotiation.** Every Nu host enables RFC 9221 on its outer QUIC
+connections (`SupportsDatagrams` requires both transport parameters). Outer datagram
+payloads are `channel:u16 | body`. Channel 0 is the host-level budget probe: payload
+`0000 | type:u8 (1 probe, 2 echo) | nonce:8 | padding`; a probe is echoed back to the
+authenticated sender on the same connection with the same size (at most 32/s per
+connection, never to another destination). Non-zero channels are allocated per outer
+connection by the relay; a receiver registers at most 64 channels, unknown channels and
+full queues are dropped and counted. WSS connections never support datagrams.
+
+**Control streams.** `/nu/relay/datagram/1/hop` (client → relay) and
+`/nu/relay/datagram/1/stop` (relay → target) carry `len:u8 | version=1:u8 | type:u8 |
+fields`:
+
+```
+REQUEST(1)  channel:u16 (0 from a client; relay-allocated toward the target), peer_len:u8, peer bytes (≤ 64)
+ACCEPT(2)   channel:u16 (nonzero; the receiver's channel on that connection)
+READY(3)    no fields
+FAIL(4)     status:u16 (circuit Status codes: 201 resource, 202 permission, 203 connection, 204 no reservation, 400/401 malformed/unexpected)
+```
+
+Sequence: client REQUEST(0, B) → relay admission → relay REQUEST(Y, A) to B → B
+ACCEPT(Y) → relay ACCEPT(X) to A → relay probes **both** outer legs → relay READY to B
+then A. Any other encoding, order or trailing byte after READY ends that control stream,
+and ending either control stream, either outer connection, the relay, or the pair's last
+stream circuit tears the whole datagram pair down (both control streams reset, channels
+released). Endpoints then write every packet on the stream again and may retry the
+upgrade later (30 s → 2 min → 10 min backoff in `node/swarm`).
+
+**Admission.** The relay accepts a REQUEST only when the requester and target are both
+admitted (full-service) peers, both outer connections negotiated datagrams, the target
+holds a live reservation on the exact connection used, and a consented stream circuit
+between exactly these two peers is live. Legs are counted like circuits (global
+`MaxCircuits`, `CircuitsPerPeer`), full-service `Duration` applies, byte budgets do not
+(admitted pairs are unlimited, as for streams). The target accepts an offer only from
+its reserved relay on the reserving connection and only when the owner policy confirms a
+live stream leg to that peer through that relay (`ClientConfig.AcceptDatagram`; nil
+refuses). Non-admitted peers get `PermissionDenied` before any probe.
+
+**MTU/budget rule.** Each inner packet is one complete 1200-byte-max UDP datagram
+(D11 framing rule: 1 ≤ N ≤ 1200, fixed bit set), so a leg needs an outer DATAGRAM payload
+budget of **1202** bytes. quic-go's budget is the outer packet size minus 37 bytes: a
+1200-byte outer packet carries 1163 payload bytes (too small), the default 1280 carries
+1243, 1400 carries 1363. Before READY the relay sends a 1202-byte probe on each leg and
+requires the echo (up to three probes, 1 s each); an outer budget that cannot carry the
+probe fails with `ConnectionFailed` and the pair stays on the stream. After READY a
+sender whose budget shrinks (`DatagramTooLargeError`) writes **that packet** on the
+stream instead of fragmenting; the relay drops too-large forwards. Budget changes on
+outer path changes are therefore handled per packet, and a re-probe happens on the next
+upgrade attempt. Outer fragmentation/reassembly is not part of this protocol.
+
+**What it does and does not remove.** Datagram legs remove outer retransmission and
+head-of-line blocking and bound relay queueing to quic-go's 32-datagram send queue plus
+magicsock's 64-packet transmit queue per leg; the relay keeps no stream buffers for the
+pair. They do **not** remove nested congestion control: stock quic-go subjects DATAGRAM
+frames to the outer connection's congestion controller, and the inner connection runs
+its own. Measured consequences (see [validation](validation.md#datagram-relay-extension-0019-2026-10-22)):
+under a congested bottleneck, datagram legs cut loaded tail latency by about a third at
+equal throughput; under **random** loss with the relay mid-path, hop-by-hop outer
+retransmission recovers in one leg RTT while end-to-end inner recovery needs the full
+path RTT, so datagram legs are slower there. The extension is enabled by default; a
+loss-aware policy is a follow-up, not a claim.
+
+**Ownership.** `host.Conn` owns negotiation, channels, probes and echoes;
+`circuit.Server` owns relay admission/allocation/forwarding; `circuit.Client` owns the
+upgrade request and target offers; `magicsock.Relay.AttachPacketLeg` owns per-packet
+fallback; `node/swarm` owns the dialer's retry policy, the target's offer policy and
+status (`relay_mode`: `stream`, `datagram`, or `stream: <last upgrade error>`).
+
+#### Pair-aware relay choice (`/nu/relays/1`)
+
+Each public Nu node serves its relay latency table over any authenticated connection:
+the requester writes `max_version:u8 (≥ 1)` and half-closes; the responder answers
+`version=1:u8 | count:u8 (0–16) | count × (rtt_ms:u16 | flags:u8 | peer_len:u8 | peer)`
+then EOF. `rtt_ms` is 1–65534 measured or 65535 unmeasured (0 is rejected); `flags` must
+be zero; duplicate peers and trailing bytes are rejected. Entries are relays where the
+responder currently **holds** a reservation, so the requester can CONNECT through them.
+An entry is information, never authorization: the requester considers only relays it
+has explicitly configured or learned from a link (`c.known`), and measures its own RTT
+to them (home-relay health RTTs, or one dial+ping for a configured but idle relay).
+
+The inner-QUIC initiator (lower PeerID) runs the choice ~1 s after the inner connection
+comes up and every 10 min while the pair is still relayed: it fetches the peer's table and
+picks the relay minimising RTT(local→relay)+RTT(relay→peer) over relays measured on
+**both** sides. It switches only with hysteresis — the new sum must be at least 20 % and
+5 ms lower than the current relay's sum, or the current relay is absent/unmeasured in
+the tables. Switching closes the current stream leg and dials the chosen circuit; the
+inner connection and its streams are kept (in-flight packets are retransmitted by inner
+QUIC), the new leg then upgrades to datagrams again. `status` shows the last decision as
+`relay_choice`; the daemon logs `pair-aware relay switch from=… to=… combined_rtt=…`.
+This is not a global relay directory: nobody learns a relay from this exchange.
+
+#### Peer relays (`swarm.peer_relay_allow`)
+
+A publicly reachable Nu node (a seed) becomes a bounded circuit-v2 relay — with the
+datagram extension — for exactly the PeerIDs in `peer_relay_allow` (at most 64): an
+owner's devices or an explicit allow-list. Only those peers may reserve or CONNECT (both
+ends of a circuit must be listed); reservations are capped at the list size (devices
+behind one NAT share an address, so the per-IP cap equals the list size too), circuits
+at 64 total / 8 per peer, and the relay advertises its literal non-virtual listen
+endpoints. Devices use it like any relay: list its `/ip4|ip6/…/quic-v1/p2p/<seed>`
+endpoint in `swarm.relays` (and, for third parties, in their `nu.node` relay addresses).
+Private/isolated modes never relay. There is still no default public relay fleet and no
+relay inferred from a peer record.
+
+Direct probing continues while relayed and a proven direct path is preferred over any
+relay leg.
 
 ### 6. Measurement
 
@@ -745,6 +1125,25 @@ physical sockets and relay circuits. Preserve the inner QUIC connection only whe
 beats its idle timeout and meets D11's packet budget; standard sessions, and expired inner
 connections, resume at the request level. Adapt Tailscale's BSD-3 portmapper/netmon code rather
 than importing the full module.
+
+Transient kernel send failures that accompany a link/route/address change
+(`ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EADDRNOTAVAIL`, …) are dropped and counted
+by the shared socket rather than surfaced: stock quic-go closes a connection on any
+non-size send error, which would turn a Wi-Fi→hotspot switch into a lost session.
+After the pipeline's address push, physical peers (relays) are re-identified so the
+reflexive candidate follows the new path, and a peer that receives a new candidate
+generation re-probes its selected direct path immediately instead of at the next
+heartbeat.
+
+Measured daemon behavior (0029, post-0024): a 512 MiB relayed `nu get` survives
+recipient-only, provider-only and simultaneous interface/subnet/WAN changes from
+cone networks to APDM/APDF hotspots without daemon restart or CLI retry. Progress
+remains monotonic and the final size/SHA-256 matches. This uses the ordinary
+wildcard UDP socket, which remains bound while the kernel selects the new route;
+it does **not** demonstrate physical socket replacement or inner QUIC identity
+preservation. `physical_rebind=false` and the pipeline's rebind warning remain
+accurate for explicitly bound addresses that disappear. See the 0029 results in
+[validation](validation.md#first-magic-preview-automated-nat-lab-exit-0029-2026-10-22).
 
 `p2p/netmon.Start` subscribes to Linux rtnetlink link/address/IPv4+IPv6 route groups
 before returning. Events are bounded, coalesced invalidations: consumers re-read OS
@@ -909,9 +1308,15 @@ No multicast-capable interface is a reported startup error, not silent enablemen
   and Nu↔rust-libp2p, with expected failures for unsupported QUIC-preview paths, including UDP blocking, and
   successful declared HTTPS-compatible Nu fallback paths at the production reach gate.
 - `nu doctor` reports UDP reachability, NAT profile, relay latency/reservations, mappings,
-  IPv6 and per-session path history.
+  IPv6 and per-session path history. The snapshot behind it is `network.connectivity`
+  in `GET /status` ([API](api.md#connectivity-status)); the NAT profile comes from the
+  swarm's `NATProfiler` hook, or, absent one, from the observation-based estimate
+  (two observers' reflexive addresses agreeing ⇒ endpoint-independent). Each session
+  carries a plain-language `why` for a relayed path and a bounded history (circuit
+  setup, candidates offered/admitted, direct selection, revocation, leg loss).
 - Metrics: direct/relayed bytes, time to first byte, time to direct, path switches and
-  reservation uptime. Performance targets: first byte ≤ relay RTT + handshake, successful
+  reservation uptime, served as Prometheus text at `GET /metrics` on the loopback API
+  listener ([API](api.md#metrics)). Performance targets: first byte ≤ relay RTT + handshake, successful
   Nu↔Nu connections wherever UDP reaches an admitted relay, and direct rates comparable to
   iroh/Tailscale under the same NAT matrix. Validate setup-cost assumptions in measurements.
 - Public defaults: operated/admitted relays/lookup, mDNS and port mapping enabled, DHT
@@ -924,6 +1329,10 @@ No multicast-capable interface is a reported startup error, not silent enablemen
 The opt-in Linux harness is [`p2p/natlab`](../p2p/natlab/README.md), run with
 `go test -tags natlab ./p2p/natlab`. It isolates even root callers, uses rootless
 user+network namespaces when available, and runs only bounded v0 smoke scenarios.
+The `natlab` workflow runs the whole tagged suite (`p2p/natlab`, `p2p/portmap`,
+`p2p/netmon`, `p2p/disco`, `node/swarm` real daemons) on pull requests touching
+networking paths; it is the Phase 0b exit gate (0024), with results in
+[validation](validation.md#phase-0b-exit-nu-doctor-metrics-nat-lab-gate-0024-2026-10-22).
 Explicit endpoint fixtures model RFC mapping/filtering classes; ordinary Linux
 masquerade is not treated as proof of any mapping class. The harness README lists
 unvalidated/deferred topology and allocator cases; synthetic evidence is indexed

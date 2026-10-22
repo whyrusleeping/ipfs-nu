@@ -8,6 +8,338 @@ success. Specification figures remain hypotheses and sizing targets unless expli
 measured. Record reproducible results here (or link reports indexed here), including
 negative results.
 
+## Test suite speed and robustness under load (0074, 2026-10-22)
+
+Method: `scripts/testtimes.sh` (`go test -json -count=1 ./...` with per-package and
+per-test wall times) on the shared 192-core dev machine while other agents ran
+multi-hour collection benchmarks and NAT-lab suites; load averages are the 1-minute
+figures before and after each run. The root filesystem (where `/tmp` lives) was 97 %
+full with 8 % IO pressure and a neighbour writing ~300 MB/s.
+
+**Before** (commit fe2a651): three runs, 88 s / 120 s / 37 s wall. The 120 s run (load
+16 → 20) failed `nutest.TestPublishSeedWait`, `cluster.TestPlacementReadiness` and
+`collection.TestCollectionCluster`, with `node` at 51 s, `cmd/nu` at 74 s and a local
+`add` of 320 KiB "still running after 10 s". The per-test profile at load 13:
+
+| test | wall |
+|---|---|
+| nutest.TestImportCutover | 71.4 s |
+| cluster.TestSafeRelease | 12.6 s |
+| cluster.TestRepairAfterLoss | 9.5 s |
+| cluster.TestDrainRemove | 7.0 s |
+| nutest.TestPublishSeedWait | 6.7 s |
+
+Causes found:
+
+- **Disk fsync contention dominates under load.** Every store blob write syncs; with the
+  loaded root disk the heavy packages took 70–120 s. The same five packages with
+  `TMPDIR=/dev/shm`: `node` 71.5 s → 2.8 s, `cmd/nu` 69.7 s → 5.7 s, `nutest`
+  74.0 s → 9.2 s, `collection` 90 s → 5.1 s. `nutest/testenv` now points test temp
+  dirs at tmpfs when it is writable (not under `NU_SLOW`, not over an explicit `TMPDIR`).
+- **The import-cutover fresh client waited for the DHT.** It bound `0.0.0.0`, so DHT
+  auto mode turned on and `fetch` waited for the bootstrap to fail (~25 s, twice) before
+  using the hints it already had. The fresh client now runs with the DHT off:
+  `TestImportCutover` 63 s → 0.8 s in isolation. The same ordering (every provider source
+  is awaited before the walk) delays any hinted `get` on a daemon whose bootstrap is
+  slow; recorded as a follow-up, not changed here.
+- **192 Ps per test binary.** The CPU profile of the suite showed a third of the time in
+  idle-P scheduling (`lfstack`, `stealWork`). Capping `GOMAXPROCS` at 16 per test binary
+  keeps the wall time and cuts the suite's CPU from 82 s to 57 s, so a run inflicts less
+  load on the machine.
+- **Timing floors in the 0048 scenario tests** (fixed 1–2 s freshness/settle/down windows
+  and sleeps past them) were replaced by heartbeat-scaled settings and condition waits:
+  the three cluster tests 28 s → 11.5 s, `TestPublishSeedWait` 6.4 s → 1.8 s.
+- **A dialer-side race in `cluster.TestPrivateCluster`** surfaced once I/O was fast: the
+  non-member's QUIC handshake completes before the private member's post-handshake refusal
+  arrives, so `Connect` can return nil for a few milliseconds before the connection is torn
+  down (3 of 8 runs on tmpfs). The test now asserts what the responder enforces (no
+  registered connection; the dialer is dropped). The transient is reported to p2p/host.
+- Tight 1–5 s whole-test contexts in `p2p/lookup`, `p2p/host`, `p2p/proto/*`, `proto`,
+  `fetch` and `node/daemon` became scaled 30 s hang ceilings (`nutest/timeouts`).
+
+**After** (commit bfbd521), `go test -count=1 ./...`, no test weakened:
+
+| run | load before → after | wall | result |
+|---|---|---|---|
+| 1 | 7.2 → 8.8 | 18.0 s | pass |
+| 2 | 8.8 → 11.8 | 17.4 s | pass |
+| 3 | 11.8 → 14.4 | 17.4 s | pass |
+| 4 | 14.4 → 17.1 | 17.3 s | pass |
+| 5 | 17.1 → 17.7 | 16.9 s | pass |
+| +48 CPU hogs and a dsync writer on the root disk, run 1 | 15.3 → 26.0 | 16.9 s | pass |
+| same, run 2 | 26.0 → 36.3 | 17.1 s | pass |
+| same, run 3 | 36.3 → 41.6 | 16.9 s | pass |
+
+The longest package is `cluster` at ~16 s (`TestRepairAfterLoss` 6.1 s and
+`TestSafeRelease` 4.4 s are protocol-window tests: down_after/up_after, evidence
+freshness and settle at 5–10 heartbeats). Remaining tests over 2 s:
+`cmd/nu.TestAddSiteAndBrowse` 2.9 s (`doctor --peer` against a closed port, bounded by
+its own 6 s limit) and `p2p/disco.TestInnerUpgradeFallbackRecovery` 2.5 s (not touched:
+the package is under active change). Per-test timings were identical at load 7 and at
+load 42, i.e. the suite no longer depends on the machine's disk or CPU headroom.
+
+## First magic preview: automated NAT-lab exit (0029, 2026-10-22)
+
+**Automated data/interop checks pass. The original network-change failure is now
+resolved in a focused 512 MiB rerun: recipient-only, provider-only and simultaneous
+interface/subnet switches complete without daemon restart or CLI retry. Inner QUIC
+connection preservation was not measured. Real-network and fresh-user demonstrations
+remain pending; this is not a declaration that the entire preview gate is met.**
+
+Implementation: `node/swarm/magic_natlab_linux_test.go`,
+`scripts/magic-preview.sh`, and `interop/run.py --daemon`. Recorded against
+`beeb7a821716a418c5b9649d6ae2166a0843517c` plus the 0029 working-tree changes.
+Final one-command run started at **2026-10-22 02:31:10 UTC** on cloverleaf:
+Linux 5.15.0-176-generic x86_64, AMD EPYC 9684X (192 logical CPUs), Go 1.26.2,
+stock quic-go v0.64.1, Docker 29.4.1. This is a busy shared machine; timings are
+whole CLI operations including hashing/extraction/independent digest checks,
+**not throughput targets, wire TTFB, or field NAT success rates**.
+
+### Reproduce / CI
+
+```sh
+# Linux; iproute2 (ip/tc), nftables, util-linux (unshare/nsenter), Docker,
+# Python 3 and Go. Rootless user+network namespaces must be permitted.
+NU_SLOW=1 ./scripts/magic-preview.sh
+
+# NAT-lab alone (same default 10,000,000,000-byte acceptance size):
+NU_SLOW=1 go test -tags natlab ./node/swarm -run '^TestMagicPreview$' -v -count=1 -timeout=56m
+# Smaller development smoke ONLY; not the 10 GB acceptance result:
+NU_SLOW=1 NU_MAGIC_BYTES=268435456 go test -tags natlab ./node/swarm -run '^TestMagicPreview$' -v -count=1 -timeout=56m
+
+# Independently repeat the all-directions wire sanity on full daemon assembly:
+python3 interop/run.py transport --daemon --impl all --out interop/results/0029/transport
+python3 interop/run.py blackbox --daemon --client kubo --out interop/results/0029/kubo
+```
+
+The script forces the full acceptance size (ignores `NU_MAGIC_BYTES`), records
+environment/revision and runs NAT-lab followed by Docker, sequentially. It exits
+nonzero on any failed assertion/probe, namespace/tool failure or disk guard. The
+Go test requires both the `natlab` build tag **and** `slow.Skip`/`NU_SLOW=1`.
+The dedicated `magic-preview` job in `.github/workflows/natlab.yml` is opt-in via
+workflow dispatch's **magic_preview** boolean. It uploads logs and pinned-source
+JSON even on failure. Remote execution of that new job is **pending**, not claimed
+as observed CI success. A runner must have >=40 GiB available; the job does not
+prune other Docker images or silently downgrade the fixture size.
+
+### Topology and disk budget
+
+Four real `nu daemon` processes have separate repos, identities and network
+namespaces behind separate routers, plus one real public `nu relay` process with
+explicit full-service admission. Laptop configuration is **only `swarm.relays`**:
+listen addresses, mDNS, API/gateway, probe policy and peer configuration retain
+ordinary defaults. The initial pair is EIM/EIF (cone) ↔ EIM/EIF, then EIM/EIF ↔
+APDM/APDF (symmetric). No independently authorized disco destinations are granted,
+so these runs use relay fallback even for cone/cone; hard-NAT punching is not a
+prerequisite. The movement fixture switches the receiver from `10.2.0.2`/one
+router/WAN IP to `10.99.0.2`/a different APDM/APDF router/WAN IP, disables its old
+interface, and replaces its default route. It restores the original cone network
+before the cone/cone tree test.
+
+**There is no default public relay fleet yet (0039).** These are declared,
+admitted development relays, not evidence of zero-operator-configuration public
+service or production abuse/admission readiness.
+
+The 10 GB input is sparse with nonzero markers at the beginning, middle and end;
+`add --raw --nocopy` avoids a source-store copy. QUIC does not compress those
+bytes. Each full download is independently streamed through SHA-256 and its exact
+length checked, without a size-proportional heap allocation. The three providers
+are the original source and two independent daemon repos referencing the **same
+verified downloaded backing file** via `--nocopy`. The first recipient's owned
+store is removed *while stopped*, preserving key/config, before re-adding that
+backing file. This explicitly trades independent physical provider copies for
+disk safety; it is not a three-disk archival durability demonstration.
+
+`df -h` is recorded and statfs must show >=40 GiB free before each big run/retry.
+Final-run initial free space was about 66 GiB. End-of-case `du -sk` (at the peak
+fixture layout) measured **29,537,040 KiB = 30.246 GB = 28.169 GiB** for cone/cone
+including the three-peer receiver/output, and 19,695,480 KiB for cone/symmetric.
+Subtests are sequential and reclaim all sources, stores, partials, outboards and
+outputs before the next topology. No `TestMagicPreview*` temporary directories or
+interop containers remained afterwards. Small raw result logs and reusable Go /
+Docker build/source caches remain; no shared-machine global cache prune was run.
+
+### Recorded scenarios
+
+| Scenario | Result in final run |
+|---|---|
+| 1: unchanged cone ↔ cone, `nu add/share/get`, 10 GB | **PASS**, 10,000,000,000 bytes, 5m40.605s; relay path, independent SHA-256 matched |
+| 1: cone ↔ symmetric, same full file | **PASS**, 10,000,000,000 bytes, 11m36.762s; relay fallback, same SHA-256 |
+| 1: 10k-file tree on both topologies | **PASS**, 100 directories × 100 distinct files, every output path/content compared; cone/cone 1m46.732s, cone/symmetric 28.398s |
+| 2: 10 GB from three peers in one CLI get | **PASS**, 5m41.704s; all three providers sent >1 MiB in the same sampled 64 MiB-progress interval; sampled wire byte counters 3,619,618,824 / 3,599,984,054 / 3,626,141,021; final digest matched |
+| 3: Wi-Fi → hotspot, separate 512 MiB transfer | **PASS on post-0024 rerun** (`fe2a651` + focused movement test): recipient-only switch at 136,331,264 verified bytes, completion 7.641 s later; provider-only at 135,282,688, 7.658 s later; both at 134,234,112, 7.967 s later. Each single CLI get completed 536,870,912 bytes without daemon restart or caller retry; monotonic verified progress and independent SHA-256 matched. Inner connection preservation unmeasured. |
+| 4: same-file/same-CID | **PASS**, two real nodes independently add identical 10 GB bytes to the same blob CID; separately add same-named `same.txt` bytes/inferred MIME to identical file-node CIDs |
+| 5: full-daemon wire sanity | **PASS**, Go/Rust/JS QUIC transport in both directions (6/6), plus Kubo v0.40.0 authenticated connect/identify/libp2p ping |
+
+Full NAT-lab suite: **1678.720s**. File SHA-256:
+`803f3dd793d292ab61117b4ecd211864ac3b94050c99fdbb22069cdac6d624c7`.
+Blob CID: `bafkr4ibtidh7tnhzpqmko2g6wtc2q4zxpk62wm7tpkba4yivdgll6zgitq`.
+File-node CID: `bafyreid2ydjvcufa3t4hds3ojj5achuh5zlxzaqxswwr7v6ikrrj2conwe`.
+Tree CID: `bafyreicozbnv4eipriooariqyjpirmaohdctgjez3iwvz7j734aaoumjay`.
+
+History: the original full run lost the live get at the interface/subnet switch;
+restarting both endpoints resumed durable verified ranges. After 0024's transient
+send-error handling and network-change fixes, `TestMagicPreviewMovement` repeats
+the same 512 MiB fixture independently (93.172 s total), including provider-only
+and simultaneous movement. Each endpoint changes from its cone router to a separate
+APDM/APDF hotspot, disables `eth0`, enables `eth1`, and replaces the default route;
+no probe grants or non-relay laptop configuration are added. All three pass with
+SHA-256 `58194481f28b2d98de6d46cb93f93c96245ca007ed3323bbc7ae986294b88a44`.
+Reproduce with `NU_SLOW=1 go test -tags natlab ./node/swarm -run
+'^TestMagicPreviewMovement$' -v -count=1 -timeout=16m`. This focused rerun does not
+repeat the 10 GB/tree/interop results above. The full preview test no longer accepts
+a daemon/get restart workaround as success. `physical_rebind=false` still truthfully
+reports that physical socket replacement is not implemented: the default wildcard
+socket survives these route/interface changes. Explicit-address socket loss and
+inner connection identity preservation remain unmeasured. The focused movement
+rerun and gofmt, `go vet ./...`, `staticcheck ./...`, `go test ./...`, depguard
+all passed with `GOMAXPROCS=8 GOFLAGS=-p=1` on the shared host.
+
+`--daemon` uses the actual `daemon.Start` assembly (not just the minimal 0011
+host): API, secured local gateway, store, serving/fetching, sessions, mDNS,
+magicsock, disco, AutoNAT and netmon, with assertions that data and core protocols
+are registered. It does not replace protocol handlers or disable network features.
+Public HTTPS, producer listeners, cluster membership and relay fleet are
+operator-configured features, not toggles invented for this probe. Builds include
+all daemon code. The pinned implementations/images remain those in
+[0011](../interop/README.md); no public Amino or Ethereum clients are required here.
+
+| Final full-daemon transport direction | Handshake + ping (ms) | Ping RTT (ms) |
+|---|---:|---:|
+| Nu → Go | 6.705 | 0.334 |
+| Go → Nu | 20.497 | 1.315 |
+| Nu → Rust | 5.305 | 0.245 |
+| Rust → Nu | 9.947 | 0.339 |
+| Nu → JS | 70.707 | 1.459 |
+| JS → Nu | 81.644 | 0 (integer JS clock; verified ping succeeds) |
+
+Kubo: authenticated Ed25519, agent `kubo/0.40.0/882b7d2`, identify succeeded,
+`/ipfs/ping/1.0.0` RTT 0.212 ms. Raw final local artifacts (ignored, reproduced by
+the script or uploaded by CI) are under `interop/results/0029-final/`:
+
+- `natlab.log`, SHA-256 `6c8d499bb8e19044d240df4a5263706635dbab18010ad87854c70ba01e73158a`.
+- `transport/results.json`, SHA-256 `83eb16025201963ab8669088e54b34ad9454916e4ee5852b0dd9cc629b8e15a4`.
+- `kubo/results.json`, SHA-256 `b0e72c9306e4bdf6ae482fea0c1ead2545b0b6c08535d8dcf410c9a90ebb9926`.
+
+Pre-commit: gofmt, `go vet ./...`, `staticcheck ./...`, and depguard passed;
+interop module vet/staticcheck/build also passed. The first default-parallel
+`go test ./...` had deadline failures in fetch (`TestMultiPeerWithCorruptPeer`),
+proto (`TestBlobRangesAndHave`), lookup (`TestCacheHintsRestartParallel`), and
+nutest (`TestPublishSeedWait`, `TestRestartMidTransfer`) on the busy host. No code
+in those areas was changed. Repeating the suite with
+`GOMAXPROCS=8 GOFLAGS=-p=1 go test ./...` passed, including all previously failing
+packages. The final exact `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` invocation also passed (test results cached from those
+successful runs). This is recorded as a test-environment limitation, not a
+hidden pass of the initial invocation.
+
+### Human demonstration checklist — PENDING (no evidence yet)
+
+- [ ] **Two actual home networks or home + phone hotspot:** record OS/build,
+  network/ISP/router types (NAT class only if measured), declared development
+  relay addresses and admission setup. Start fresh repos/ordinary daemons with
+  no accounts and only declared `swarm.relays`; explicitly say no default fleet.
+- [ ] **Scenarios 1/4:** add the same 10 GB file on both machines and compare blob
+  CIDs; compare file-node CIDs with identical name/MIME. Exchange `nu share`
+  links in normal chat. Recipient gets/verifies the file and 10k-file tree.
+  Record timings, paths, counts and independent digests, not just screenshots.
+- [ ] **Scenario 2:** use three admitted providers with a genuinely fresh
+  receiver; record contributions/overlap and the final 10 GB digest.
+- [ ] **Scenario 3:** during an incomplete transfer switch Wi-Fi → hotspot;
+  record verified bytes before/after, errors/retries and any necessary daemon
+  restarts. Verify final bytes. Record inner connection survival separately
+  (connection IDs/trace), never infer it from a successful resumed download.
+- [ ] **Fresh-user secured local gateway:** observe new users install/start,
+  add/share/get, then open the daemon's printed local gateway URL at
+  `/tree/<tree-cid>/`, navigate/download the shared tree, and distinguish
+  API/control from content. Check the per-CID `<cid>.localhost` site origin too.
+  Record browser/OS, whether help was needed, time-to-first-success and confusing
+  steps. No account, PDS or relay-console work should be silently done for them.
+- [ ] **Errors/usability:** observe missing relay configuration/admission,
+  offline holder and UDP-blocked failures; do users understand the action and
+  recover? Keep their wording/observations and defects, not an expert-only claim.
+  Public HTTPS serving is a separate 0043 exercise, not this local-gateway test.
+
+## Phase 0b exit: `nu doctor`, metrics, NAT-lab gate (0024, 2026-10-22)
+
+Implementation: `node/swarm` diagnostics/metrics (`metrics.go`, status), `api`
+`/metrics`, `cmd/nu` doctor checks, `p2p/disco` observer hook and generation
+re-probe, `p2p/magicsock` byte counters and transient-send-error drop,
+`p2p/homerelay` reservation hold time, `p2p/portmap` last error. Rootless Linux
+user/network namespaces, Go 1.26, stock quic-go v0.64.1. Bounded fixtures, **not
+field success rates**.
+
+Reproduce from the worktree root (the `natlab` workflow runs the same suite on PRs
+touching `p2p/**`, `node/swarm/**`, `relay/**`, `proto/**`, `fetch/**`):
+
+```
+go test ./api ./node ./node/swarm ./cmd/nu ./p2p/magicsock ./p2p/disco
+go test -tags natlab -count=1 -v ./p2p/natlab ./p2p/portmap ./p2p/netmon ./p2p/disco
+go test -tags natlab -count=1 -v ./node/swarm -run '^TestDaemonNAT'
+```
+
+Exit-matrix coverage (rows marked reused come from 0003/0014/0017/0020 tests):
+
+| Row | Test | Result (recorded run) |
+|---|---|---|
+| EIM/APDF ↔ EIM/APDF, relay then direct | `node/swarm` failover (0020, extended) | 19,500,000 bytes via circuit link; home SIGKILL at 1,051,616 bytes, same get finished in 11.1 s via backup; both daemons direct 18.7 s after the block lifted (time-to-direct 29.8 s from session start: the probe schedule had reached its 30 s retry while direct was blocked) |
+| ADM/APDF, APDM/APDF, kernel conntrack ↔ same | `node/swarm` relay matrix (0020, extended) | Relayed gets succeeded in 78–132 ms whole CLI operation; `nu doctor` explains each relayed session (see below) |
+| Public IPv4 ↔ EIM/APDF direct | `p2p/disco` `TestNATLabPublicEIM` (reused) | passed |
+| IPv6 ↔ IPv6 direct | `p2p/disco` `TestNATLabIPv6` (reused) | passed |
+| Router-mapped (miniupnpd) direct | `p2p/disco` `TestNATLabMappedMiniUPnPd` (reused; skips without miniupnpd) | passed in CI image; skipped locally |
+| EIM/EIF ↔ EIM/APDF direct, address change mid-transfer (packet core) | `p2p/disco` `TestNATLabDisco` (reused) | passed |
+| AutoNAT, mapping × filtering fixtures, hairpin, rebind, UDP block | `p2p/natlab` (reused) | passed |
+| Port mapping, reaction pipeline | `p2p/portmap`, `p2p/netmon` (reused) | passed |
+| **Wi-Fi → hotspot switch during a real `nu get`** | `node/swarm` failover (new) | Recipient LAN 10.2.0.2→10.2.0.3, router WAN 198.18.0.30→.32, NAT state rebuilt at 1,063,424 of 14,400,000 verified bytes while direct; the same CLI operation finished 14.2 s later with no error/retry, SHA-256 verified; the recipient offered its new reflexive candidate 3.2 s after the switch, the provider revoked the stale direct path 6.2 s after the switch and selected the new one (198.18.0.32:4171) 1 ms later; the relay reservation was held throughout (`held_since` unchanged) |
+| **UDP blocked, fresh recipient** | `node/swarm` failover (0020, extended) | get failed `unavailable` with the UDP action; `nu doctor` exits non-zero with `fail udp: UDP appears blocked: none of the 2 configured relays answered over UDP → allow outbound UDP …` |
+| `/metrics` after the direct upgrade | `node/swarm` failover (new) | `nu_net_path_switches_total{to="direct"} 1`, `nu_net_paths{path="direct"} 1`, `nu_net_time_to_direct_seconds_count 1`, `nu_fetch_first_byte_seconds_count 1`, relayed received bytes > 0, relay reservation gauges present |
+| Doctor session line after the upgrade | `node/swarm` failover (new) | `ok session <peer>: direct 198.18.0.20:4171 via <relay>, direct after 29689 ms` followed by the history (circuit via home, leg closed on SIGKILL, re-dial failures, circuit via backup, direct selected) |
+
+Relay-matrix doctor explanations (`why` on the recipient's relayed session): with
+APDF filtering on both routers and no candidate admitted beyond the exact grant, the
+session reports `N candidate endpoints, M probes sent, none answered: the peer's NAT
+filters unsolicited packets (or UDP toward it is blocked); both sides must be EIM, or
+one public, IPv6 or router-mapped, for a direct path`, preceded by the circuit setup
+and candidate events in its history.
+
+Three fixes fell out of the hotspot scenario and are now in the gate:
+
+1. **quic-go closes a connection on any non-size UDP send error.** While the
+   recipient's link was down, `sendmsg` returned `ENETUNREACH`; stock quic-go tore
+   down the relay connection (`INTERNAL_ERROR (local): … network is unreachable`),
+   the relay then refused the re-dial as a duplicate of the still-live migrated
+   connection, and the get stalled until the deadline. `p2p/magicsock` now drops and
+   counts transient unreachable/down/no-buffer errors on physical writes; QUIC
+   retransmits and the relay connection migrates (quic-go server-side path validation
+   handled the new NAT source address).
+2. **Stale reflexive candidate.** The pipeline's identify stage pushed our addresses
+   but never asked the relays what they now see; the recipient kept offering
+   198.18.0.30. The stage now re-identifies physical peers, so the new external
+   address (198.18.0.32) was offered 3.2 s after the switch.
+3. **Far-side detection waited for the 25 s heartbeat.** A new candidate generation
+   from the peer (sent by `RestartProbing`) now triggers an immediate probe of the
+   selected direct path, so the provider revoked the dead path within the 3 s probe
+   timeout instead of ~28 s.
+
+Not established: the 14 s completion after the switch includes QUIC loss-recovery
+backoff after a ~6 s blackhole; no claim about recovery latency beyond "the operation
+survives" is made. An earlier draft of the disco observer took the connectivity lock
+under the disco lock; relay-matrix gets then took 0.7–6.7 s and one run stalled past
+its deadline. The observer now touches only atomics and a leaf history lock, and the
+matrix is back to ~80 ms gets (8–9 s for all three rows). Lock-order edges into the
+connectivity owner from protocol callbacks are a measured hazard, not a theoretical one.
+In this original run doctor showed the observation-based estimate (`source:
+observations`, two observers). The subsequent netcheck diagnostics integration now
+installs the built-in profiler as the default `swarm.Config.NAT`: status/doctor show
+`source: netcheck` when a measured report exists, otherwise the observation estimate.
+`TestSwarmNATProfile` verifies both fallback without observers and measured loopback
+classification against a real netcheck-serving relay (0.213 s), plus the peer profile
+exchange. Mapping/filtering are translated to RFC 4787 names and the full profile
+(allocation, lifetime bounds, hairpin, IPv6, portmap) remains in `detail`.
+Direct re-upgrade after a switch depends on exact probe grants
+covering the new external endpoint (the test grants both). macOS network-change
+behaviour is not covered.
+
 ## Real daemon relay sessions and failover (0020, 2026-10-22)
 
 Implementation: `node/swarm` connectivity owner, `p2p/homerelay`, session transport
@@ -162,13 +494,83 @@ NU_SLOW=1 go test -tags natlab ./p2p/disco -run '^TestNATLabDiscoGiB$' -v -count
 the default suite. `natlab.IsolateTimeout` supplies an explicit four-minute child
 deadline for this test, leaving the normal 45-second fixture deadline unchanged.
 
-### Independent security review request / review plan (0017 and 0020)
+### HTTPS-compatible relay acceptance (0041, 2026-10-22)
+
+`TestDaemonWSSUDPBlocked` runs real `nu relay` and two real daemon/CLI processes
+inside rootless Linux network namespaces. Both daemon output firewalls drop **all
+UDP**, including loopback UDP; apart from local CLI/API TCP they permit only one
+remote TCP/443 destination. The direct case permits the relay, and the CONNECT
+case permits only the separate HTTP proxy (not the relay). DHT/mDNS are disabled,
+so neither lookup nor a direct content connection can bypass the restrictions.
+The fixture uses a generated, explicitly trusted operator certificate and a leaf
+certificate pin; it does not disable Web-PKI verification.
+
+Evidence command:
+
+```
+go test -p 1 -tags natlab ./node/swarm -run '^TestDaemonWSSUDPBlocked$' -count=1 -v
+```
+
+Passed locally, rootless, in 17.5 s: each case independently selected WSS after a
+reported UDP failure, transferred part of an 11,400,000-byte BLAKE3 blob, stopped
+the receiving daemon, inspected its persisted verified ranges, restarted both
+daemons, and completed `nu get` with a byte-for-byte SHA-256 comparison. The runs
+retained approximately 4 MiB of verified data. Existing `fetch.TestResumeAfterRestart`
+checks that resumed range requests do not overlap checkpointed ranges; this lab
+adds the real daemon/CLI and restricted-network assembly. Replacing the CONNECT
+proxy with a refusing proxy produces `CONNECT denied: HTTP 403` in status **and
+`nu doctor`**, not an opaque timeout or insecure retry.
+
+**Explicit limitation discovered during acceptance:** an immediate one-sided daemon
+restart can leave the surviving peer's old inner QUIC session alive. An immediate
+get retry then fails before that session expires. The passing restart fixture
+restarts both endpoints to isolate persisted resumability from this qpath recovery
+issue. Immediate one-sided reboot recovery is **not evidenced** and needs a separate
+socket/path-owner fix; do not represent this test as that guarantee.
+
+| Endpoint/proxy case | Support and evidence |
+|---|---|
+| Declared TCP/443 WSS, trusted TLS certificate, no proxy | Supported; UDP-blocked real-daemon lab above |
+| Explicit HTTP CONNECT to the admitted relay TCP/443 | Supported; same lab, with direct relay TCP also blocked |
+| QUIC timeout followed by declared WSS | `p2p/homerelay.TestDeclaredWSSFallbackIndependentBudget`: silent UDP sink consumes its full budget; WSS gets a fresh budget, reserves, publishes WSS and renews |
+| WSS endpoint/pin policy | `node/swarm.TestWSSRelayPolicyAndRemoteAdmission`: pin match/mismatch, config rejection and remote-record authorization negatives |
+| CONNECT refusal | Doctor-visible HTTP 403 in the real-daemon lab |
+| Untrusted TLS interception / Upgrade refusal | Stage-labelled hard failure in `p2p/wss` tests; no insecure fallback |
+| Locally trusted TLS interception CA | Not automatically distinguishable; configure a relay leaf pin. Operators must not grant trust to interception roots for relay dialing |
+| Ambient proxy env, PAC, SOCKS, HTTPS-to-proxy, NTLM, HTTP/2-only gateway, captive portal | Unsupported; no claim that arbitrary HTTPS availability implies Nu reachability |
+| Standard non-Nu peer | Outer WSS/Noise/yamux interop belongs to the existing 0041 experiment evidence; Nu inner qpath is not a standard-peer requirement |
+
+Resource limits and admission remain those of the WSS listener, Noise/yamux and
+circuit-v2 server: bounded unauthenticated connections/headers/frames/records,
+per-peer and per-observed-IP circuits/reservations, and full-service admission.
+Nodes sharing a proxy share its observed-IP budget. No public relay directory or
+new content/resume format is introduced. Fleet operations and external-network
+reach guarantees are not implied by these lab results.
+
+Pre-commit verification passed with `GOMAXPROCS=4 GOFLAGS=-p=1`:
+`go vet ./... && staticcheck ./... && go test ./... && ./scripts/depguard.sh`,
+plus gofmt, `git diff --check`, and the rootless WSS natlab test (18.1 s on the
+final run). An earlier loaded-machine run failed cluster repair and collection
+push timing checks; their focused serial reruns and the subsequent full gate
+passed. The recovery probe retains its short QUIC-only deadline rather than
+spending the larger WSS setup budget on a dead QUIC-only relay.
+
+### Independent security review request / review plan (0017, 0020 and 0041)
 
 **Requested; pending independent review.** The implementation author is not the
 independent reviewer. A networking/security reviewer should review the following
 before public enablement; record the reviewer, reviewed commit, findings and
 follow-up commits here. Passing the smoke/soak tests is not security approval.
 
+- **0041 independent review requested:** review `p2p/{noise,wss,yamux}`, the Host
+  WSS adapter, `relay/wss.go`, `p2p/homerelay/{manager,endpoints}.go`, and
+  `node/swarm/wss.go` plus its admission integration. Check Web-PKI + Noise
+  identity separation, pin/proxy credential handling, independent fallback
+  budgets, exact endpoint authority, parser/stream/handshake resource bounds,
+  teardown and qpath inner-session recovery. Reproduce the UDP-blocked direct
+  and CONNECT cases and adversarial TLS/Upgrade/CONNECT failures. Specifically
+  examine the one-sided restart limitation above. No independent sign-off has
+  been obtained; the author does not approve their own implementation.
 - **Contract and implementation:** D11's “Path v1 control and probe security
   contract”, `p2p/disco/{wire,service,candidates}.go`, the magicsock demux/path-set
   boundary, and the eventual 0020 socket-owner `Authorize`/candidate-disclosure
@@ -656,6 +1058,112 @@ pinned-CID enumeration and periodic reprovide is not installed; private mode is 
 by the service but the owner must wire its construction. Provider replica fraction and
 long-term expiry/republish remain unmeasured.
 
+## Daemon Amino wiring: provide and hint-less get (0072, 2026-10-22)
+
+In-process (`go test ./nutest -run 'DHT|PrivateMode'`, ~0.4 s): four nutest nodes form a
+loopback Amino DHT (every node a server bootstrapped from the others, private addresses
+allowed). Node A `add`s two files, one with `--no-announce`; node B's `FindProviders`
+returns A for the announced file node and nothing for the unannounced one (the mark is
+persisted in `no-announce.json`); B then `get`s the announced CID from a link with no
+hints and holds it. A `Private` swarm constructs no DHT and registers no
+`/ipfs/kad/1.0.0` handler.
+
+**Live Amino (opt-in):** `NU_AMINO=1 go test ./node/daemon -run AminoLive -count=1 -v`
+passed on 2026-10-22 from the dev machine (behind NAT, no relay configured, `swarm.dht`
+default `auto`):
+
+| Step | Result |
+|---|---|
+| Fresh daemon A bootstrap (`bootstrap.libp2p.io` dnsaddr → QUIC-v1 literals, self lookup) | 72–98 routing peers after ~25 s |
+| A `add` 300 kB file → provide file node + blob (2 keys, each: K-closest lookup + 20 ADD_PROVIDER) | both provided, ~85 s |
+| Fresh daemon B `get <cid>` with no hints | provider record found through Amino in 4.4 s; file fetched, byte-identical; 9 s total once bootstrapped (40 s including B's bootstrap) |
+
+Same run by hand with two `nu daemon`s (`/tmp/nuA` on 4171, `/tmp/nuB` on 4172): `nu status`
+showed `dht: client, 94 routing peers`, `nu doctor` `ok dht: client mode, 94 routing peers`,
+and `nu get` on B completed in 9 s with the daemon log line `DHT provider lookup …
+providers=1 elapsed=4.387s`.
+
+Honest caveats: the machine has no public IPv4/IPv6, so AutoNAT never confirmed an
+address and both nodes stayed DHT **clients** (server mode was not exercised live; it is
+exercised in-process). The address A announced was its Tailscale interface address
+(`100.126.232.79`, CGNAT `100.64/10`, which Go's `IsPrivate` does not classify as private
+and the publication filter at the time therefore admitted); it was reachable from B only
+because B ran on the same machine. Provider records reached independent Amino servers and
+came back through an independent lookup, so the Amino provide/find path is verified;
+global reachability of the provider is not, and would need a public address or a
+configured relay. The publication filter now excludes 100.64.0.0/10, so a rerun of this
+check from this machine would report "no public address to announce" and fail at the
+provide step until a relay or public address is configured — the honest outcome. Two issues were found and fixed during the run: connected Amino routing peers
+were offered to the fetcher as candidates and hung `/nu/tree/1` requests for the 2 min
+request timeout each (now peers whose identify shows no `/nu` protocol are skipped), and
+lookups always ran 16 rounds (now they stop when the K closest known peers were asked,
+and provider lookups as soon as a round yields providers). `peer address cache update
+failed … context deadline exceeded` warnings appear when a kad request's bounded context
+expires while the peers.json cache is written; harmless, not yet silenced.
+
+## Datagram relay extension (0019, 2026-10-22)
+
+Loopback (`go test ./p2p/host ./p2p/proto/circuit ./p2p/proto/qpath ./node/swarm`, < 2 s):
+a 1202-byte channel-0 probe is echoed on the default 1280-byte outer budget (quic-go
+budget = packet size − 37 → 1243 bytes) and a 1300-byte probe is refused; on a relay host
+pinned to a 1200-byte outer packet the 1202-byte probe fails with `DatagramTooLargeError`
+(1163 bytes), the relay answers `ConnectionFailed` and the pair keeps relaying on the
+stream with zero datagrams sent. A full upgrade carries ~120 inner packets per direction
+for 8 × 12 KiB echoes; detaching the leg on one side tears the pair down at the relay
+within milliseconds, the stream carries the next echoes, a re-upgrade works, and the
+inner connection object is never replaced. Self/relay targets and non-admitted or
+circuit-less pairs are refused before any probe. Two swarms through one relay reach
+`relay_mode=datagram` on both sides and echo 64 KiB over the datagram leg. Fuzz seeds:
+`FuzzDatagramMessages` (circuit control frames, canonical re-encode) and `FuzzTable`
+(`/nu/relays/1`). Fixing this exposed a pre-existing deadlock: `wire.LazySelect.Write`
+held its mutex across a flow-control-blocked write while `Read` needed it, so any
+full-duplex stream (echo of ≥ 256 KiB) hung; regression test
+`TestLazySelectFullDuplexNoDeadlock`.
+
+**NAT lab** (`go test -tags natlab -run 'TestDatagramRelay.*NATLab' ./p2p/proto/qpath`,
+~36 s, rootless netns): two EIM/APDF-NAT'd peers, one public relay, impairment on every
+router interface (both directions), the same inner connection measured on the stream
+leg, then upgraded to the datagram leg, then detached again (warm-up control). 50 idle
+32-byte pings, a 256 KiB echo, then 50 pings while a second stream keeps a 32 KiB echo
+loop running on the same inner connection ("loaded"). Three runs each:
+
+| Impairment (per interface) | Phase | idle p95 | loaded p50 / p95 / p99 | 256 KiB echo |
+|---|---|---|---|---|
+| 4 Mbit/s tbf, 300 ms queue, 10 ms delay | stream | 41.0 ms | 43 / 64–69 / 67 ms | 700–734 ms |
+| | **datagram** | 40.9 ms | 43 / **43.5–44.0** / 45.6 ms | 717–751 ms |
+| | stream (control) | 41.0 ms | 43 / 66–72 / 67 ms | 698–732 ms |
+| 2 % random loss, 10 ms delay | stream | 88–90 ms | 44–59 / 86–103 / 150 ms | 317–549 ms |
+| | **datagram** | 115–118 ms (one run 41) | 61 / 109–130 / 175 ms | 693–934 ms |
+| | stream (control) | 89 ms | 44 / 102 / 150 ms | 665–949 ms |
+
+Findings: under **congestion** the datagram leg cuts loaded tail latency by roughly a
+third (p95 44 ms vs 64–72 ms; p99 46 vs 67 ms) at equal throughput (both at the
+bottleneck), because the relay no longer buffers stream windows ahead of later packets.
+Under **random loss** with the relay mid-path the datagram leg is *worse*: an outer loss
+is recovered hop-by-hop in one leg RTT (~20 ms, plus PTO when idle) and the inner
+connection sees only jitter, while on the datagram leg the inner connection must detect
+and retransmit over the full ~40 ms path and its congestion controller sees ~4 % loss
+(Mathis: throughput ∝ 1/√p at twice the RTT). Stock quic-go also keeps DATAGRAM frames
+under the outer congestion controller, so nested congestion control is **not** removed.
+The 0019 acceptance text ("throughput and tail latency beat stream relaying at 2 %
+loss") is therefore not met as written and is not claimed; the measured benefit is the
+congested/loaded-latency case. The extension stays on by default; a loss-aware
+stream/datagram policy is open work.
+
+**Daemon NAT lab** (`go test -tags natlab -run TestDaemonPairAwarePeerRelay ./node/swarm`,
+~8–10 s after a `go build` of `cmd/nu`): two real daemons behind NATs, a `nu relay` with
+40 ms one-way netem on its interface and a public seed daemon with
+`swarm.peer_relay_allow` for the two peers. A `get` through a link whose only hint is the
+far relay forms the pair there; within ~1.7 s of the get completing the lower peer logged
+`pair-aware relay switch from=<far> to=<seed> combined_rtt≈1.3ms`, both daemons' status
+showed the seed as the relay with `relay_mode=datagram`, and the inner connection
+survived. In-process (`TestSwarmPairAwareRelayChoiceWithPeerRelay`, 0.5 s) the same
+switch happens with the far relay simulated through 30 ms ping-reply latency.
+
+Not covered: WSS outer connections (no datagrams, documented), peer relays advertised
+automatically in `nu.node` (devices list the seed in `swarm.relays`), relays behind
+asymmetric budgets other than the pinned 1200/1280 cases, and field networks.
+
 ## Nu-path throughput profiling (0015, 2026-10-21)
 
 **Optimized, but the original ≤~5% versus uninstrumented raw criterion is still open.**
@@ -768,7 +1276,8 @@ The transport-global CID generator has no connection/peer argument to bind later
 
 To pursue the original ≤5% total target, request an **upstream** CID-issued/retired
 callback or selective event-construction API, then remeasure; no local quic-go fork
-was introduced. Per-peer QUIC Transports with self-routing CIDs are another possible
+was introduced. (Proposed and measured on a patched build: see the
+[0070 experiment](#upstream-cid-callback-experiment-0070-2026-10-22).) Per-peer QUIC Transports with self-routing CIDs are another possible
 architecture, but change the current single-dispatcher/Host design and were not
 silently substituted during this optimization.
 
@@ -789,6 +1298,43 @@ Two initial full-suite runs hit `nutest.TestRestartMidTransfer`'s unrelated one-
 startup assertion (13.03 s / 1.73 s); its isolated retry passed in 0.14 s and the final
 full suite passed (`nutest` 0.38 s). The changed packet-core packages are absent from
 that test's dependency graph; no nutest/node/store code or timing threshold was changed.
+
+## Upstream CID-callback experiment (0070, 2026-10-22)
+
+**The CID-observer cost disappears with a narrow quic-go callback: VirtualDirect is 3.2%
+below uninstrumented Raw (was 16–22%).** This is measured on a **patched** quic-go in an
+experiments-only module, so 0070's acceptance (a stock release) remains open; the main
+module is unchanged and still uses the qlog observer.
+
+The proposed upstream API (`quic.Config.ConnectionIDTracer` returning
+`AddedConnectionID`/`RemovedConnectionID` callbacks), the patch against v0.64.1, the
+draft issue/PR text and the human submission steps are in
+[`experiments/quicgo-cid/`](../experiments/quicgo-cid/README.md). The callbacks mirror
+the connection's own Transport routing-table updates and cost nothing per packet.
+A snapshot of `p2p/magicsock` (at `241e2ce`) with only the observer replaced runs in the
+same module. A fast test forces CID rotation over the direct path and fails if a rotated
+CID is unregistered (verified by a deliberate registration-cap mutation).
+
+Method identical to the 0015 section (same host, Go 1.26.2, `GOMAXPROCS=4`, 4 MiB
+per op, 1200-byte fixed packets, PMTUD off, eight-byte CIDs, same windows); load average
+15–25 on the shared host. Two five-repeat sets pooled (n=10), median (range) MB/s:
+
+| Case | MB/s | vs Raw | B/op; allocs/op |
+|---|---|---|---|
+| Raw | 726 (677–819) | — | 479,329; 15,308 |
+| RawObserver (no-op qlog) | 570 (497–608) | −21.5% | 2,818,348; 42,671 |
+| RawCIDTracer (no-op new hook) | 741 (690–803) | +2.0% (noise) | 477,311; 15,312 |
+| VirtualDirectQlog (current magicsock) | 568 (337–615) | −21.8% | 2,857,543; 44,502 |
+| **VirtualDirect (hook magicsock)** | **703 (654–734)** | **−3.2%** | 528,880; 17,195 |
+| RawPMTU | 836 (329–938) | +15.1% | 403,169; 12,753 |
+
+Per-set VirtualDirect deficits were 3.7% and 2.4%. Same-session stock baseline
+(`experiments/nupath`, unpatched, n=5): Raw 747, RawObserver 555, VirtualDirect 601 MB/s
+(−19.5%). Allocated bytes per op fall 81% versus the qlog observer; the remaining
+~50 KB / ~1.9k allocations per op over Raw belong to magicsock. Single 337/329 MB/s values
+are shared-host stalls and are kept in the ranges. Raw outputs:
+`experiments/quicgo-cid/bench-*.txt`. Patch tests: quic-go root/internal/qlog suites,
+new generator/config unit tests and a 50 MB rotation integration test (also `-race`).
 
 ## Early experiments
 
@@ -1945,9 +2491,49 @@ acceptance clause, all measured locally on 2026-10-22:
   dial. Two other roots failed honestly, for reasons outside the importer:
   `QmQPeNsJPyVWPFDVHb9rRFTRb9cBHRZvqPKpeGKYYx3vU7` (the old go-ipfs readme) found no reachable
   provider, and the empty directory `QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn` failed in
-  provider lookup because every Amino `GET_PROVIDERS` response exceeded `kad`'s 64 KiB message
-  limit (upstream allows 4 MiB; popular CIDs have more than 20 providers). Popular-CID lookups
-  therefore need a `kad` limit change before they work.
+  provider lookup because every Amino `GET_PROVIDERS` response exceeded `kad`'s then 64 KiB
+  message limit (upstream allows 4 MiB; popular CIDs have more than 20 providers). With
+  responses read up to 1 MiB and truncated to 64 providers / 20 closer peers
+  (`kad.TestOversizedResponseTruncated`, docs/networking.md), the same empty directory as
+  CIDv1, `bafybeiczsscdsbs7ffqz55asqdf3smv6klcw3gofszvwlyarci47bgf354`, resolves providers
+  and imports (2026-10-22, two runs: dry run 16.0 s / 41.4 s, import 41.2 s / 40.3 s; Nu root
+  `bafyreie4sdwpbrl4mxgkrdjfofxan55zx7qky2mfmvfbpqm2qzw6hcnkhu`). The wide timing spread is
+  provider dial failures, not lookup.
 
 Not covered: power-loss (as opposed to process-kill) campaigns, large real installations, and
 IPFS Cluster inventories (report-only, not implemented).
+
+## Atrepo member replication (0054) — tree diffs (2026-10-22)
+
+`node.TestAtrepoClusterDataset` runs two real loopback QUIC cluster members. Only
+its admin requests PDS exports (exactly two). The storage member acquires both
+heads through the production placement fetch path, retains the older version,
+fetches the selected small blob, excludes a declared >8 MiB blob, and reports
+complete with two-copy readiness after each head. A test-only stream wrapper
+counts actual `/nu/tree/1` data frames and payload bytes: first revision **168
+frames / 14,909 bytes**, second **7 frames / 834 bytes**, plus 5 have markers.
+The second payload is asserted equal to the exact reachable-block set difference,
+not merely smaller than the full repository. The account takedown still propagates.
+
+`proto.TestAtrepoTreeDiffAndCursors` checks an update diff (159 frames / 14,470
+bytes full, 5 / 1,416 diff), one-frame pages across a layered empty intermediate,
+paged have markers, repo-key lookup/range selection and absence proofs.
+`fetch.TestAtrepoFallbackPolicyAndRank` checks old-peer layer-1 fallback, both blob
+policies, oversized exclusion, unrelated dangling links and ranked tree sources.
+Wire request vectors and request/atrepo-stream fuzz seeds run in ordinary tests.
+Focused `-race` runs passed. They also exposed a stale reconcile/fetch-completion
+window that could retransmit a complete tree; acquisition now rechecks before
+starting a transfer rather than trusting that stale completeness result.
+
+Parallel full-suite attempts hit unrelated timeouts in `cluster.TestDrainRemove`
+(local add at 180,224/204,800 bytes), `cluster.TestPrivateCluster` (join) and
+`nutest.TestPublishSeedWait` (local add). Serial reruns of the complete cluster and
+nutest packages passed without changing their code/timeouts. Final gates passed:
+gofmt, `git diff --check`, `go vet ./... && staticcheck ./... && go test ./... &&
+./scripts/depguard.sh` (the final full-suite invocation used Go's successful test
+cache). No live network, prolonged fuzzing or benchmark run was needed.
+
+Legacy blob refs without a declared size remain honest incomplete obligations
+when unavailable: members cannot infer a >8 MiB exception from missing bytes.
+This evidence does not cover the separate multi-day live-account acceptance,
+public `/at/` serving or per-account resource budgets.

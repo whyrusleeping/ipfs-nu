@@ -137,3 +137,17 @@ IPs, but that alone is not proof that probes originate from an alternate IP.
   reservation client against Nu, Nu against upstream's relay, vouchers verified
   both ways, and a Nu CONNECT/STOP raw stream through upstream's actual relay.
   This deliberately does not claim a stock peer's Noise/yamux connection upgrade.
+
+## Nu datagram relay extension (0019)
+
+`datagram.go` / `datagram_server.go` / `datagram_client.go` implement
+`/nu/relay/datagram/1/{hop,stop}` from [D11c §5](../../../docs/networking.md#5-relay-optimization):
+an admitted pair with a live stream circuit asks the relay to forward inner QUIC packets
+as outer QUIC DATAGRAM frames (`channel:u16 | packet`). The relay allocates one channel
+per outer connection, offers the pair to the target over its reservation connection,
+proves the 1202-byte payload budget on both legs with `host.Conn.ProbeDatagram`, then
+sends READY. The stream circuit remains the fallback; the pair ends with either control
+stream, either connection, the relay, or the pair's last stream circuit. `DatagramLeg`
+satisfies `magicsock.PacketLeg`: a too-large packet is reported as not sent so the owner
+writes it on the stream. Fuzz: `FuzzDatagramMessages`. Evidence:
+[validation](../../../docs/validation.md#datagram-relay-extension-0019-2026-10-22).

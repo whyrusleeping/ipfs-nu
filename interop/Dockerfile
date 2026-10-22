@@ -1,11 +1,8 @@
 FROM golang:1.26.0-bookworm AS build
 WORKDIR /src
-COPY go.mod go.sum ./
-COPY p2p/ p2p/
-COPY core/ core/
-COPY httpsrc/ httpsrc/
-COPY *.go ./
-COPY interop/go.mod interop/go.sum interop/main.go interop/
+# Dockerfile.dockerignore restricts this to Go sources/modules and API embeds.
+# Include the daemon assembly as well as the original minimal-host driver.
+COPY . .
 WORKDIR /src/interop
 RUN CGO_ENABLED=0 go build -trimpath -o /nu-interop .
 

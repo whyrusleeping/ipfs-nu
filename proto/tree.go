@@ -61,6 +61,8 @@ const (
 // response resumes after that item: with its descendants next, or after its whole subtree
 // when After is set (the item was a blob, a marker, or not received). Every location is
 // unique within a tree, so a cursor is valid at any peer holding the tree.
+// For atrepo, Path is the encoded MST edge sequence ("l" or "t:"+key), Link
+// is Root/Dir/Target, and Key is present only for record leaves (docs/data.md D14).
 type Cursor struct {
 	Path  []string
 	Key   string
@@ -69,7 +71,7 @@ type Cursor struct {
 }
 
 // NameRange is a half-open range [Start, End) of entry names in the target directory. An
-// empty bound is open.
+// empty bound is open. Under atrepo the bounds are whole repo-path keys.
 type NameRange struct {
 	Start, End string
 }
@@ -82,12 +84,12 @@ func (r *NameRange) has(k string) bool {
 // batch of nodes by CID, Scope ScopeNode) is set.
 type TreeRequest struct {
 	Root      cid.CID
-	Profile   string // walk profile; "" means nu-tree
+	Profile   string // nu-tree (default) or atrepo
 	Path      []string
 	NameRange *NameRange
 	Limit     uint64 // most data frames in the response; 0 means the server's budget
 	Scope     Scope
-	Have      []cid.CID // complete trees the client holds (tree headers or directory roots)
+	Have      []cid.CID // complete held trees: headers/directory roots, or atrepo commits
 	InlineMax uint64    // inline blobs of at most this size (capped at MaxInline)
 	Cursor    *Cursor
 	Nodes     []cid.CID
@@ -137,7 +139,7 @@ func (r *TreeRequest) check() error {
 	if !r.Root.Defined() || r.Root.Codec() != cid.DRISL {
 		return bad("root must be a DRISL node")
 	}
-	if r.Profile != "" && r.Profile != ProfileNuTree {
+	if r.Profile != "" && r.Profile != ProfileNuTree && r.Profile != ProfileAtrepo {
 		return bad("unsupported walk profile %q", r.Profile)
 	}
 	switch r.Scope {
@@ -145,9 +147,11 @@ func (r *TreeRequest) check() error {
 	default:
 		return bad("unknown scope %q", r.Scope)
 	}
-	for _, n := range r.Path {
-		if err := tree.ValidName(n); err != nil {
-			return bad("path: %v", err)
+	if r.Profile != ProfileAtrepo {
+		for _, n := range r.Path {
+			if err := tree.ValidName(n); err != nil {
+				return bad("path: %v", err)
+			}
 		}
 	}
 	if nr := r.NameRange; nr != nil {
@@ -157,6 +161,9 @@ func (r *TreeRequest) check() error {
 	}
 	if len(r.Have) > MaxTreeHave {
 		return bad("more than %d have roots", MaxTreeHave)
+	}
+	if r.Profile == ProfileAtrepo {
+		return r.checkAtrepo()
 	}
 	if c := r.Cursor; c != nil {
 		keyless := c.Link == LinkRoot || c.Link == LinkDir || c.Link == LinkSrc

@@ -130,8 +130,11 @@ Filtering is independently selectable: `FilterEndpointIndependent`,
 refresh dynamic nft sets of active mappings and allowed remote IPs/tuples.
 Unsolicited inbound packets must pass the corresponding learned filter; ordinary
 conntrack replies remain allowed. Fixture `Lifetime` (default 1 minute, >=1s)
-bounds idle pinholes and learned filter entries, **not** established conntrack
-flows. It is not evidence for mapping-lifetime algorithms. `FlushMappings`
+bounds idle pinholes and learned filter entries; by default **not** established
+conntrack flows. Set `ExpireFlows` to also set the router namespace's UDP conntrack
+timeouts to `Lifetime`, so the whole idle mapping expires then (this is what
+`p2p/netcheck`'s lifetime ladder measures; it affects every UDP flow of that
+router). Large fixtures are installed in batches of 64 rules. `FlushMappings`
 destroys both conntrack flows and learned pinholes. Hairpin DNAT plus private-side
 masquerade is opt-in with `Hairpin`. `BlockUDP` drops all forwarded UDP, including
 established flows, in either mode. ICMP/other traffic is not a simulated UDP path.
@@ -166,9 +169,13 @@ Optional `time_to_first_byte_ns`/`time_to_direct_ns` fields are omitted when not
 measured; these protocol smoke tests do not pretend to measure file transfers.
 The on-demand CI job collects standalone records as an artifact.
 
+`p2p/netcheck`'s `TestNetcheckNATLab` (own helpers, `relay.New` observers) classifies
+six single-NAT fixture combinations, an EIM home NAT behind an ADM/ADF/sequential
+CGNAT, and UDP blocking, including lifetimes via `ExpireFlows`.
+
 Deferred: NAT64/IPv6-only scenario presets and validation, third-party lab
-consumers, CGNAT/two-NAT end-to-end assertions, transfer-in-flight network-change
-measurements, exact mapping timeouts, sequential jitter, per-subscriber quotas,
+consumers, transfer-in-flight network-change measurements, allocator jitter and
+per-flow allocation (fixture ports are reserved in advance), per-subscriber quotas,
 IPS-like drop-after-N rules, and the exhaustive RFC matrix. None of these are
 silently emulated by a weaker masquerade rule. They can be added by the feature
 consumers without expanding normal `go test ./...`.

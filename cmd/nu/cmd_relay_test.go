@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/netcheck"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
@@ -32,8 +35,18 @@ func TestCLIRelayServesAndStops(t *testing.T) {
 	out, errb = syncBuf{}, syncBuf{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
+	udpPort := func() string {
+		pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pc.Close()
+		return strconv.Itoa(pc.LocalAddr().(*net.UDPAddr).Port)
+	}
+	ncPort, ncAlt := udpPort(), udpPort()
 	go func() {
-		done <- runCtx(ctx, []string{"--nu-path", r.Root(), "--json", "relay", "--listen", "127.0.0.1:0", "--max-reservations", "4"}, &out, &errb)
+		done <- runCtx(ctx, []string{"--nu-path", r.Root(), "--json", "relay", "--listen", "127.0.0.1:0", "--max-reservations", "4",
+			"--netcheck", "127.0.0.1:" + ncPort, "--netcheck-alt-port", ncAlt}, &out, &errb)
 	}()
 	var st relayStatus
 	waitFor(t, "relay status", func() bool { return json.Unmarshal([]byte(out.String()), &st) == nil && len(st.Listen) > 0 })
@@ -70,6 +83,11 @@ func TestCLIRelayServesAndStops(t *testing.T) {
 	}
 	if err := circuit.VerifyVoucher(res.Voucher, relayID, h.ID(), res.Expires); err != nil {
 		t.Fatal(err)
+	}
+	// 0018: the relay serves its NAT-profiling observer descriptor.
+	d, err := netcheck.Fetch(dctx, h, relayID)
+	if err != nil || len(d.Sets) != 1 || d.Sets[0].Primary.String() != "127.0.0.1:"+ncPort || d.Sets[0].AltPort.String() != "127.0.0.1:"+ncAlt || len(st.Netcheck) != 2 {
+		t.Fatalf("netcheck descriptor: %+v %v (status %v)", d, err, st.Netcheck)
 	}
 	cancel()
 	select {

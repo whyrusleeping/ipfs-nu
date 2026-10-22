@@ -39,6 +39,10 @@ type Config struct {
 	Bootstrap             []Peer
 	Advertise             []wire.Multiaddr
 	AllowPrivateAddresses bool // explicit test/lab override; false for public Amino routing
+	// ServerAddrs, if set, supplies the listen addresses of a peer that sent us a
+	// request and advertises the Kademlia protocol (identify), so a server learns
+	// routing peers from inbound traffic. Nil for peers that are clients only.
+	ServerAddrs func(wire.PeerID) []wire.Multiaddr
 }
 type providerEntry struct {
 	peers   []Peer
@@ -54,8 +58,22 @@ type Service struct {
 	providerRecords int
 	requests        chan struct{}
 	peerRequests    map[wire.PeerID]int
+	dialing         map[wire.PeerID]int // peers kad itself is connecting to (Lookup re-entrancy guard)
 	closed          bool
 	wg              sync.WaitGroup
+}
+
+// Stats is a snapshot for status/doctor.
+type Stats struct {
+	Server          bool
+	RoutingPeers    int
+	ProviderRecords int
+}
+
+func (s *Service) Stats() Stats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return Stats{Server: s.cfg.PubliclyReachable, RoutingPeers: len(s.table.Peers()), ProviderRecords: s.providerRecords}
 }
 
 func New(ctx context.Context, cfg Config) (*Service, error) {
@@ -84,7 +102,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, wire.ErrLimit
 	}
 	child, cancel := context.WithCancel(ctx)
-	s := &Service{cfg: cfg, table: NewTable(cfg.Host.ID()), ctx: child, cancel: cancel, providers: map[string]providerEntry{}, requests: make(chan struct{}, cfg.MaxRequests), peerRequests: map[wire.PeerID]int{}}
+	s := &Service{cfg: cfg, table: NewTable(cfg.Host.ID()), ctx: child, cancel: cancel, providers: map[string]providerEntry{}, requests: make(chan struct{}, cfg.MaxRequests), peerRequests: map[wire.PeerID]int{}, dialing: map[wire.PeerID]int{}}
 	for _, p := range cfg.Bootstrap {
 		if p.ID == cfg.Host.ID() || len(p.Addrs) == 0 {
 			continue
@@ -251,7 +269,7 @@ func (s *Service) handle(st *host.Stream) {
 
 func (s *Service) handleMessage(peer wire.PeerID, msg Message) (Message, bool, error) {
 	resp := Message{Type: msg.Type, Key: msg.Key, ClusterLevel: msg.ClusterLevel}
-	s.table.Add(PeerInfo{ID: peer, Addrs: s.peerAddresses(peer)})
+	s.learnRequester(peer)
 	switch msg.Type {
 	case FindNode:
 		// FIND_NODE also routes arbitrary provider keys, not only PeerIds.
@@ -281,6 +299,26 @@ func (s *Service) handleMessage(peer wire.PeerID, msg Message) (Message, bool, e
 		return Message{}, false, ErrMessage
 	}
 	return resp, true, nil
+}
+
+// learnRequester refreshes a known routing peer, or adds an inbound peer whose
+// identify snapshot says it serves Kademlia at usable addresses. Address-less
+// entries are never created: they could not be dialed later.
+func (s *Service) learnRequester(peer wire.PeerID) {
+	if addrs := s.peerAddresses(peer); len(addrs) > 0 {
+		s.table.Add(PeerInfo{ID: peer, Addrs: addrs})
+		return
+	}
+	if s.cfg.ServerAddrs == nil {
+		return
+	}
+	p := Peer{ID: peer}
+	for _, a := range s.cfg.ServerAddrs(peer) {
+		p.Addrs = append(p.Addrs, a.Bytes())
+	}
+	if usable, ok := s.usablePeer(p); ok {
+		s.table.Add(PeerInfo(usable))
+	}
 }
 func (s *Service) peerAddresses(id wire.PeerID) [][]byte {
 	for _, p := range s.table.Peers() {
@@ -386,20 +424,35 @@ func (s *Service) getProviders(key []byte) []Peer {
 	return append([]Peer(nil), v...)
 }
 
-func readMessage(r io.Reader) (Message, error) { return readMessageBuffered(bufio.NewReader(r)) }
-func readMessageBuffered(br *bufio.Reader) (Message, error) {
-	n, e := varint.Read(br)
+// readMessage reads a response (MaxResponse, DecodeResponse); readMessageBuffered reads a
+// request (MaxMessage, Decode).
+func readMessage(r io.Reader) (Message, error) {
+	b, e := readFrame(bufio.NewReader(r), MaxResponse)
 	if e != nil {
 		return Message{}, e
 	}
-	if n > MaxMessage {
-		return Message{}, wire.ErrLimit
-	}
-	b := make([]byte, int(n))
-	if _, e = io.ReadFull(br, b); e != nil {
+	return DecodeResponse(b)
+}
+func readMessageBuffered(br *bufio.Reader) (Message, error) {
+	b, e := readFrame(br, MaxMessage)
+	if e != nil {
 		return Message{}, e
 	}
 	return Decode(b)
+}
+func readFrame(br *bufio.Reader, limit int) ([]byte, error) {
+	n, e := varint.Read(br)
+	if e != nil {
+		return nil, e
+	}
+	if n > uint64(limit) {
+		return nil, wire.ErrLimit
+	}
+	b := make([]byte, int(n))
+	if _, e = io.ReadFull(br, b); e != nil {
+		return nil, e
+	}
+	return b, nil
 }
 func writeMessage(w io.Writer, m Message) error {
 	b, e := Encode(m)
@@ -520,6 +573,16 @@ func (s *Service) ensureConnected(ctx context.Context, id wire.PeerID) error {
 	if err := s.cfg.Sessions.AddHints(ctx, []lookup.Hint{{Peer: id, Addresses: addrs}}); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.dialing[id]++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.dialing[id]--; s.dialing[id] == 0 {
+			delete(s.dialing, id)
+		}
+		s.mu.Unlock()
+	}()
 	_, err := s.cfg.Sessions.Connect(ctx, id)
 	return err
 }
@@ -561,16 +624,7 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidates := make([]PeerInfo, 0, len(known))
-		for _, p := range known {
-			if !queried[p.ID] {
-				candidates = append(candidates, p)
-			}
-		}
-		sortPeers(candidates, target)
-		if len(candidates) > Alpha {
-			candidates = candidates[:Alpha]
-		}
+		candidates := unqueriedClosest(known, queried, target)
 		if len(candidates) == 0 {
 			break
 		}
@@ -614,6 +668,30 @@ func (s *Service) iterative(ctx context.Context, target []byte, op MessageType) 
 	}
 	return out, errors.Join(errs...)
 }
+
+// unqueriedClosest picks the next Alpha peers to ask: the unqueried ones among the K
+// known peers closest to target. When all of those have been asked the lookup has
+// converged (standard Kademlia termination) and nothing is returned.
+func unqueriedClosest(known map[wire.PeerID]PeerInfo, queried map[wire.PeerID]bool, target []byte) []PeerInfo {
+	all := make([]PeerInfo, 0, len(known))
+	for _, p := range known {
+		all = append(all, p)
+	}
+	sortPeers(all, target)
+	if len(all) > K {
+		all = all[:K]
+	}
+	var out []PeerInfo
+	for _, p := range all {
+		if !queried[p.ID] {
+			out = append(out, p)
+			if len(out) == Alpha {
+				break
+			}
+		}
+	}
+	return out
+}
 func sortPeers(ps []PeerInfo, target []byte) {
 	dst := key(target)
 	sort.Slice(ps, func(i, j int) bool { return closer(key(ps[i].ID.Bytes()), key(ps[j].ID.Bytes()), dst) })
@@ -635,20 +713,15 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 		}
 	}
 	var errs []error
+	answered := 0
 	for rounds := 0; rounds < 16; rounds++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		candidates := make([]PeerInfo, 0, len(known))
-		for _, p := range known {
-			if !queried[p.ID] {
-				candidates = append(candidates, p)
-			}
+		if len(providers) > 0 {
+			break // a fetch wants providers now; the K-closest sweep can stop
 		}
-		sortPeers(candidates, key)
-		if len(candidates) > Alpha {
-			candidates = candidates[:Alpha]
-		}
+		candidates := unqueriedClosest(known, queried, key)
 		if len(candidates) == 0 {
 			break
 		}
@@ -668,6 +741,7 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 				errs = append(errs, r.e)
 				continue
 			}
+			answered++
 			s.addPeers(r.m.Closer)
 			for _, peer := range r.m.Closer {
 				if usable, ok := s.usablePeer(peer); ok {
@@ -685,8 +759,13 @@ func (s *Service) FindProviders(ctx context.Context, key []byte) ([]Peer, error)
 	for _, p := range providers {
 		res = append(res, p)
 	}
-	if len(res) > 0 {
+	// No providers is a result once routing peers answered; it is an error only when
+	// nobody could be asked (not bootstrapped, or every query failed).
+	if len(res) > 0 || answered > 0 {
 		return res, nil
+	}
+	if len(errs) == 0 {
+		return res, ErrNoPeers
 	}
 	return res, errors.Join(errs...)
 }
@@ -781,8 +860,24 @@ func (s *Service) ProvideAndRepublish(ctx context.Context, key []byte, addrs []w
 }
 func (s *Service) String() string { return fmt.Sprintf("kad(%s)", s.cfg.Host.ID()) }
 
-// Lookup implements p2p/lookup.Source using iterative FIND_NODE.
+// Lookup implements p2p/lookup.Source using iterative FIND_NODE. The session
+// manager consults every source while dialing, including dials kad itself makes
+// to routing peers: those, and peers already in the table, are answered from the
+// table without a network lookup, so a lookup never recurses into itself. An
+// empty table (not bootstrapped) answers nothing rather than spraying FIND_NODE
+// at connected non-DHT peers.
 func (s *Service) Lookup(ctx context.Context, id wire.PeerID, emit func(lookup.Address) bool) error {
+	s.mu.Lock()
+	dialing := s.dialing[id] > 0
+	s.mu.Unlock()
+	known := s.peerAddresses(id)
+	if dialing || len(known) > 0 {
+		s.emitAddresses(id, known, emit)
+		return nil
+	}
+	if len(s.table.Peers()) == 0 {
+		return nil
+	}
 	peers, err := s.FindNode(ctx, id)
 	found := false
 	for _, p := range peers {
@@ -790,18 +885,24 @@ func (s *Service) Lookup(ctx context.Context, id wire.PeerID, emit func(lookup.A
 			continue
 		}
 		found = true
-		for _, raw := range p.Addrs {
-			a, e := wire.MultiaddrFromBytes(raw, 1024)
-			if e != nil {
-				continue
-			}
-			if !emit(lookup.Address{Peer: id, Addr: a, Source: "amino-kad", Seen: time.Now(), Expires: time.Now().Add(30 * time.Minute), Confidence: .5}) {
-				return nil
-			}
+		if !s.emitAddresses(id, p.Addrs, emit) {
+			return nil
 		}
 	}
 	if found {
 		return nil
 	}
 	return err
+}
+func (s *Service) emitAddresses(id wire.PeerID, addrs [][]byte, emit func(lookup.Address) bool) bool {
+	for _, raw := range addrs {
+		a, e := wire.MultiaddrFromBytes(raw, 1024)
+		if e != nil {
+			continue
+		}
+		if !emit(lookup.Address{Peer: id, Addr: a, Source: "amino-kad", Seen: time.Now(), Expires: time.Now().Add(30 * time.Minute), Confidence: .5}) {
+			return false
+		}
+	}
+	return true
 }

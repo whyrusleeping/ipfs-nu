@@ -61,9 +61,15 @@ type clusterState struct {
 	svc   *cluster.Service
 	sw    ClusterNet
 	coll  *collection.Manager
-	// svcPtr and collPtr mirror svc and coll for readers that must not take mu.
-	svcPtr  atomic.Pointer[cluster.Service]
-	collPtr atomic.Pointer[collection.Manager]
+	// lcoll is the local cluster's collection manager (select follows, 0058), opened on
+	// demand; lcollStarted says its loops run.
+	lcoll        *collection.Manager
+	lcollStarted bool
+	// svcPtr, collPtr and lcollPtr mirror svc, coll and lcoll for readers that must not
+	// take mu.
+	svcPtr   atomic.Pointer[cluster.Service]
+	collPtr  atomic.Pointer[collection.Manager]
+	lcollPtr atomic.Pointer[collection.Manager]
 	// gated mirrors net for the connection gate, which must not take mu (the host
 	// rechecks connections while cluster operations hold it).
 	gated atomic.Pointer[cluster.Cluster]
@@ -170,6 +176,9 @@ func (n *Local) AttachNetwork(sw ClusterNet) error {
 		}
 		if cs.local != nil {
 			n.startReplica(cs.local)
+			if len(collection.Collections(cs.local.View())) > 0 {
+				n.startLocalCollectionsLocked()
+			}
 		}
 	}
 	c, err := n.netClusterLocked()
@@ -225,20 +234,24 @@ func (n *Local) DetachNetwork() { n.closeClusters() }
 func (n *Local) closeClusters() {
 	cs := &n.clusters
 	cs.mu.Lock()
-	svc, coll := cs.svc, cs.coll
-	cs.svc, cs.sw, cs.coll = nil, nil, nil
+	svc, coll, lcoll := cs.svc, cs.coll, cs.lcoll
+	cs.svc, cs.sw, cs.coll, cs.lcoll, cs.lcollStarted = nil, nil, nil, nil, false
 	if cs.auditCancel != nil {
 		cs.auditCancel()
 		cs.auditCancel = nil
 	}
 	cs.svcPtr.Store(nil)
 	cs.collPtr.Store(nil)
+	cs.lcollPtr.Store(nil)
 	cs.mu.Unlock()
 	if svc != nil {
 		_ = svc.Close()
 	}
 	if coll != nil {
 		_ = coll.Close()
+	}
+	if lcoll != nil {
+		_ = lcoll.Close()
 	}
 	n.closeReplicas()
 }
@@ -818,7 +831,7 @@ func (n *Local) datasetInfo(c *cluster.Cluster, name string) *apiv0.Dataset {
 		if d.Value != nil && d.Value.Collection != nil {
 			// Collection readiness binds to the merged catalog root (floor placement).
 			err = apiv0.Errorf(apiv0.CodeUnavailable, "no merged catalog yet")
-			if cm := n.clusters.collPtr.Load(); cm != nil {
+			if cm := n.collectionsPtr(c); cm != nil {
 				if root, ok := cm.MergedRoot(name); ok {
 					t, err = root, nil
 				}

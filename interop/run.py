@@ -29,7 +29,8 @@ LODESTAR = "chainsafe/lodestar:v1.50.0@sha256:f3d339e962672a8ccc50e0b7c87ba2e215
 
 
 class Runner:
-    def __init__(self, out):
+    def __init__(self, out, daemon=False):
+        self.daemon = daemon
         self.out = out
         out.mkdir(parents=True, exist_ok=True)
         self.prefix = "nu-interop-" + uuid.uuid4().hex[:10]
@@ -63,7 +64,10 @@ class Runner:
         name = self.prefix + "-" + name
         self.containers.append(name)
         command = ["run", "-d", "--name", name, "--network", self.network, *options]
-        for k, v in (env or {}).items():
+        env = dict(env or {})
+        if self.daemon and image == "nu-interop:local":
+            env["NU_INTEROP_DAEMON"] = "1"
+        for k, v in env.items():
             command += ["-e", f"{k}={v}"]
         self.docker(*command, image, *args)
         return name
@@ -103,6 +107,7 @@ class Runner:
             "upstream": UPSTREAM,
             "nuRevision": self.cmd(["git", "rev-parse", "HEAD"]).stdout.strip(),
             "workingTreeDirty": bool(self.cmd(["git", "status", "--porcelain"]).stdout),
+            "fullDaemon": self.daemon,
             "sources": SOURCES,
             "js": json.loads((HERE / "js" / "package.json").read_text())["dependencies"],
             "kubo": KUBO, "lighthouse": LIGHTHOUSE, "lodestar": LODESTAR,
@@ -184,6 +189,7 @@ class Runner:
         self.containers.append(container)
         try:
             p = self.docker("run", "--name", container, "--network", "bridge" if public else self.network,
+                            *(["-e", "NU_INTEROP_DAEMON=1"] if self.daemon else []),
                             "nu-interop:local", "-mode", "probe", "-addr", addr, "-ping", ping,
                             "-timeout", "20s", timeout=40, check=False)
             (self.out / (name + ".jsonl")).write_text(p.stdout)
@@ -259,10 +265,11 @@ def main():
                         help="black-box target; default kubo+lighthouse. Lodestar rejects Nu's Ed25519 identity")
     parser.add_argument("--public", action="store_true", help="explicitly permit connections to pinned public Amino peers")
     parser.add_argument("--out", type=Path, default=HERE / "results")
+    parser.add_argument("--daemon", action="store_true", help="use the full Nu daemon assembly, not the minimal host driver")
     args = parser.parse_args()
     if args.suite == "amino" and not args.public:
         parser.error("amino requires --public; this contacts third-party infrastructure")
-    runner = Runner(args.out.resolve())
+    runner = Runner(args.out.resolve(), daemon=args.daemon)
     try:
         runner.build_nu()
         if args.suite == "transport":

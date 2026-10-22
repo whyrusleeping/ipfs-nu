@@ -91,6 +91,15 @@ with that instrumented raw control. See the [profiling report and proposed accep
 split](../../docs/validation.md#nu-path-throughput-profiling-0015-2026-10-21);
 that proposal does not silently redefine or close the original criterion.
 
+## Packet legs (0019)
+
+`Relay.AttachPacketLeg` adds one negotiated unreliable `PacketLeg` (the circuit
+datagram extension) to a live stream relay. The writer tries the leg first and writes
+a packet on the stream when the leg reports it as not sent (outer budget) or on error
+(the leg is then closed and detached); the leg's reader delivers into the same receive
+queue. `Stats.DatagramSent/DatagramReceived` and `PathSet.Datagram` expose it. The
+stream leg is never replaced by a packet leg.
+
 ## Next owners
 
 0017: use the inner `host.Conn.ExportKeyingMaterial` API to derive domain-separated

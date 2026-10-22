@@ -59,6 +59,7 @@ type Client struct {
 	op      chan struct{} // context-aware serialization of network operations
 	mu      sync.Mutex
 	mapping Mapping
+	lastErr string // most recent refresh failure; empty after a successful lease
 	nonce   [12]byte
 	epoch   uint32
 	epochAt time.Time
@@ -116,9 +117,18 @@ func (c *Client) Candidate() (Mapping, bool) {
 	defer c.mu.Unlock()
 	return c.mapping, c.mapping.External.IsValid() && time.Now().Before(c.mapping.Expires)
 }
+
+// LastError is the most recent refresh failure (all protocols joined), for
+// diagnostics; empty after the last lease succeeded.
+func (c *Client) LastError() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastErr
+}
 func (c *Client) publish(m Mapping) {
 	c.mu.Lock()
 	c.mapping = m
+	c.lastErr = ""
 	c.mu.Unlock()
 	select {
 	case c.changes <- struct{}{}:
@@ -187,7 +197,11 @@ func (c *Client) refresh(ctx context.Context, reboot bool) (Mapping, error) {
 	if len(errs) == 0 {
 		errs = append(errs, errors.New("portmap: no eligible mapping protocol"))
 	}
-	return Mapping{}, errors.Join(errs...)
+	err := errors.Join(errs...)
+	c.mu.Lock()
+	c.lastErr = err.Error()
+	c.mu.Unlock()
+	return Mapping{}, err
 }
 func lease(external netip.AddrPort, epoch, seconds uint32, start time.Time) Mapping {
 	// Router leases keep aging while the laptop sleeps; Linux monotonic time

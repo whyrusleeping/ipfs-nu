@@ -94,6 +94,8 @@ type Progress struct {
 
 // Options configures one fetch.
 type Options struct {
+	// Profile selects nu-tree (default), atrepo, or atrepo+blobs.
+	Profile string
 	// Size is the target's size from an authenticated source (tree entry, file node), for
 	// raw blob targets; 0 means unknown.
 	Size uint64
@@ -150,6 +152,9 @@ type GetOptions struct {
 // complete in the store.
 func (f *Fetcher) Get(ctx context.Context, c cid.CID, o GetOptions) (Result, error) {
 	pin := store.Pin{CID: c, Mode: store.Recursive, Profile: "nu-tree", Source: o.PinSource, Name: o.PinName}
+	if o.Profile != "" {
+		pin.Profile = o.Profile
+	}
 	if pin.Source == "" {
 		pin.Source = store.SourceExplicit
 	}
@@ -170,12 +175,21 @@ func (f *Fetcher) Get(ctx context.Context, c cid.CID, o GetOptions) (Result, err
 	return res, nil
 }
 
-// Fetch fetches c and everything its nu-tree walk reaches (header → directories → entries →
-// blobs; MASL file node → blob; a raw blob alone). Structure and small blobs come first over
+// Fetch fetches c under Options.Profile (nu-tree by default, or atrepo/atrepo+blobs).
+// The nu-tree walk reaches header → directories → entries →
+// blobs; MASL file node → blob; or a raw blob alone. Structure and small blobs come first over
 // /nu/tree/1 from peers that support it; then a layer-1 walk fetches what is still missing
 // level by level over /nu/bytes/1, and the blobs in parallel across peers. Objects already
 // held are not fetched again, and partial blobs resume from their verified groups.
 func (f *Fetcher) Fetch(ctx context.Context, c cid.CID, o Options) (Result, error) {
+	switch o.Profile {
+	case "", proto.ProfileNuTree, proto.ProfileAtrepo, "atrepo+blobs":
+	default:
+		return Result{}, fmt.Errorf("fetch: unsupported profile %q", o.Profile)
+	}
+	if o.Catalog && o.Profile != "" && o.Profile != proto.ProfileNuTree {
+		return Result{}, errors.New("fetch: catalog requires nu-tree")
+	}
 	r := &run{f: f, st: f.cfg.Store, opts: o, sw: &swarm{index: map[wire.PeerID]*peer{}}}
 	r.stage(StageProviders)
 	for _, p := range o.Peers {
@@ -510,6 +524,14 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 }
 
 func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {
+	if r.opts.Profile == "atrepo" || r.opts.Profile == "atrepo+blobs" {
+		links, err := AtrepoLinks(c, data, r.opts.Profile == "atrepo+blobs")
+		out := make([]blobRef, len(links))
+		for i, l := range links {
+			out[i] = blobRef{l.CID, l.Size}
+		}
+		return out, err
+	}
 	if !r.opts.Catalog {
 		return children(c, data)
 	}

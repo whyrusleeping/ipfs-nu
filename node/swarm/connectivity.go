@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/whyrusleeping/nu"
+	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/p2p/homerelay"
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/lookup"
@@ -34,10 +35,12 @@ type connectivity struct {
 	mu        sync.Mutex
 	closed    bool
 	peers     map[wire.PeerID]*pathPeer
-	known     map[wire.PeerID]wire.Multiaddr
+	known     map[wire.PeerID]homerelay.Endpoints
 	pending   chan struct{}
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+	historyMu sync.Mutex // per-peer path history for doctor; leaf lock (see note)
+	history   map[wire.PeerID][]apiv0.PathEvent
 }
 
 type pathPeer struct {
@@ -50,6 +53,10 @@ type pathPeer struct {
 	lastError     string
 	lastConnected time.Time
 	setupTime     time.Duration // last successful raw-circuit + inner TLS setup span
+	// 0019 relay optimization, guarded by connectivity.mu (relay_optimizer.go).
+	datagram    string // "", "stream", "datagram" or "stream: <last upgrade error>"
+	relayChoice string // last pair-aware choice or error
+	optimizing  bool
 }
 
 // sharedHost binds all sockets before Host starts, preserving its ownership-on-
@@ -100,17 +107,12 @@ func sharedHost(cfg host.Config) (*host.Host, *magicsock.Conn, error) {
 
 func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) error {
 	ctx, cancel := context.WithCancel(ctx)
-	c := &connectivity{s: s, ctx: ctx, cancel: cancel, socket: socket, peers: make(map[wire.PeerID]*pathPeer), known: make(map[wire.PeerID]wire.Multiaddr), pending: make(chan struct{}, 16)}
+	c := &connectivity{s: s, ctx: ctx, cancel: cancel, socket: socket, peers: make(map[wire.PeerID]*pathPeer), known: make(map[wire.PeerID]homerelay.Endpoints), pending: make(chan struct{}, 16)}
 	s.connectivity = c
 	for _, addr := range s.cfg.Relays {
-		id, err := circuit.RelayPeer(addr)
-		if err != nil || s.host.IsLocalOnlyMultiaddr(addr) {
-			return errors.New("swarm: relays must be literal QUIC endpoints with a relay PeerID")
+		if err := c.addRelayLocked(addr, 16); err != nil {
+			return err
 		}
-		c.known[id] = addr
-	}
-	if len(c.known) > 16 {
-		return host.ErrLimit
 	}
 	var err error
 	s.identify, err = p2pproto.New(s.host, p2pproto.Config{AgentVersion: nu.Name + "/" + nu.Version, Addresses: s.publicationAddrs, OnPeerRecord: c.learn})
@@ -123,18 +125,22 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	if err := c.initNetwork(); err != nil {
 		return err
 	}
-	c.client, err = circuit.NewClient(s.host, circuit.ClientConfig{})
+	c.client, err = circuit.NewClient(s.host, circuit.ClientConfig{AcceptDatagram: c.acceptDatagramPolicy})
 	if err != nil {
 		return err
 	}
-	homes, err := homerelay.New(ctx, homerelay.Config{Host: s.host, Client: c.client, Relays: s.cfg.Relays, Ping: s.identify.Ping, Changed: s.identify.AddressesChanged})
+	homes, err := homerelay.New(ctx, homerelay.Config{Host: s.host, Client: c.client, Relays: s.cfg.Relays, WSSOptions: s.cfg.WSS.options, Ping: s.identify.Ping, Changed: s.identify.AddressesChanged})
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
 	c.homes = homes
 	c.mu.Unlock()
+	if err := homerelay.ServeTable(s.host, homes.Table); err != nil {
+		return err
+	}
 	c.spawn(c.accept)
+	c.spawn(c.acceptDatagrams)
 	c.spawn(c.prune)
 	return c.runNetwork()
 }
@@ -222,17 +228,13 @@ func (c *connectivity) admitHints(id wire.PeerID, addrs []wire.Multiaddr) error 
 		if err != nil {
 			return err
 		}
-		relay, rid, peer, err := circuit.ParseAddress(a)
-		if err != nil || peer != id || c.s.host.IsLocalOnlyMultiaddr(relay) {
+		relay, _, peer, err := circuit.ParseAddress(a)
+		if err != nil || peer != id {
 			return wire.ErrFormat
 		}
-		if old, ok := c.known[rid]; ok && old.String() != relay.String() {
-			return errors.New("swarm: relay endpoint conflicts with configured/known relay")
+		if err := c.addRelayLocked(relay, 32); err != nil {
+			return err
 		}
-		if _, ok := c.known[rid]; !ok && len(c.known) >= 32 {
-			return host.ErrLimit
-		}
-		c.known[rid] = relay
 	}
 	return nil
 }
@@ -256,7 +258,7 @@ func (c *connectivity) learn(record wire.PeerRecord) {
 		if err != nil || id != record.PeerID {
 			continue
 		}
-		if known, ok := c.known[rid]; ok && known.String() == relay.String() {
+		if known, ok := c.known[rid]; ok && known.Contains(relay) {
 			p.routes = append(p.routes, a)
 		}
 		if len(p.routes) >= 8 {
@@ -272,7 +274,7 @@ func (c *connectivity) authorized(addr wire.Multiaddr, id wire.PeerID) (wire.Mul
 	c.mu.Lock()
 	known, ok := c.known[rid]
 	c.mu.Unlock()
-	if !ok || known.String() != relay.String() {
+	if !ok || !known.Contains(relay) {
 		return wire.Multiaddr{}, "", errors.New("swarm: relay is not explicitly configured or known from a link")
 	}
 	return relay, rid, nil
@@ -280,7 +282,9 @@ func (c *connectivity) authorized(addr wire.Multiaddr, id wire.PeerID) (wire.Mul
 
 func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multiaddr) (*host.Conn, error) {
 	if !host.IsCircuitAddress(addr) {
-		return c.s.host.Dial(ctx, addr)
+		attempt, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		return c.s.host.Dial(attempt, addr)
 	}
 	if c.client == nil {
 		return nil, errors.New("swarm: relay paths disabled in private/isolated mode")
@@ -319,14 +323,17 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 		err = nil
 		started := time.Now()
 		preparing := p.leg == nil
-		attempt, stop := context.WithTimeout(ctx, 750*time.Millisecond)
 		if p.leg == nil {
-			if _, err = c.s.host.Dial(attempt, relay); err == nil {
-				_, p.leg, err = qpath.Dial(attempt, c.socket, c.client, rid, id)
-				if err == nil {
-					p.relay = rid
-					c.watch(id, p, p.leg)
-				}
+			_, err = c.dialRelay(ctx, relay)
+		}
+		attempt, stop := context.WithTimeout(ctx, 2*time.Second)
+		if p.leg == nil && err == nil {
+			_, p.leg, err = qpath.Dial(attempt, c.socket, c.client, rid, id)
+			if err == nil {
+				p.relay = rid
+				c.watch(id, p, p.leg)
+				leg := p.leg
+				c.spawn(func() { c.upgradeDatagrams(id, p, leg, rid) })
 			}
 		}
 		var conn *host.Conn
@@ -335,12 +342,17 @@ func (c *connectivity) dial(ctx context.Context, id wire.PeerID, addr wire.Multi
 		}
 		stop()
 		if err != nil {
+			if p.lastError != err.Error() {
+				c.note(id, "relay dial via %s failed: %v", rid.Base36(), err)
+			}
 			p.lastError = err.Error()
 		} else {
 			p.lastError = ""
 			p.lastConnected = time.Now()
 			if preparing {
 				p.setupTime = time.Since(started)
+				c.s.metrics.setup.Observe(p.setupTime)
+				c.note(id, "relay circuit via %s and inner handshake ready in %v", rid.Base36(), p.setupTime.Round(time.Millisecond))
 			}
 		}
 		p.unlock()
@@ -385,6 +397,11 @@ func (c *connectivity) inner(ctx context.Context, id wire.PeerID) (*host.Conn, e
 				defer cancel()
 				c.network.open(setup, conn)
 			})
+		}
+		if err == nil {
+			if p, perr := c.peer(id); perr == nil {
+				c.spawn(func() { c.optimizeRelays(id, p) })
+			}
 		}
 		return conn, err
 	}
@@ -456,12 +473,15 @@ func (c *connectivity) acceptOne(circ *circuit.Circuit) {
 	}
 	p.leg = leg
 	p.relay = circ.Relay
+	c.setDatagram(p, "stream") // the dialer upgrades; relay offers arrive via acceptDatagrams
 	c.watch(circ.Peer, p, leg)
 	if _, err = c.inner(ctx, circ.Peer); err != nil {
 		p.lastError = err.Error()
+		c.note(circ.Peer, "accepted relay circuit via %s but the inner handshake failed: %v", circ.Relay.Base36(), err)
 		leg.Close()
 	} else {
 		p.lastConnected = time.Now()
+		c.note(circ.Peer, "accepted relay circuit via %s", circ.Relay.Base36())
 	}
 }
 func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) {
@@ -481,6 +501,7 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 			return
 		}
 		p.leg = nil
+		c.note(id, "relay leg via %s closed; the lower peer re-dials known routes", p.relay.Base36())
 		p.unlock()
 		// Exactly one authenticated inner endpoint repairs packet paths. The other
 		// only accepts replacement circuits after the old leg has failed/joined.
@@ -496,7 +517,7 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 			routes := append([]wire.Multiaddr(nil), p.routes...)
 			c.mu.Unlock()
 			for _, addr := range routes {
-				setup, cancel := context.WithTimeout(c.ctx, time.Second)
+				setup, cancel := context.WithTimeout(c.ctx, c.recoveryBudget(addr))
 				_, err := c.dial(setup, id, addr)
 				cancel()
 				if err == nil {

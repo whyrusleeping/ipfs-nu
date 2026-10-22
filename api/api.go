@@ -131,7 +131,25 @@ func (s *Server) register() {
 			s.mux.HandleFunc(apiv0.Prefix+rt.Pattern, s.wrap(methodNotAllowed))
 		}
 	}
+	// Prometheus text exposition for operators, outside the versioned JSON API but
+	// behind the same loopback/Host rules (D16 connectivity metrics, store basics).
+	s.mux.HandleFunc("GET "+MetricsPath, s.wrap(s.metrics))
 	s.mux.HandleFunc("/", s.wrap(notFound))
+}
+
+// MetricsPath serves Prometheus metrics (text/plain; version=0.0.4).
+const MetricsPath = "/metrics"
+
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) error {
+	mn, ok := s.n.(node.MetricsNode)
+	if !ok {
+		return apiv0.NotImplemented("metrics")
+	}
+	var m node.Metrics
+	mn.Metrics(r.Context(), &m)
+	w.Header().Set("Content-Type", node.MetricsContentType)
+	_, err := m.WriteTo(w)
+	return err
 }
 
 func (s *Server) wrap(h handlerFunc) http.HandlerFunc {

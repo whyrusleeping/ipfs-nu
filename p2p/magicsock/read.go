@@ -153,10 +153,12 @@ func (c *Conn) routeBatch(ms []ipv4.Message) int {
 		if !ok {
 			continue
 		}
+		inner := false
 		if cid, ok := destinationCID(b); ok {
 			c.mu.Lock()
 			r, exists := c.cids[cid]
 			if exists {
+				inner = true
 				if !r.peer.direct[source] {
 					c.mu.Unlock()
 					c.dropped.Add(1)
@@ -170,6 +172,11 @@ func (c *Conn) routeBatch(ms []ipv4.Message) int {
 				m.NN = 0
 			}
 			c.mu.Unlock()
+		}
+		if inner {
+			c.receivedBytes.direct.Add(uint64(len(b)))
+		} else {
+			c.receivedBytes.outer.Add(uint64(len(b)))
 		}
 		// Never swap message buffers: quic-go's separate packetBuffer bookkeeping
 		// owns them by index. Copy only across holes left by filtered/probe packets.

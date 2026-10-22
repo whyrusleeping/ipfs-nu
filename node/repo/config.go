@@ -163,6 +163,12 @@ func ParseSize(s string) (int64, error) {
 // RelayConfig configures the standalone `nu relay` role (networking D10). Flags of the
 // same name override these. Limits of 0 use the circuit server defaults.
 type RelayConfig struct {
+	// Optional additional Web-PKI TLS WebSocket listener. Certificate/key are
+	// explicit filesystem paths; advertise must include its admitted endpoint.
+	WSSListen         string `toml:"wss_listen,omitempty"`
+	WSSCert           string `toml:"wss_cert,omitempty"`
+	WSSKey            string `toml:"wss_key,omitempty"`
+	WSSMaxConnections int    `toml:"wss_max_connections,omitzero"`
 	// Listen holds QUIC multiaddrs; default /ip4/0.0.0.0/udp/443/quic-v1.
 	Listen []string `toml:"listen,omitempty"`
 	// Advertise holds the public addresses handed to reserving peers (without /p2p);
@@ -199,6 +205,10 @@ type SwarmConfig struct {
 	MDNS bool `toml:"mdns"`
 	// Public connectivity is opt-in to known relays, never an inferred directory.
 	Relays []string `toml:"relays,omitempty"`
+	// Proxy is an explicit http:// CONNECT proxy for WSS only; no environment discovery.
+	Proxy string `toml:"proxy,omitempty"`
+	// RelayCertPins are peerID@hex-SHA256(leaf DER) pins, additional to Web-PKI.
+	RelayCertPins []string `toml:"relay_cert_pins,omitempty"`
 	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
 	Mode  string   `toml:"mode,omitempty"`
 	Peers []string `toml:"peers,omitempty"`
@@ -206,6 +216,17 @@ type SwarmConfig struct {
 	// A grant also permits private candidate disclosure to that peer.
 	ProbeAllow     []string `toml:"probe_allow,omitempty"`
 	PortmapGateway string   `toml:"portmap_gateway,omitempty"`
+	// PeerRelayAllow makes this public node a bounded circuit relay for exactly
+	// these PeerIDs (an owner's devices or an allow-list); empty disables it.
+	PeerRelayAllow []string `toml:"peer_relay_allow,omitempty"`
+	// DHT: auto (default; Amino client when a non-loopback address is bound, server
+	// once AutoNAT confirms public reachability), client (always a client, never a
+	// server) or off. Private/isolated modes never run it.
+	DHT string `toml:"dht,omitempty"`
+	// LookupDomain is a dnsaddr peer domain (`_dnsaddr.<peer>.<domain>`) and RoutingURL a
+	// routing/v1 base URL, both public peer-address sources (D13); none by default.
+	LookupDomain string `toml:"lookup_domain,omitempty"`
+	RoutingURL   string `toml:"routing_url,omitempty"`
 }
 
 // DefaultConfig returns the configuration written at init.

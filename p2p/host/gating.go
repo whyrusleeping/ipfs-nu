@@ -72,7 +72,7 @@ func (h *Host) RecheckConnections() {
 	h.mu.Unlock()
 	for _, c := range h.Connections() {
 		if h.checkPeer(c.PeerID()) != nil {
-			_ = c.quic.CloseWithError(2, "peer denied")
+			_ = c.Close()
 		}
 	}
 }

@@ -84,7 +84,7 @@ fall back to plaintext, disable certificate checking, or use ambient proxy crede
 |---|---|
 | Direct TCP 443 with valid DNS certificate and HTTP/1.1 Upgrade | Supported target; operator supplies certificate/key and explicit endpoint |
 | Explicit HTTP CONNECT proxy allowing the admitted host:443 | Supported target; tunnel first, then end-to-end TLS, WebSocket, Noise and yamux; no proxy auto-discovery |
-| TLS-intercepting proxy | Unsupported; certificate/identity failures must identify the failed stage; no insecure retry. Operators must not install interception roots for relay dialing |
+| TLS-intercepting proxy | Unsupported; certificate/identity failures identify the failed stage; no insecure retry. Operators must not install interception roots for relay dialing. A locally trusted interception CA cannot be distinguished automatically from the operator's CA; deployments needing that guarantee must pin the relay certificate via TLS verification policy |
 | Proxy denying CONNECT or stripping WebSocket Upgrade | Fail clearly with CONNECT/Upgrade status, without leaking credentials |
 | HTTPS permitted only to other domains, HTTP/2-only gateways, captive portals | No reach guarantee; configure an admitted accessible relay or change network policy |
 
@@ -374,6 +374,34 @@ endpoints on the operator's bounded allow-list; otherwise 120s and 128 KiB per
 direction apply by default. Global/per-peer/per-observed-IP slots still constrain
 admitted traffic. Production operator/admission policy remains 0039; ordinary
 Noise/yamux relayed connections and Nu qpath upgrades are separate work.
+
+### WSS relay listener and wire implementation (0041)
+
+`nu relay` can additionally listen on TCP using `--wss-listen 0.0.0.0:443`,
+`--wss-cert /path/fullchain.pem`, `--wss-key /path/key.pem`, and an explicit
+`--advertise /dns/relay.example/tcp/443/tls/ws` (the relay PeerID is appended).
+Equivalent `[relay]` keys are `wss_listen`, `wss_cert`, `wss_key` and
+`wss_max_connections`. QUIC `--listen` remains independent. Certificates are
+operator-provisioned; no automatic ACME or project relay fleet is implied.
+The listener serves WebSocket Upgrade only at `/`, disables HTTP/2 and WebSocket
+compression, rejects browser Origin requests, and caps TCP/TLS/HTTP connections
+at 128 by default (including idle or unauthenticated connections). HTTP header
+setup and transport negotiation each have ten-second bounds. HTTP headers are
+bounded to 16 KiB (plus net/http's fixed parser read-ahead allowance), WebSocket
+frames to 1 MiB and fragmented messages to 4 MiB, Noise handshake messages to
+16 KiB and transport records to 65535 bytes. Yamux defaults to 64 streams with
+fixed 256 KiB receive windows and a bounded 128-frame output/control queue.
+Host peer gates and connection/stream limits apply identically to QUIC and WSS;
+circuit per-IP accounting uses the actual TCP source address, never proxy headers.
+Hijacked WebSocket connections remain listener-owned and are closed on shutdown.
+
+The wire packages and `Host.DialWSS`/`AcceptWSS` are implemented and tested against
+go-libp2p's full WebSocket + Noise + yamux stack in both directions. A real WSS
+relay reservation/voucher/CONNECT/STOP echo is covered by `relay/wss_test.go`.
+These are foundations, not the UDP-blocked resumable-transfer acceptance gate:
+relay-manager fallback, swarm integration, doctor reporting, and NAT-lab evidence
+must be completed before claiming production fallback. Rust interop and independent
+security review remain unverified.
 
 ### v0 swarm connectivity configuration
 

@@ -93,6 +93,31 @@ func TestLimitsDeadlinesAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestDeadlineChangeInterruptsQueuedWrite(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	session, _ := New(a, true, Config{})
+	defer session.Close()
+	go func() { var header [12]byte; _, _ = io.ReadFull(b, header[:]) }()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	st, err := session.OpenStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := st.Write([]byte("blocked")); done <- err }()
+	st.SetWriteDeadline(time.Now().Add(-time.Second))
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("changed deadline did not interrupt queued write")
+	}
+}
+
 func FuzzHeader(f *testing.F) {
 	f.Add(header{typ: windowType, flags: syn, id: 1}.encode())
 	f.Add(header{typ: dataType, id: 1, length: Window + 1}.encode())

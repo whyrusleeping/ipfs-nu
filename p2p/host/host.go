@@ -333,6 +333,13 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		}
 	}
 	c := &Conn{host: h, quic: qc, peer: key.PeerID(), key: key, outbound: outbound, streams: make(map[*Stream]struct{})}
+	return h.registerConnection(c)
+}
+
+// registerConnection applies the same peer gates and resource accounting to
+// authenticated QUIC and WSS connections.
+func (h *Host) registerConnection(c *Conn) (*Conn, error) {
+	outbound := c.outbound
 	for {
 		version, err := h.checkPeerVersion(c.peer)
 		if err != nil {
@@ -372,13 +379,13 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 		if h.limits.MaxConnectionsPerPeer != 1 || !preferred || list[0].outbound == outbound {
 			return nil, ErrLimit
 		}
-		_ = list[0].quic.CloseWithError(0, "duplicate connection")
+		_ = list[0].Close()
 		list = nil
 	}
 	h.peers[c.peer] = append(list, c)
 	h.signalChangedLocked()
 	h.wg.Add(1)
-	go func() { defer h.wg.Done(); <-qc.Context().Done(); h.removeConnection(c) }()
+	go func() { defer h.wg.Done(); <-c.Context().Done(); h.removeConnection(c) }()
 	if !h.manualStreams {
 		h.wg.Add(1)
 		go c.routeStreams()
@@ -525,7 +532,7 @@ func (h *Host) Close() error {
 		h.cancel()
 		for _, list := range h.peers {
 			for _, c := range list {
-				_ = c.quic.CloseWithError(0, "host closed")
+				_ = c.Close()
 			}
 		}
 		h.mu.Unlock()

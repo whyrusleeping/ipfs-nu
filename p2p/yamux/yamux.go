@@ -86,9 +86,10 @@ type Config struct {
 	WriteTimeout time.Duration // default 10s; a stuck TCP writer closes the session
 }
 type outbound struct {
-	h    header
-	data []byte
-	done chan error
+	h      header
+	data   []byte
+	done   chan error
+	stream *Stream // wakes queued writes on deadline changes and reset
 }
 
 // Session owns its connection. Close interrupts and joins both I/O workers.
@@ -201,32 +202,54 @@ func (s *Session) control(h header) error {
 	}
 }
 func (s *Session) send(ctx context.Context, o outbound, deadline time.Time) error {
-	var timer *time.Timer
-	var timeout <-chan time.Time
-	if !deadline.IsZero() {
-		timer = time.NewTimer(time.Until(deadline))
-		timeout = timer.C
-		defer timer.Stop()
-	}
 	o.done = make(chan error, 1)
-	select {
-	case s.output <- o:
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.ctx.Done():
-		return net.ErrClosed
-	case <-timeout:
-		return os.ErrDeadlineExceeded
-	}
-	select {
-	case err := <-o.done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.ctx.Done():
-		return net.ErrClosed
-	case <-timeout:
-		return os.ErrDeadlineExceeded
+	queue := s.output
+	var completed <-chan error
+	for {
+		var changed <-chan struct{}
+		if o.stream != nil {
+			s.mu.Lock()
+			err := o.stream.err
+			deadline, changed = o.stream.writeDeadline, o.stream.changed
+			s.mu.Unlock()
+			if err != nil {
+				return err
+			}
+		}
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if !deadline.IsZero() {
+			if !time.Now().Before(deadline) {
+				return os.ErrDeadlineExceeded
+			}
+			timer = time.NewTimer(time.Until(deadline))
+			timeout = timer.C
+		}
+		finished := false
+		var err error
+		select {
+		case queue <- o:
+			queue = nil
+			completed = o.done
+		case err = <-completed:
+			finished = true
+		case <-changed:
+		case <-ctx.Done():
+			err = ctx.Err()
+			finished = true
+		case <-s.ctx.Done():
+			err = net.ErrClosed
+			finished = true
+		case <-timeout:
+			err = os.ErrDeadlineExceeded
+			finished = true
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+		if finished {
+			return err
+		}
 	}
 }
 func (s *Session) writeLoop() {
@@ -299,13 +322,21 @@ func (s *Session) receive(h header) error {
 		}
 	}
 	if st == nil {
+		// Late window updates/FIN for locally retired streams are normal. A
+		// reset response here could erase the peer's already received data
+		// while it is still draining our FIN. Only refused SYNs get RST.
+		remoteID := (h.id%2 == 1) == !s.client
+		known := remoteID && h.id <= s.lastRemote || !remoteID && h.id < s.next
 		s.mu.Unlock()
+		if !known {
+			return ErrProtocol
+		}
 		if h.typ == dataType {
 			if _, err := io.CopyN(io.Discard, s.conn, int64(h.length)); err != nil {
 				return err
 			}
 		}
-		if h.flags&rst == 0 {
+		if h.flags&syn != 0 {
 			return s.control(header{typ: windowType, flags: rst, id: h.id})
 		}
 		return nil
@@ -490,7 +521,7 @@ func (st *Stream) Write(b []byte) (int, error) {
 		n := min(len(b), maxWrite, int(st.sendWindow))
 		st.sendWindow -= uint32(n)
 		s.mu.Unlock()
-		o := outbound{h: header{typ: dataType, id: st.id, length: uint32(n)}, data: bytes.Clone(b[:n])}
+		o := outbound{h: header{typ: dataType, id: st.id, length: uint32(n)}, data: bytes.Clone(b[:n]), stream: st}
 		if err := s.send(s.ctx, o, deadline); err != nil {
 			st.Reset()
 			return total, err
@@ -512,7 +543,7 @@ func (st *Stream) CloseWrite() error {
 	st.localFIN = true
 	deadline := st.writeDeadline
 	s.mu.Unlock()
-	err := s.send(s.ctx, outbound{h: header{typ: windowType, flags: fin, id: st.id}}, deadline)
+	err := s.send(s.ctx, outbound{h: header{typ: windowType, flags: fin, id: st.id}, stream: st}, deadline)
 	if err != nil {
 		st.Reset()
 	}

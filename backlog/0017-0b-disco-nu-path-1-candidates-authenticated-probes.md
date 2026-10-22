@@ -29,3 +29,4 @@ The disco layer of nu-path (D11 steps 3–6, baseline part of D11c steps 2–3).
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Baseline merged (ef28746, 94fc43e; 809f63e): p2p/disco with probe security contract in D11 (TLS-exporter MACs, nonces, replay window, destination authorization callback, rate limits), candidates, continuous re-probing, netmon RestartProbing hook; natlab EIM↔EIM and EIM↔APDF direct in 10–31 ms; link flap + address replacement recovered direct in ~1 s with one inner stream preserving progress (4 MiB). Remaining acceptance: public/IPv6/mapped pairs, 1 GB transfer through flap + Wi-Fi→hotspot-style change, independent review request.

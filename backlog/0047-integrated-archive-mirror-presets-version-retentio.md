@@ -1,7 +1,7 @@
 ---
 id: "0047"
 title: Integrated archive/mirror presets, version retention, retrieval and rollback
-status: todo
+status: in_progress
 priority: 2
 created: "2026-09-29"
 updated: "2026-10-21"
@@ -24,3 +24,4 @@ Acceptance: individual uses explicit one-copy archive preset on Linux/macOS (APF
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-21: Done for its scope on track/data (8cee248..86d0a9c; merged 0a80800). Version records in the state repo (io.ipfs.nu.cluster.version), identity vs mutable labels, retention schedules with a shared live-set CID, incomplete lists in reports → archive-wide E8 / archive-ready waits, replica pins live versions, presets --archive/--mirror, versions/diff/label/rollback/prune, <ds>@<version> targets, /c/ gateway redirect. Evidence: node.TestOneNodeArchive, cmd/nu.TestCLIArchive (daemonless), cluster_test.TestClusterArchive (R9, required: 2), node.TestArchiveRetentionAvailability, TestArchiveBudgetPressure, cluster.TestVersionMerge, TestRetainAndSelect. Not done: macOS/APFS crash/sleep/Unicode/case tests (no macOS runner; CI-only), import-manifest export (0042), kill between import and head write, auto compaction, dataset removal dry-run, version proof export. Product questions raised: version storage layout, one-node auto-prune, /c/ redirect vs direct serving, date selector semantics, preset schedule.

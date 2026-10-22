@@ -75,76 +75,29 @@ Connection-level interop targets are go-, rust- and js-libp2p, including Kubo, H
 Ethereum consensus clients with QUIC endpoints. Ethereum interoperability is not consensus
 participation. Joining Amino does not imply UnixFS/Bitswap data support.
 
-**Preview limitations:** the initial QUIC profile cannot reach UDP-blocked paths or TCP-only
-peers. Standard non-Nu relayed secure connections await Noise/yamux. `nu doctor` explains
-limitations and next actions. Basic routed/private archival does not depend on relays/NAT.
+**Reach limitations:** libp2p interop is QUIC-only. UDP-blocked networks and TCP-only
+peers are unsupported until a replacement is accepted. There is no TCP fallback or
+proxy transport. `nu doctor` explains this limitation and the required UDP access.
+Basic routed/private archival does not depend on relays/NAT. Public HTTPS gateway
+reads do not themselves provide peer connectivity.
 
-**Production public reach:** the TCP fallback is libp2p WebSocket over ordinary Web-PKI
-TLS (`/dns/<name>/tcp/443/tls/ws`, equivalently `/wss`), then multistream-select
-`/noise` (Noise XX, X25519, ChaCha20-Poly1305, SHA-256), then `/yamux/1.0.0`.
-Noise's static X25519 key is signed by the libp2p identity key using
-`noise-libp2p-static-key:`; dialing MUST verify the configured relay PeerID, independently
-of TLS's DNS certificate validation. Neither plaintext WS nor a Nu-specific TCP security
-protocol is a public fallback. Noise early-data/muxer negotiation is not required: negotiate
-yamux after the handshake. This path belongs to networking, not optional IPFS import.
+**Public reach:** Nu nodes maintain circuit-v2 reservations over QUIC-v1 with
+libp2p TLS. CONNECT/STOP streams select `/nu/qpath/1` and carry the existing framed
+inner QUIC connection. Outer TLS authenticates the relay, inner TLS the destination.
+Disco/direct upgrades, magicsock and verified transfer checkpoints retain their
+ownership and semantics. Standard peers can use circuit-v2 control/byte streams
+over QUIC, but Nu does not implement their end-to-end circuit security upgrade.
 
-Nu nodes maintain ordinary circuit-v2 reservations over that connection. CONNECT/STOP
-streams select `/nu/qpath/1` and carry the existing framed inner QUIC connection; no new
-content transport or resume format is introduced. The outer Noise identity authenticates
-the relay hop, while inner QUIC authenticates the destination. Disco/direct upgrades and
-verified transfer checkpoints retain their existing ownership and semantics. Standard peers
-can use the outer WSS/Noise/yamux connection and circuit-v2 without understanding qpath.
+`swarm.relays` admits at most 16 relay identities, each with one literal
+`/ip4|ip6/.../udp/.../quic-v1/p2p/<relay>` endpoint. An explicit share-link hint may
+authorize another relay (32 known identities total), still one endpoint per identity.
+Identify/lookup records may select an already authorized endpoint, never add one.
+Setup has a two-second budget bounded by caller cancellation; reservations reuse
+live authenticated connections. UDP failure does not select another transport.
+Circuit reservation, per-peer/per-observed-IP, byte and duration limits remain in
+force. Rate/account admission and production fleet operation remain 0039.
 
-The operator MUST declare admitted relay endpoints (DNS name, TCP port, relay PeerID and
-certificate), alongside any QUIC endpoint for the same relay. Remote identify or peer records
-MUST NOT enlarge this authorization list. UDP failure may select a declared WSS alternative;
-status/doctor must expose the selected transport and UDP failure reason. Never silently
-fall back to plaintext, disable certificate checking, or use ambient proxy credentials.
-
-The daemon accepts these endpoints in `swarm.relays` (a string array): at most 16
-relay identities, each with one literal `/ip4|ip6/.../udp/.../quic-v1/p2p/<relay>`
-and one `/dns|dns4|dns6|ip4|ip6/.../tcp/.../tls/ws/p2p/<relay>` (or `/wss`)
-endpoint. An explicit share-link hint may authorize a relay endpoint, but each
-identity still has at most one endpoint per transport (32 known identities total).
-Identify/lookup records may select an already authorized endpoint, not add one.
-Each UDP and WSS setup attempt has its own two-second budget; caller cancellation
-still bounds the entire operation. Reservations reuse the selected live connection;
-WSS is not periodically torn down just to retry UDP.
-
-`swarm.proxy = "http://proxy.example:8080"` explicitly configures HTTP CONNECT for
-WSS; optional URL user/password supplies Basic proxy authentication. Environment
-proxy discovery, PAC, SOCKS, HTTPS-to-proxy and NTLM are not supported. TLS uses the
-system trust store, including an explicitly installed operator CA; certificate
-hostname verification is always enabled. `swarm.relay_cert_pins` optionally contains
-`"<relay-PeerID>@<64-hex-SHA256-of-leaf-certificate-DER>"` entries for configured WSS
-relays. Pins are additional checks, never replacements for certificate/hostname
-validation, and must be updated when the certificate rotates. Status reports
-`transport` (`quic-v1`/`wss`) and `udp_error`; a failed UDP attempt is not by itself
-proof that a firewall blocked UDP. Doctor reports failed CONNECT/TLS/Upgrade stages
-without proxy credentials. WSS-only relays are not UDP AutoNAT witnesses.
-
-| Endpoint / middlebox | Production contract |
-|---|---|
-| Direct TCP 443 with valid DNS certificate and HTTP/1.1 Upgrade | Supported target; operator supplies certificate/key and explicit endpoint |
-| Explicit HTTP CONNECT proxy allowing the admitted host:443 | Supported target; tunnel first, then end-to-end TLS, WebSocket, Noise and yamux; no proxy auto-discovery |
-| TLS-intercepting proxy | Unsupported; certificate/identity failures identify the failed stage; no insecure retry. Operators must not install interception roots for relay dialing. A locally trusted interception CA cannot be distinguished automatically from the operator's CA; deployments needing that guarantee must pin the relay certificate via TLS verification policy |
-| Proxy denying CONNECT or stripping WebSocket Upgrade | Fail clearly with CONNECT/Upgrade status, without leaking credentials |
-| HTTPS permitted only to other domains, HTTP/2-only gateways, captive portals | No reach guarantee; configure an admitted accessible relay or change network policy |
-
-Listener admission MUST bound unauthenticated connections and handshake time, HTTP headers,
-WebSocket frames, Noise records and yamux streams/windows before allocating peer-controlled
-sizes. WebSocket compression and text messages are not negotiated. Circuit reservations,
-per-peer/per-observed-IP slots, full-service allow-list and byte/duration limits apply unchanged
-to WSS; outer transport authentication grants no content or unlimited relay authorization.
-Proxy clients share the proxy's observed-IP budget. Connection closure must release all stream,
-reservation and handshake slots. Rate/account admission and production fleet operation remain
-0039, not an implication of transport availability.
-
-This normative mapping precedes broad public recommendation. Implementation acceptance still
-requires both-direction standard-peer interop, bounded decoder seeds/security review, and a
-verified resumable Nu transfer with UDP blocked on both ends (including CONNECT proxy). It
-is not a claim those gates have passed. “HTTPS works somewhere” does not imply an admitted
-relay is reachable. Public HTTPS gateway reads do not themselves provide peer connectivity.
+Task 0080 withdrew the 0041 TCP relay implementation; no replacement is implemented.
 
 **Extensions:** standard-peer DCUtR, browser-facing WebTransport/WebRTC-direct, optional
 gossipsub, HTTP over libp2p and further interop. IPFS one-way import has its own adoption gate.
@@ -438,36 +391,9 @@ Reservations are bound to an existing direct connection; active dialing of suppl
 peer addresses is disabled. Development full-service admission requires **both**
 endpoints on the operator's bounded allow-list; otherwise 120s and 128 KiB per
 direction apply by default. Global/per-peer/per-observed-IP slots still constrain
-admitted traffic. Production operator/admission policy remains 0039; ordinary
-Noise/yamux relayed connections and Nu qpath upgrades are separate work.
-
-### WSS relay listener and wire implementation (0041)
-
-`nu relay` can additionally listen on TCP using `--wss-listen 0.0.0.0:443`,
-`--wss-cert /path/fullchain.pem`, `--wss-key /path/key.pem`, and an explicit
-`--advertise /dns/relay.example/tcp/443/tls/ws` (the relay PeerID is appended).
-Equivalent `[relay]` keys are `wss_listen`, `wss_cert`, `wss_key` and
-`wss_max_connections`. QUIC `--listen` remains independent. Certificates are
-operator-provisioned; no automatic ACME or project relay fleet is implied.
-The listener serves WebSocket Upgrade only at `/`, disables HTTP/2 and WebSocket
-compression, rejects browser Origin requests, and caps TCP/TLS/HTTP connections
-at 128 by default (including idle or unauthenticated connections). HTTP header
-setup and transport negotiation each have ten-second bounds. HTTP headers are
-bounded to 16 KiB (plus net/http's fixed parser read-ahead allowance), WebSocket
-frames to 1 MiB and fragmented messages to 4 MiB, Noise handshake messages to
-16 KiB and transport records to 65535 bytes. Yamux defaults to 64 streams with
-fixed 256 KiB receive windows and a bounded 128-frame output/control queue.
-Host peer gates and connection/stream limits apply identically to QUIC and WSS;
-circuit per-IP accounting uses the actual TCP source address, never proxy headers.
-Hijacked WebSocket connections remain listener-owned and are closed on shutdown.
-
-The wire packages and `Host.DialWSS`/`AcceptWSS` are implemented and tested against
-go-libp2p's full WebSocket + Noise + yamux stack in both directions. A real WSS
-relay reservation/voucher/CONNECT/STOP echo is covered by `relay/wss_test.go`.
-These are foundations, not the UDP-blocked resumable-transfer acceptance gate:
-relay-manager fallback, swarm integration, doctor reporting, and NAT-lab evidence
-must be completed before claiming production fallback. Rust interop and independent
-security review remain unverified.
+admitted traffic. Production operator/admission policy remains 0039. Nu qpath
+provides end-to-end QUIC connections; standard-peer circuit security upgrades
+are outside the QUIC-only interop scope.
 
 ### v0 swarm connectivity configuration
 
@@ -551,7 +477,7 @@ over relayed or direct packet paths:
 `/nu/qpath/1` is a **security-protocol** multistream token on a raw circuit-v2
 CONNECT/STOP stream, not an application stream on an already-secured relayed connection.
 A proposer waits for selection confirmation before sending frames. Unsupported peers
-answer `na`; do not send speculative QUIC payload or automatically select Noise/yamux.
+answer `na`; do not send speculative QUIC payload or select another security stack.
 
 After selection, each direction is an independent sequence of frames:
 
@@ -1067,7 +993,7 @@ requires measured, usable profiles and per-session consent. Low-TTL priming is n
 | EIM ↔ random EDM | Bounded birthday rendezvous: up to 256 EDM sockets toward EIM; 1024 random ports on the consented EDM IP |
 | EDM ↔ EDM, at least one predictable | Attempt prediction/fanout within the same bounds; current dynamic APDM/APDF lab cases failed, retain relay |
 | EDM ↔ EDM, both random | Relay by default; do not attempt the much larger random search |
-| UDP blocked | QUIC preview fails clearly; production public reach uses tested HTTPS-compatible relay fallback |
+| UDP blocked | Unsupported until a replacement is accepted; doctor explains that peer connectivity requires UDP |
 
 The birthday-search estimates (256/1024/2048 probes against 256 mappings: approximately
 64%/98%/99.97%) are conditional estimates, not measured guarantees for arbitrary NATs.
@@ -1106,7 +1032,7 @@ payloads are `channel:u16 | body`. Channel 0 is the host-level budget probe: pay
 authenticated sender on the same connection with the same size (at most 32/s per
 connection, never to another destination). Non-zero channels are allocated per outer
 connection by the relay; a receiver registers at most 64 channels, unknown channels and
-full queues are dropped and counted. WSS connections never support datagrams.
+full queues are dropped and counted.
 
 **Control streams.** `/nu/relay/datagram/1/hop` (client → relay) and
 `/nu/relay/datagram/1/stop` (relay → target) carry `len:u8 | version=1:u8 | type:u8 |
@@ -1223,8 +1149,10 @@ each release; the hard-NAT targets are in the [milestones](../spec.md#milestones
 
 ## D11b. Standard-peer hole punching (extensions)
 
-Upgrade circuit connections with Noise + yamux, run DCUtR, and dial a direct QUIC connection.
-Gather observed, port-mapped and IPv6 candidates early; use AutoNAT for reachability checks.
+Standard-peer circuit security upgrades are outside Nu's QUIC-only scope. Any future
+DCUtR integration must respect that scope; no additional security/multiplexer stack
+is planned here. Gather observed, port-mapped and IPv6 candidates early; use AutoNAT
+for reachability checks.
 Use a shared UDP socket, swap roles and retry with jitter, re-run DCUtR while relayed, and
 use the local NAT profile to select roles and explain failures. Port prediction can help
 when our side is predictable; DCUtR cannot negotiate birthday spraying.
@@ -1435,8 +1363,8 @@ No multicast-capable interface is a reported startup error, not silent enablemen
   Ethereum clients for the protocols they support.
 - NAT CI uses network namespaces for RFC 4787 mapping × filtering combinations, CGNAT,
   IPv6-only, hairpinning and network changes during transfers. Include Nu↔Nu, Nu↔go-libp2p
-  and Nu↔rust-libp2p, with expected failures for unsupported QUIC-preview paths, including UDP blocking, and
-  successful declared HTTPS-compatible Nu fallback paths at the production reach gate.
+  and Nu↔rust-libp2p, with expected failures for unsupported paths, including UDP blocking.
+  UDP-blocked networks remain unsupported until a replacement is accepted.
 - `nu doctor` reports UDP reachability, NAT profile, relay latency/reservations, mappings,
   IPv6 and per-session path history. The snapshot behind it is `network.connectivity`
   in `GET /status` ([API](api.md#connectivity-status)); the NAT profile comes from the
@@ -1470,8 +1398,8 @@ in [validation](validation.md#linux-nat-lab-smoke-2026-10-21).
 
 ## Details still to verify
 
-Production HTTPS-compatible fallback wire/security rules, relay admission/economics
-and endpoint support remain to specify. The path v1 destination/probe contract above
+UDP-blocked reach requires a separately accepted replacement; it is unsupported.
+Production relay admission/economics and endpoint support remain to specify. The path v1 destination/probe contract above
 requires independent review and an explicit socket-owner authorization policy before
 public enablement.
 The conservative stock-quic-go path is constrained by D11. Physical socket replacement,

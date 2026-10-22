@@ -84,7 +84,7 @@ type datagramState struct {
 }
 
 // SupportsDatagrams is true when both ends negotiated RFC 9221 on this QUIC
-// connection. WSS/TCP connections never support datagrams.
+// connection.
 func (c *Conn) SupportsDatagrams() bool {
 	if c.quic == nil {
 		return false

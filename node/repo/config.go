@@ -163,12 +163,6 @@ func ParseSize(s string) (int64, error) {
 // RelayConfig configures the standalone `nu relay` role (networking D10). Flags of the
 // same name override these. Limits of 0 use the circuit server defaults.
 type RelayConfig struct {
-	// Optional additional Web-PKI TLS WebSocket listener. Certificate/key are
-	// explicit filesystem paths; advertise must include its admitted endpoint.
-	WSSListen         string `toml:"wss_listen,omitempty"`
-	WSSCert           string `toml:"wss_cert,omitempty"`
-	WSSKey            string `toml:"wss_key,omitempty"`
-	WSSMaxConnections int    `toml:"wss_max_connections,omitzero"`
 	// Listen holds QUIC multiaddrs; default /ip4/0.0.0.0/udp/443/quic-v1.
 	Listen []string `toml:"listen,omitempty"`
 	// Advertise holds the public addresses handed to reserving peers (without /p2p);
@@ -205,10 +199,6 @@ type SwarmConfig struct {
 	MDNS bool `toml:"mdns"`
 	// Public connectivity is opt-in to known relays, never an inferred directory.
 	Relays []string `toml:"relays,omitempty"`
-	// Proxy is an explicit http:// CONNECT proxy for WSS only; no environment discovery.
-	Proxy string `toml:"proxy,omitempty"`
-	// RelayCertPins are peerID@hex-SHA256(leaf DER) pins, additional to Web-PKI.
-	RelayCertPins []string `toml:"relay_cert_pins,omitempty"`
 	// Mode: public (default), private (explicit peers only), isolated (no public mechanisms).
 	Mode  string   `toml:"mode,omitempty"`
 	Peers []string `toml:"peers,omitempty"`

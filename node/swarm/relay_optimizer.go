@@ -213,7 +213,7 @@ func (c *connectivity) optimizeOnce(ctx context.Context, id wire.PeerID, p *path
 		if !known {
 			continue
 		}
-		if _, _, _, err := addr.Dial(ctx, c.s.host, 2*time.Second, c.s.cfg.WSS.options(e.Peer)); err != nil {
+		if _, _, err := addr.Dial(ctx, c.s.host, 2*time.Second); err != nil {
 			continue
 		}
 		rtt, err := c.s.identify.Ping(ctx, e.Peer)
@@ -322,12 +322,7 @@ func (s *Swarm) startPeerRelay(key *wire.NodeKey) error {
 	return nil
 }
 
-// preferredEndpoint is the endpoint a pair-aware switch routes through: the
-// declared QUIC endpoint when there is one (datagram-capable), else WSS. The
-// dial path still applies the endpoint set's authorization and UDP→WSS fallback.
+// preferredEndpoint is the admitted QUIC endpoint a pair-aware switch uses.
 func preferredEndpoint(e homerelay.Endpoints) wire.Multiaddr {
-	if len(e.QUIC.Bytes()) > 0 {
-		return e.QUIC
-	}
-	return e.WSS
+	return e.QUIC
 }

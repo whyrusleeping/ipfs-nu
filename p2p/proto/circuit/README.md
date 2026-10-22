@@ -2,9 +2,9 @@
 
 Implements [libp2p circuit-v2](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md)
 RESERVE, HOP CONNECT and STOP, including signed reservation vouchers. These are
-**raw circuit streams**, not secure end-to-end libp2p connections. Task 0015 will
-negotiate `/nu/qpath/1` and carry authenticated inner QUIC over them. Standard-peer
-Noise/yamux upgrades are explicitly outside 0013; no transport is registered with
+**raw circuit streams**, not secure end-to-end libp2p connections. Nu's qpath layer
+negotiates `/nu/qpath/1` and carries authenticated inner QUIC over them. Standard-peer
+circuit security upgrades are outside the QUIC-only scope; no transport is registered with
 `p2p/host`, no secure peer identity is inferred from STOP, and no content handlers
 are run on plaintext circuit bytes.
 
@@ -136,7 +136,7 @@ IPs, but that alone is not proof that probes originate from an alternate IP.
 * In `experiments/`, `go test -run '^TestCircuitV2$' -v .`: upstream go-libp2p's
   reservation client against Nu, Nu against upstream's relay, vouchers verified
   both ways, and a Nu CONNECT/STOP raw stream through upstream's actual relay.
-  This deliberately does not claim a stock peer's Noise/yamux connection upgrade.
+  This deliberately does not claim a stock peer's end-to-end circuit security upgrade.
 
 ## Nu datagram relay extension (0019)
 

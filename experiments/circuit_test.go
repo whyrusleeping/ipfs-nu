@@ -63,7 +63,7 @@ func TestCircuitV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Raw CONNECT/STOP byte streams through upstream: intentionally no claim
-	// that stock libp2p's Noise/yamux secure-connection upgrade is implemented.
+	// that stock libp2p's end-to-end circuit security upgrade is implemented.
 	sourceKey, err := wire.GenerateNodeKey()
 	if err != nil {
 		t.Fatal(err)

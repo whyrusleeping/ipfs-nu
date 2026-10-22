@@ -15,18 +15,15 @@ import (
 	"github.com/whyrusleeping/nu/p2p/host"
 	"github.com/whyrusleeping/nu/p2p/proto/circuit"
 	"github.com/whyrusleeping/nu/p2p/wire"
-	"github.com/whyrusleeping/nu/p2p/wss"
 )
 
 type Config struct {
 	Host   *host.Host
 	Client *circuit.Client
-	// Relays explicitly authorizes at most 16 relays, each with at most one
-	// literal QUIC and one WSS endpoint. Remote records never extend this list.
+	// Relays explicitly authorizes at most 16 relays, each with one literal
+	// QUIC endpoint. Remote records never extend this list.
 	Relays []wire.Multiaddr
-	// WSSOptions supplies operator TLS/proxy policy, never remote-record policy.
-	WSSOptions func(wire.PeerID) wss.DialOptions
-	Ping       func(context.Context, wire.PeerID) (time.Duration, error)
+	Ping   func(context.Context, wire.PeerID) (time.Duration, error)
 	// Disabled is mandatory for private/isolated owners. It prevents all network
 	// activity, including after SetNeeded(true) or Renew. There are no defaults.
 	Disabled                               bool
@@ -44,8 +41,6 @@ type RelayState struct {
 	LastSuccess time.Time
 	HeldSince   time.Time // start of the current uninterrupted reservation; zero when not held
 	LastError   string
-	Transport   string
-	UDPError    string // last failed UDP attempt; not proof of a blocking firewall
 }
 
 type State struct {
@@ -85,7 +80,7 @@ type Manager struct {
 }
 
 func New(ctx context.Context, cfg Config) (*Manager, error) {
-	if cfg.Timeout < 0 || cfg.HealthInterval < 0 || cfg.RetryInterval < 0 || len(cfg.Relays) > 32 {
+	if cfg.Timeout < 0 || cfg.HealthInterval < 0 || cfg.RetryInterval < 0 || len(cfg.Relays) > 16 {
 		return nil, wire.ErrLimit
 	}
 	if cfg.Timeout == 0 {
@@ -420,23 +415,12 @@ func (m *Manager) reconcile(force, health bool) error {
 				return
 			}
 			defer func() { <-slots }()
-			opts := wss.DialOptions{}
-			if m.cfg.WSSOptions != nil {
-				opts = m.cfg.WSSOptions(c.state.Peer)
-			}
-			conn, addr, udpError, err := c.endpoints.Dial(m.ctx, m.cfg.Host, m.cfg.Timeout, opts)
-			if udpError != "" {
-				c.state.UDPError = udpError
-			}
+			conn, addr, err := c.endpoints.Dial(m.ctx, m.cfg.Host, m.cfg.Timeout)
 			if err != nil {
 				m.failed(c, err)
 				return
 			}
 			c.state.Address = addr
-			c.state.Transport = conn.Transport()
-			if c.state.Transport == "quic-v1" {
-				c.state.UDPError = ""
-			}
 			ctx, cancel := context.WithTimeout(m.ctx, m.cfg.Timeout)
 			defer cancel()
 			rtt, err := m.cfg.Ping(ctx, c.state.Peer)

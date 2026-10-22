@@ -22,7 +22,7 @@ func TestDoctorConnectivityExplanations(t *testing.T) {
 			relays = c
 		}
 	}
-	if udp.Status != "fail" || !strings.Contains(udp.Detail, "UDP appears blocked") || !strings.Contains(udp.Action, "allow outbound UDP") {
+	if udp.Status != "fail" || !strings.Contains(udp.Detail, "UDP appears blocked") || !strings.Contains(udp.Detail, "UDP-blocked networks are unsupported") || !strings.Contains(udp.Action, "allow outbound UDP") {
 		t.Fatalf("udp check: %+v", udp)
 	}
 	if relays.Status != "warn" {

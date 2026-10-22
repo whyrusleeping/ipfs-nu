@@ -347,7 +347,7 @@ func (h *Host) addConnection(qc *quic.Conn, outbound bool) (*Conn, error) {
 }
 
 // registerConnection applies the same peer gates and resource accounting to
-// authenticated QUIC and WSS connections.
+// authenticated QUIC connections.
 func (h *Host) registerConnection(c *Conn) (*Conn, error) {
 	if err := h.checkPeer(c.peer); err != nil {
 		return nil, err

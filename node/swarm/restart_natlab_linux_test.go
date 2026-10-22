@@ -29,7 +29,7 @@ func TestDaemonOneSidedRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 170*time.Second)
 	defer cancel()
 	bin := labBinary(t, ctx)
-	for _, mode := range []string{"direct", "quic-relay", "wss-relay"} {
+	for _, mode := range []string{"direct", "quic-relay", "quic-relay-reverse"} {
 		t.Run(mode, func(t *testing.T) { restartDaemonCase(t, ctx, bin, mode) })
 	}
 }
@@ -53,11 +53,8 @@ func restartDaemonCase(t *testing.T, parent context.Context, bin, mode string) {
 		labCheck(t, err)
 		labCheck(t, segment.Attach(ns[i], "eth0", fmt.Sprintf("198.18.0.%d/24", 10+i), ""))
 		rule := fmt.Sprintf("ip daddr 198.18.0.%d udp dport 4171", 11-i)
-		if mode == "quic-relay" {
+		if mode != "direct" {
 			rule = "ip daddr 198.18.0.2 udp dport 443"
-		}
-		if mode == "wss-relay" {
-			rule = "ip daddr 198.18.0.2 tcp dport 443"
 		}
 		labCheck(t, ns[i].NFT("add table inet onlypath\nadd chain inet onlypath output { type filter hook output priority 0; policy drop; }\nadd rule inet onlypath output oifname lo meta l4proto tcp accept\nadd rule inet onlypath output "+rule+" counter accept\n"))
 		dirs[i] = filepath.Join(t.TempDir(), "node")
@@ -66,7 +63,7 @@ func restartDaemonCase(t *testing.T, parent context.Context, bin, mode string) {
 		labCheck(t, err)
 	}
 	// Exercise opposite deterministic QUIC roles across relay modes.
-	wantLower := mode != "wss-relay"
+	wantLower := mode != "quic-relay-reverse"
 	if (keys[0].Public().PeerID() < keys[1].Public().PeerID()) != wantLower {
 		keys[0], keys[1] = keys[1], keys[0]
 		for i := range keys {
@@ -84,12 +81,6 @@ func restartDaemonCase(t *testing.T, parent context.Context, bin, mode string) {
 		labCheck(t, err)
 		relayAddr = "/ip4/198.18.0.2/udp/443/quic-v1/p2p/" + rk.Public().PeerID().String()
 		args := []string{"relay", "--listen", "198.18.0.2:443", "--admit", keys[0].Public().PeerID().String(), "--admit", keys[1].Public().PeerID().String()}
-		if mode == "wss-relay" {
-			cert, key, _ := wssLabCertificate(t)
-			t.Setenv("SSL_CERT_FILE", cert)
-			relayAddr = "/ip4/198.18.0.2/tcp/443/tls/ws/p2p/" + rk.Public().PeerID().String()
-			args = append(args, "--wss-listen", "198.18.0.2:443", "--wss-cert", cert, "--wss-key", key, "--advertise", relayAddr)
-		}
 		labStart(t, rns, bin, rdir, args...)
 	}
 	for i := range ns {

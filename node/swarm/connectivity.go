@@ -129,7 +129,7 @@ func (s *Swarm) startConnectivity(ctx context.Context, socket *magicsock.Conn) e
 	if err != nil {
 		return err
 	}
-	homes, err := homerelay.New(ctx, homerelay.Config{Host: s.host, Client: c.client, Relays: s.cfg.Relays, WSSOptions: s.cfg.WSS.options, Ping: s.identify.Ping, Changed: s.identify.AddressesChanged})
+	homes, err := homerelay.New(ctx, homerelay.Config{Host: s.host, Client: c.client, Relays: s.cfg.Relays, Ping: s.identify.Ping, Changed: s.identify.AddressesChanged})
 	if err != nil {
 		return err
 	}
@@ -531,7 +531,7 @@ func (c *connectivity) watch(id wire.PeerID, p *pathPeer, leg *magicsock.Relay) 
 			routes := append([]wire.Multiaddr(nil), p.routes...)
 			c.mu.Unlock()
 			for _, addr := range routes {
-				setup, cancel := context.WithTimeout(c.ctx, c.recoveryBudget(addr))
+				setup, cancel := context.WithTimeout(c.ctx, time.Second)
 				_, err := c.dial(setup, id, addr)
 				cancel()
 				if err == nil {

@@ -86,6 +86,9 @@ type importer struct {
 
 // noteMeta records the metadata the D3 conversion cannot carry for one UnixFS node.
 func (i *importer) noteMeta(path string, c IPFSCID, u UnixFSData) {
+	for _, f := range u.Unknown {
+		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: fmt.Sprintf("unknown UnixFS field %d dropped", f)})
+	}
 	if u.HasMtime {
 		i.changes = append(i.changes, Item{Path: path, CID: c.String(), Reason: "mtime dropped"})
 	}

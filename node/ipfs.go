@@ -172,11 +172,11 @@ func (n *Local) runIPFSJob(o *op.Operation, job ipfsImportJob) {
 }
 
 // ipfsSource opens one root's source: a CAR (whose declared roots must include root) or
-// Bitswap with Amino provider discovery. blocks is the CAR's block count (0 otherwise).
-func (n *Local) ipfsSource(ctx context.Context, carPath string, root bridge.IPFSCID) (src bridge.BlockSource, kind string, blocks int, closeFn func(), err error) {
+// the network (newNetworkSource). blocks is the CAR's block count (0 otherwise).
+func (n *Local) ipfsSource(ctx context.Context, carPath string, root bridge.IPFSCID, dryRun bool) (src bridge.BlockSource, kind string, blocks int, closeFn func(), err error) {
 	if carPath == "" {
-		src, closeFn, err = n.newBitswapSource(ctx)
-		return src, "bitswap", 0, closeFn, err
+		src, kind, closeFn, err = n.newNetworkSource(ctx, dryRun)
+		return src, kind, 0, closeFn, err
 	}
 	f, err := os.Open(carPath)
 	if err != nil {
@@ -209,9 +209,9 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, boo
 	if job.Request.CAR != "" {
 		stage("reading-car")
 	} else {
-		stage("discovering-bitswap-providers")
+		stage("discovering-providers")
 	}
-	src, kind, blocks, closeSrc, err := n.ipfsSource(ctx, job.Request.CAR, root)
+	src, kind, blocks, closeSrc, err := n.ipfsSource(ctx, job.Request.CAR, root, job.Request.DryRun)
 	if err != nil {
 		return nil, false, err
 	}
@@ -363,6 +363,7 @@ func (n *Local) importPinset(o *op.Operation, job *ipfsImportJob) (any, bool, er
 	ctx := o.Context()
 	req := job.Request
 	var network bridge.BlockSource
+	var networkKind string
 	defer func() {
 		if c, ok := network.(interface{ Close() }); ok {
 			c.Close()
@@ -380,21 +381,22 @@ func (n *Local) importPinset(o *op.Operation, job *ipfsImportJob) (any, bool, er
 			rep.Status, rep.Error = apiv0.IPFSUnsupported, err.Error()
 		default:
 			var src bridge.BlockSource
-			kind, closeSrc := "bitswap", func() {}
+			kind, closeSrc := networkKind, func() {}
 			if req.CARDir != "" {
 				carPath := filepath.Join(req.CARDir, pin.CID+".car")
 				if _, err = os.Stat(carPath); err != nil {
 					rep.Status, rep.Error = apiv0.IPFSMissing, "no CAR at "+carPath+"; export it read-only with `ipfs dag export "+pin.CID+" > "+carPath+"`"
 					break
 				}
-				src, kind, _, closeSrc, err = n.ipfsSource(ctx, carPath, root)
+				src, kind, _, closeSrc, err = n.ipfsSource(ctx, carPath, root, req.DryRun)
 			} else {
 				if network == nil {
 					var closeNet func()
-					if network, closeNet, err = n.newBitswapSource(ctx); err == nil {
+					if network, networkKind, closeNet, err = n.newNetworkSource(ctx, req.DryRun); err == nil {
 						network = closingSource{network, closeNet}
 					}
 				}
+				kind = networkKind
 				src = network
 			}
 			if err != nil {
@@ -559,6 +561,61 @@ func (n *Local) recoverIPFSImports() error {
 		n.runIPFSJob(o, job)
 	}
 	return nil
+}
+
+// IPFSRouting is the delegated-routing endpoint asked for HTTP trustless-gateway providers
+// of IPFS blocks (IPNI, where Filecoin storage providers announce them); the config key
+// ipfs.routing_url overrides it and "off" disables the gateway transport.
+var IPFSRouting = "https://cid.contact"
+
+// ipfsGatewayHook adjusts the gateway source (tests: a local routing endpoint).
+var ipfsGatewayHook func(*bridge.GatewaySource)
+
+// newGatewaySource returns the HTTP trustless-gateway source, or nil when it is disabled or
+// this node is a private or isolated cluster member (D15: no public routing).
+func (n *Local) newGatewaySource() *bridge.GatewaySource {
+	if c, _ := n.netCluster(); c != nil && c.Mode() != cluster.ModePublic {
+		return nil
+	}
+	routing := IPFSRouting
+	if v, err := n.Repo.ConfigGet("ipfs.routing_url"); err == nil {
+		if s, ok := v.(string); ok {
+			routing = s
+		}
+	}
+	if routing == "" || routing == "off" {
+		return nil
+	}
+	src := bridge.NewGatewaySource(n.httpClient(), routing)
+	if ipfsGatewayHook != nil {
+		ipfsGatewayHook(src)
+	}
+	return src
+}
+
+// newNetworkSource races Bitswap (Amino provider discovery) and HTTP trustless gateways
+// (delegated routing); the first verified block wins and its transport is asked first for
+// the next block (bridge.FirstSource). Either one alone suffices. kind names the transports
+// used ("bitswap+gateway", "bitswap", "gateway"). Dry runs do not read ahead: they skip raw
+// leaves.
+func (n *Local) newNetworkSource(ctx context.Context, dryRun bool) (bridge.BlockSource, string, func(), error) {
+	gw := n.newGatewaySource()
+	if gw != nil && dryRun {
+		gw.Readahead = 0
+	}
+	bs, closeBS, err := n.newBitswapSource(ctx)
+	switch {
+	case err == nil && gw != nil:
+		return bridge.NewFirstSource(bs, gw), "bitswap+gateway", func() { closeBS(); gw.Close() }, nil
+	case err == nil:
+		return bs, "bitswap", closeBS, nil
+	case gw != nil && ctx.Err() == nil:
+		return gw, "gateway", gw.Close, nil
+	}
+	if gw != nil {
+		gw.Close()
+	}
+	return nil, "", nil, err
 }
 
 func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(), error) {

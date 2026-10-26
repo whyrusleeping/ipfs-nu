@@ -77,6 +77,10 @@ Supported UnixFS profile:
   and filesize fields when present against decoded children and bytes. A dag-pb node without
   a recognized UnixFS Data message is unsupported. Unknown UnixFS type, malformed protobuf,
   inconsistent sizes, cycles and excessive depth/link count are errors, not lossy conversion.
+  Well-formed fields of the UnixFS Data message outside the schema (numbers above 8, at most
+  16 per node), such as fil.pub's authorship signature in field 1001, are skipped; on an
+  entry node (root, directory, file or symlink) each is reported as the transformation
+  `unknown UnixFS field <n> dropped`. Unknown dag-pb (PBNode/PBLink) fields stay errors.
 - `HAMTShard` directories are traversed by links, not materialized as user-visible shard
   directories. Validate fanout/hash type/prefix and link names; reconstruct the logical names
   and reject duplicate or malformed names. Directory and file links with unsupported UnixFS
@@ -121,8 +125,32 @@ limit is enforced; unsupported/larger individual blocks fail explicitly. Each bl
 `DONT_HAVE` presence counts as a refusal, and a block every reachable provider refused or no
 provider could be reached for is *missing* (not corrupt). CIDv0 blocks arrive with the
 prefix `[0, dag-pb, sha2-256, 32]`. No go-libp2p or
-boxo dependency is permitted in the main module. Gateways may be an explicitly selected
-transport later, but never replace original-CID verification.
+boxo dependency is permitted in the main module.
+
+HTTP trustless gateways are the second network transport. Filecoin storage providers
+(Curio, as used by Filecoin Onchain Cloud) serve IPFS content only this way and announce it
+to IPNI with the `transport-ipfs-gateway-http` protocol, without Bitswap. For a block the
+importer asks the delegated-routing endpoint `ipfs.routing_url` (default
+`https://cid.contact`; `off` disables the transport) for
+`GET /routing/v1/providers/<cid>` (JSON or NDJSON, at most 256 KiB and 64 records, 15 s),
+keeps `peer` records listing `transport-ipfs-gateway-http`, and turns their
+`/dns|dns4|dns6|ip4|ip6/<host>/tcp/<port>/https` (or `/tls/http`, `/tls/sni/<h>/http`,
+`/http`) addresses into at most 8 gateway base URLs. It fetches
+`GET <gateway>/ipfs/<CIDv1>?format=raw` through `httpsrc` (the URL-import SSRF policy and
+`ingest.allow_http`/`allow_ips`; 2 MiB per block, as for Bitswap; 10 s idle, 60 s per
+request), trying gateways one at a time, and verifies the bytes against the CID. A gateway
+that serves wrong bytes is demoted and the next is tried. Gateways that already served a
+block are asked first for later blocks, so a DAG held by one provider needs one routing
+lookup. Gateways answer one block per request, so the transport reads ahead in walk order:
+the children of each arriving dag-pb node are queued before earlier-queued blocks, and up to
+8 queued blocks are fetched at once while fewer than 32 fetched blocks wait to be asked for
+(no read-ahead for dry runs, which skip raw leaves). A 404 from the routing endpoint means
+no providers; a block no gateway supplied is *missing*. Bitswap and the gateway transport are raced for each block until one has served:
+the first verified block wins and its transport is asked alone for the next block, falling
+back to the race when it fails. Either transport alone suffices. A private or isolated
+cluster member never uses the gateway transport (D15). The result's `source` is `car`, or
+the network transports used: `bitswap+gateway`, `bitswap` or `gateway`. Gateways never
+replace original-CID verification.
 
 ## Resumption, provenance and cutover
 
@@ -204,12 +232,12 @@ cutover only when all pass; otherwise it lists what is missing:
 The report repeats the standing rules (Nu changes nothing in Kubo; back up the Kubo repo and
 keys; move readers/writers deliberately) and notes a single-copy policy.
 
-CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino; `nu import ipfs --car file
+CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino and HTTP gateways; `nu import ipfs --car file
 <cid>` imports a local CARv1; `nu import ipfs --pins pins.json [--car-dir d]` imports a
 pinset. `--dry-run` applies to all three. The local API's `POST /import/ipfs` accepts the same
 request and returns a durable operation ID. Operation request/stage/result survive daemon
 restarts. During conversion each original source block is verified and atomically
-checkpointed under `imports/<operation>/blocks` before it can be used; resumed CAR and Bitswap
+checkpointed under `imports/<operation>/blocks` before it can be used; resumed CAR and network
 jobs revalidate and reuse these checkpoints, so verified blocks are not requested from the
 source again (a CAR is still re-indexed into a temporary file on restart). A daemon shutdown
 leaves a running job's descriptor running, and the next start resumes it under the same

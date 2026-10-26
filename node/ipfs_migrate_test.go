@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +25,7 @@ import (
 	"github.com/whyrusleeping/nu/bridge/ipfsfix"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
+	"github.com/whyrusleeping/nu/httpsrc"
 	"github.com/whyrusleeping/nu/kad"
 	"github.com/whyrusleeping/nu/node/repo"
 	"github.com/whyrusleeping/nu/p2p/host"
@@ -391,6 +395,14 @@ func TestIPFSNetworkDryRun(t *testing.T) {
 	if err := n.AttachNetwork(fakeNet{h: client, p: kad.Peer{ID: server.ID(), Addrs: [][]byte{addr.Bytes()}}}); err != nil {
 		t.Fatal(err)
 	}
+	// The gateway transport races Bitswap; its routing endpoint knows no providers.
+	routing := httptest.NewServer(http.NotFoundHandler())
+	defer routing.Close()
+	IngestHTTP = func(c *httpsrc.Config) {
+		c.AllowHTTP, c.AllowedIPs = true, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	}
+	IPFSRouting = routing.URL
+	defer func() { IPFSRouting, IngestHTTP = "off", nil }()
 	before, _ := n.Store.Stats()
 	o, err := n.ImportIPFS(context.Background(), apiv0.IPFSImportRequest{Root: root.String(), DryRun: true})
 	if err != nil {
@@ -403,6 +415,9 @@ func TestIPFSNetworkDryRun(t *testing.T) {
 	var res apiv0.IPFSImportResult
 	if err := json.Unmarshal(final.Result, &res); err != nil {
 		t.Fatal(err)
+	}
+	if res.Source != "bitswap+gateway" {
+		t.Fatalf("source %q, want bitswap+gateway", res.Source)
 	}
 	if res.Complete == nil || *res.Complete || len(res.Missing) != 1 || res.Missing[0].Path != "lost" {
 		t.Fatalf("missing structure not reported: %+v", res)

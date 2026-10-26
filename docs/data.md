@@ -372,7 +372,8 @@ Try sources in this order:
    key and checked via `/nu/have/1`.
 4. Candidate connected/LAN peers via `/nu/have/1`.
 5. Amino DHT provider records.
-6. Delegated routing: `GET /routing/v1/providers/{cid}`.
+6. Delegated routing: `GET /routing/v1/providers/{cid}`. Today only the IPFS importer uses
+   it, for `transport-ipfs-gateway-http` providers ([migration](migration.md#sources-and-transport)).
 
 Cluster members fetching cluster datasets instead use [D20 placement](cluster.md#placement):
 owners by rank, surplus holders, then other members. Private and isolated clusters never use

@@ -78,7 +78,9 @@ from the start instead of treating it as an empty delta. A malformed cursor is
 `POST /api/v0/import/ipfs` starts an `import-ipfs` operation
 ([migration.md](migration.md#resumption-provenance-and-cutover)). One root:
 `{"root":"<IPFS CID>","car":"/absolute/path/root.car"}` verifies every block against its
-original CID; omit `car` to retrieve by Bitswap over QUIC-v1 with Amino provider lookup.
+original CID; omit `car` to retrieve over the network: Bitswap over QUIC-v1 with Amino
+provider lookup, raced with HTTP trustless gateways found through `ipfs.routing_url`
+([migration.md](migration.md#sources-and-transport)).
 `"dataset":"<ds>"` (an archive dataset; `"scope":"cluster"` for the networked cluster) also
 writes the Nu root as its head and a version whose `imported` field references the manifest;
 the result then carries `dataset`. A pinset: `{"pins":"/abs/pins.json","car_dir":"/abs/dir"}`
@@ -568,8 +570,8 @@ nu add <https-url> [--hash sha256] [--meta meta.json]
   category.
 - Item URLs and `nu add https://…` use `httpsrc` with trusted node config
   `ingest.allow_http` (default false) and `ingest.allow_ips` (address prefixes exempt from
-  the SSRF guard); RASL hints and `fisl.indexers` lookups and locations ([D21](dasl.md#fisl))
-  use the same client and keys. `nu add` imports a URL as a BLAKE3 file node named after the URL's last
+  the SSRF guard); RASL hints, `fisl.indexers` lookups and locations ([D21](dasl.md#fisl))
+  and IPFS-import gateway lookups and blocks (`ipfs.routing_url`) use the same client and keys. `nu add` imports a URL as a BLAKE3 file node named after the URL's last
   path segment (`download` otherwise), with up to 4 attempts that resume on a strong
   validator; `--hash sha256` keeps the 8 MiB limit; isolated-cluster nodes refuse it.
   `--meta` stores a metadata record (adding the provenance under `source` unless present),

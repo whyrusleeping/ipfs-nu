@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// Network imports in this package never ask the public routing endpoint; tests that cover
+// the gateway transport point IPFSRouting at a local server.
+func init() { IPFSRouting = "off" }
+
 func TestIPFSImportRecoveryKeepsOperationID(t *testing.T) {
 	rootPath := filepath.Join(t.TempDir(), "nu")
 	r, _, err := repo.Open(rootPath)

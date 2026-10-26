@@ -5,7 +5,7 @@ type IPFSImportResult struct {
 	IPFSRoot                 string `json:"ipfs_root"`
 	Root                     string `json:"root,omitempty"`
 	Manifest                 string `json:"manifest,omitempty"`
-	Source                   string `json:"source,omitempty"` // car or bitswap
+	Source                   string `json:"source,omitempty"` // car, or the network transports: bitswap, gateway or bitswap+gateway
 	Files                    uint64 `json:"files"`
 	Bytes                    uint64 `json:"bytes"`
 	DryRun                   bool   `json:"dry_run,omitempty"`

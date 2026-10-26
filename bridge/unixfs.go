@@ -37,6 +37,9 @@ type UnixFSData struct {
 	Mode             uint32
 	HasMode          bool
 	HasMtime         bool
+	// Unknown lists fields outside the UnixFS schema (e.g. fil.pub's signature, field
+	// 1001); they are well-formed protobuf, skipped and reported by the importer.
+	Unknown []int
 }
 
 const maxPBField = 16 << 20
@@ -196,7 +199,10 @@ func DecodeUnixFSData(b []byte) (UnixFSData, error) {
 			}
 			d.HasMtime = true
 		default:
-			return d, fmt.Errorf("unixfs: unknown field %d", f)
+			if f <= 8 || len(d.Unknown) >= 16 {
+				return d, fmt.Errorf("unixfs: unknown field %d", f)
+			}
+			d.Unknown = append(d.Unknown, f)
 		}
 	}
 	if !haveType || d.Type > UnixFSHAMTShard {

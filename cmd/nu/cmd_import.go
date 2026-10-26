@@ -14,7 +14,7 @@ import (
 var cmdImport = &command{name: "import", summary: "verified, one-way content migration", sub: []*command{cmdImportIPFS, cmdImportCutover}}
 
 var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] [--dataset <ds> [--cluster]] <ipfs-cid> | --pins <pins.json> [--car-dir <dir>] [--dry-run]",
-	summary: "verify and convert IPFS UnixFS roots from CARv1 archives or the IPFS network (Bitswap/Amino)", run: func(ctx context.Context, e *env, args []string) error {
+	summary: "verify and convert IPFS UnixFS roots from CARv1 archives or the IPFS network (Bitswap/Amino and HTTP gateways)", run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		req := apiv0.IPFSImportRequest{}
 		fs.StringVar(&req.CAR, "car", "", "CARv1 source (create with ipfs dag export <cid> > root.car)")

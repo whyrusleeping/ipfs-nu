@@ -2329,6 +2329,53 @@ busy hosts:
 | 16 MiB and ≥ 500 ms (now) | **10.8–11.3 s** | **11.3–11.5 s** |
 | Every 1 GiB (experiment) | 11.2–11.3 s | 11.3–11.4 s |
 
+## Synthetic transfer benchmark (2026-10-29)
+
+`scripts/xfer-bench.sh` measures transfers between Nu instances on real machines with no
+disk at either end. `bench/cmd/xferbench serve` generates deterministic pseudo-random
+files (ChaCha8 keyed by seed and file index, so two servers hold the same CIDs) into a
+store on tmpfs. It then runs the swarm `nu daemon` runs (magicsock, `swarm.gso = auto`,
+the real `/nu/bytes/1` server) and prints a share link. `xferbench fetch` on the recipient
+works in one of two modes:
+
+- `discard` sends every request through one shared queue, 16 in flight per peer, and
+  Bao-verifies each slice into a discarding sink. This is the ceiling of transport, server
+  and verification.
+- `fetcher` runs Nu's fetcher into a fresh tmpfs store each run. This is the receive
+  pipeline without the disk.
+
+Both report MB/s, objects/s and the recipient's CPU in cores; each server reports its own
+CPU on exit. Usage: `SRC1=… SRC2=… DST=… REPEAT=3 ./scripts/xfer-bench.sh [big|mid|tree]…`
+(`MODES`, `SOURCES` select subsets).
+
+alphac, build `f67b2bc`+: sources alphac-2 and alphac-1 (Realtek, no UDP segmentation
+offload, so GSO is off), recipient alphac-3 (E810), three runs each, medians in MB/s.
+Another user's `valsd` was running on the hosts.
+
+| Workload | discard 1:1 | fetcher 1:1 | discard 2:1 | fetcher 2:1 | Recipient cores (2:1 discard / fetcher) |
+|---|---|---|---|---|---|
+| big (1 × 4 GiB) | 602 | 592 | 1111 | 1062 | 3.1 / 2.9 |
+| mid (1,000 × 4 MiB) | 607 (25 runs) | 569 | 1131 | 1032 | 3.3 / 3.4 |
+| tree (10,000 × 100 KiB) | 510 (~5,000 files/s) | 454 | 951 (~9,200 files/s) | 728 | 3.3 / 5.3 |
+
+Two sources reach 1.1 GB/s, 95% of the 1.175 GB/s TCP line rate. One source is held to
+~600 MB/s by its sender (no GSO; [0085](#lan-benchmarks-add-11-and-21-get-2026-10-22)).
+Without a disk, Nu's fetcher keeps 92–98% of the ceiling for large and 4 MiB files. For
+100 KiB files it keeps 77–89%, at 5.3 recipient cores for 2:1, so small-file fetching is
+where the receive pipeline still costs.
+
+**One corrupt response.** In the first matrix, `mid 1:1 discard` failed: "peer sent
+corrupt data: blob: chunk group 47 does not verify", about 370 MiB into the first run on a
+fresh connection. The server's store was intact: the next three fetcher runs from the
+same server verified all 4 GiB. Neither 10 further runs (40 GB) nor 25 runs on one
+connection (100 GB) nor 40 runs on fresh connections (160 GB) reproduced it, so it was one
+event in about 310 GB. QUIC authenticates every packet, so the bytes changed after
+decryption or before sending: a buffer reused while stream data still referenced it, or
+a race in the server's read path. The fetcher would drop a peer that is in fact honest. In
+a 2:1 `nu get` that is silent apart from a log line, which `lan-bench.sh` does not keep
+for successful runs. `xferbench fetch` now reports every such response (peer, blob,
+range) and retries it, and exits non-zero if any occurred. Investigation: 0092.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

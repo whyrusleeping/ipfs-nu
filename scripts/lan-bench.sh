@@ -158,7 +158,7 @@ xferrun() {
   drop
   declare -A tx0; local h ifs=()
   for h in "$@"; do ifs+=("$(iface "$h")"); tx0[$h]=$(txbytes "$h" "${ifs[-1]}"); done
-  local res; res=$(r "$DST" "cd $D && ./xferbench ${PROF:+-cpuprofile $D/xfer.cpu} '$link' 2>&1")
+  local res; res=$(r "$DST" "cd $D && ./xferbench fetch ${PROF:+-cpuprofile $D/xfer.cpu} '$link' 2>&1")
   local split="" i=0
   for h in "$@"; do split+=" $h=$(( ($(txbytes "$h" "${ifs[$i]}") - ${tx0[$h]}) / 1048576 ))MiB"; i=$((i+1)); done
   log "xfer $label $w: ${res#xfer: } | tx:$split"

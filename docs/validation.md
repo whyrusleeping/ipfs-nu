@@ -2311,6 +2311,24 @@ these runs another user's process (`valsd`, 1.2–1.5 cores) ran on all three ho
 runs counted more interface tx than the transfer (up to 1.3× on 1:1, where no request is
 ever duplicated), which is that process's traffic.
 
+**Checkpoint cadence.** Writing the output beside the fetch slowed the fetch by ~1 s
+(2:1 big) only when the output was on the same disk. With the output on tmpfs, the
+streaming fetch was as fast as the non-streaming one (10.6–10.7 s vs 10.6–10.9 s), so
+CPU and the reader's locking cost nothing. The cost was the partial checkpoints: an fsync
+per 16 MiB, about 60 a second, each slowed on ext4 (`data=ordered`) by the output's
+writes. Workers could get only 16 MiB ahead of a running checkpoint before they waited.
+Checkpoints now need both 16 MiB and 500 ms since the last one began
+(`fetch.Config.FlushInterval`). Workers wait only for a checkpoint that has run longer
+than that interval, so a crash repeats at most about a second of transfer. On links
+slower than 32 MB/s nothing changes. Interleaved 2:1 big runs, three each, on the same
+busy hosts:
+
+| Build | Fetch | Total |
+|---|---|---|
+| Every 16 MiB (before) | 11.6–11.9 s | 12.1–12.4 s |
+| 16 MiB and ≥ 500 ms (now) | **10.8–11.3 s** | **11.3–11.5 s** |
+| Every 1 GiB (experiment) | 11.2–11.3 s | 11.3–11.4 s |
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

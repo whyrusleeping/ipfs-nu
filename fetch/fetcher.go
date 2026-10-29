@@ -40,8 +40,13 @@ type Config struct {
 	Blobs int
 	// RequestTimeout bounds one request; a stalled peer is then treated as failing (2 min).
 	RequestTimeout time.Duration
-	// FlushBytes is how often partial blobs persist their verified groups (16 MiB).
-	FlushBytes uint64
+	// FlushBytes and FlushInterval are how often partial blobs persist their verified
+	// groups: after FlushBytes of new data (16 MiB), but at most once per FlushInterval
+	// (500 ms). Each checkpoint is an fsync, and at disk speed one per 16 MiB slows the
+	// fetch (and, on ext4, the files written beside it); a crash then repeats at most
+	// FlushInterval of transfer.
+	FlushBytes    uint64
+	FlushInterval time.Duration
 }
 
 // Fetcher downloads content by CID from multiple peers into a store, verifying everything
@@ -77,6 +82,9 @@ func New(cfg Config) *Fetcher {
 	}
 	if cfg.FlushBytes == 0 {
 		cfg.FlushBytes = 16 << 20
+	}
+	if cfg.FlushInterval == 0 {
+		cfg.FlushInterval = 500 * time.Millisecond
 	}
 	return &Fetcher{cfg: cfg, blobs: map[cid.Multihash]*inflight{}}
 }

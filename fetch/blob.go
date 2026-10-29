@@ -321,6 +321,7 @@ type sched struct {
 	flushMu    sync.Mutex
 	sinceFlush uint64
 	flushing   chan struct{}
+	lastFlush  time.Time // when the last checkpoint began
 }
 
 func (s *sched) canServe(p *peer, c *chunk) bool {
@@ -357,23 +358,30 @@ func (s *sched) anyCandidate(sw *swarm) bool {
 	return false
 }
 
-// flush counts n verified bytes and checkpoints the partial every `every` bytes. Only
-// one worker checkpoints at a time; the others keep downloading instead of queueing
-// behind fsync, with backpressure after one more checkpoint's worth of work so a stalled
-// disk cannot leave unbounded uncheckpointed data. Flush snapshots the bitmap before
-// syncing; groups verified meanwhile stay dirty for the next one.
-func (s *sched) flush(every uint64, n int64) error {
+// flush counts n verified bytes and checkpoints the partial once `every` bytes have
+// arrived and `interval` has passed since the last checkpoint began. Only one worker
+// checkpoints at a time; the others keep downloading instead of queueing behind fsync,
+// until a checkpoint has run for longer than interval: then the disk is stalled and they
+// wait, so uncheckpointed data stays bounded (about two intervals of transfer). Flush
+// snapshots the bitmap before syncing; groups verified meanwhile stay dirty for the next.
+func (s *sched) flush(every uint64, interval time.Duration, n int64) error {
 	s.flushMu.Lock()
 	s.sinceFlush += uint64(n)
 	for s.sinceFlush >= every {
 		if s.flushing != nil {
+			if time.Since(s.lastFlush) < interval {
+				break
+			}
 			done := s.flushing
 			s.flushMu.Unlock()
 			<-done
 			s.flushMu.Lock()
 			continue
 		}
-		s.sinceFlush, s.flushing = 0, make(chan struct{})
+		if time.Since(s.lastFlush) < interval {
+			break
+		}
+		s.sinceFlush, s.flushing, s.lastFlush = 0, make(chan struct{}), time.Now()
 		s.flushMu.Unlock()
 		err := s.part.Flush()
 		s.flushMu.Lock()
@@ -565,7 +573,7 @@ func (l *lanes) worker(p *peer) {
 			// The winner stays busy until its checkpoint is done, so the download does
 			// not commit or close the partial under it.
 			r.update(func(pr *Progress) { pr.Bytes += c.bytes })
-			ferr = s.flush(r.f.cfg.FlushBytes, c.bytes)
+			ferr = s.flush(r.f.cfg.FlushBytes, r.f.cfg.FlushInterval, c.bytes)
 		} else {
 			// The peer is loaded by other clients; give it a moment before retrying.
 			select {

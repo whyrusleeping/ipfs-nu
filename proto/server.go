@@ -265,8 +265,8 @@ func (s *Server) serveBytes(b []byte, w *bufio.Writer) (*failure, error) {
 	}
 	ob := bl.Outboard()
 	if ob == nil {
-		// Inline blobs and BLAKE3 DRISL blocks keep no outboard; build it in memory (they
-		// are at most 8 MiB, so the outboard is at most 32 KiB).
+		// Inline and small blobs and BLAKE3 DRISL blocks keep no outboard; build it in
+		// memory (they are at most 8 MiB, so the outboard is at most 32 KiB).
 		buf := make(memAt, blob.OutboardSize(bl.Size))
 		if blob.HasOutboard(bl.Size) {
 			if _, err := blob.Outboard(buf, bl.Reader(), bl.Size); err != nil {

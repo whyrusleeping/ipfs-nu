@@ -238,12 +238,12 @@ func TestCorruptTransfer(t *testing.T) {
 	ctx := ctxT(t)
 	a, b := newNode(t), newNode(t)
 	ba := connect(t, b.h, a.h)
-	big := addBlob(t, a.st, randBytes(6, 1<<20), cid.BLAKE3)
+	big := addBlob(t, a.st, randBytes(6, 2<<20), cid.BLAKE3) // above 1 MiB: stored outboard
 	sha := addBlob(t, a.st, randBytes(7, 1<<20), cid.SHA256)
 	corruptFile(t, a, big.Multihash(), 300<<10)
 	corruptFile(t, a, sha.Multihash(), 300<<10)
 
-	err := proto.Fetch(ctx, ba, b.st, big, 1<<20)
+	err := proto.Fetch(ctx, ba, b.st, big, 2<<20)
 	var ce *blob.CorruptError
 	if !errors.Is(err, proto.ErrCorrupt) || !errors.As(err, &ce) || ce.Group != 18 {
 		t.Fatalf("corrupt blob: %v", err)

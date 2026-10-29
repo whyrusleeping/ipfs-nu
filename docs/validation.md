@@ -2238,6 +2238,56 @@ Findings and changes:
    about 3.2 GB/s, against 4.3 GB/s for the disk. `copy_file_range` would help mainly on
    reflink filesystems.
 
+**Transfer only, and the tree again.** `bench/cmd/xferbench` (`lan-bench.sh` phases
+`xfer1`/`xfer2`) starts the same swarm as a daemonless `nu get` and fetches only the
+structure. It then requests every blob from all peers through one shared queue (16 in
+flight per peer), Bao-verifies each slice and discards the bytes. Its throughput is the
+ceiling of network, server and verification with no recipient storage:
+
+| Workload | xfer 1:1 | get 1:1 fetch | xfer 2:1 | get 2:1 fetch |
+|---|---|---|---|---|
+| big | 573–581 MB/s | 560–573 | 1089 | 1000–1024 |
+| group | 570–581 | 554–562 | 1071–1083 | 974–989 |
+| mid | 559–571 | 540–559 | 1056–1070 | 960–978 |
+| tree | 492–509 (4,800–5,000 blobs/s) | 315–324 | 913–938 (~9,000 blobs/s) | 308–324 |
+
+From one source the tree transfer saturates at about 500 MB/s with as few as 8 requests in
+flight (3,700 blobs/s with 4), so it is bandwidth-bound, not latency-bound. A
+microbenchmark of the store's write pattern on alphac-3 (10,000 × 100 KiB, 256 concurrent,
+create, write, fsync, rename) ran at 10,800 blobs/s with two files per blob (data and
+outboard) and 20,000 with one. So the recipient's 3,100 blobs/s was neither the network
+nor the disk. A block profile (`NU_BLOCKPROFILE`, `PROF=2`) showed goroutines waiting for
+the store's single SQLite connection: 287 s of waiting in a 3 s fetch, behind one commit
+transaction per blob and the reads queued behind it. Changes:
+
+- **SQL group commit.** A fetched raw blob is staged and synced on its own goroutine
+  (`store.Batch.Sync`). A committer then renames everything queued meanwhile into place and
+  inserts it in one transaction. The fsyncs stay parallel; only the database work is
+  grouped. The redundant per-blob `Has` lookups are gone too, though alone they changed
+  nothing. Tree 2:1: 308–324 → 426–480 MB/s.
+- **No outboard file for copied blobs of at most 1 MiB** (one fetch request, always served
+  whole; [D17](data.md#d17-store-and-replication)). A server builds the outboard in memory
+  for each request, as it does for inline blobs. Each small file costs one file, sync and
+  rename instead of two, on fetch and on add. Tree 2:1: → 537–553 MB/s.
+- Tried and dropped: choosing the least-loaded peer for small blobs instead of rotating
+  (unchanged, 541 MB/s).
+
+Final (same method, `PROF=1`, two runs, digests matched):
+
+| Measurement | Before this round | After |
+|---|---|---|
+| `get` tree 1:1 fetch / total | 315–324 MB/s / 4.1–4.3 s | **373–392 MB/s / 3.6–3.8 s** |
+| `get` tree 2:1 fetch / total | 308–324 MB/s / 4.2–4.3 s | **540–561 MB/s / 2.8–3.0 s** |
+| `get` big, group, mid | as above | unchanged (big 1:1 567–571, 2:1 1008–1022) |
+
+With the recipient's repo and output on tmpfs, 2:1 takes 1.5 s to fetch and 0.45 s to write
+out, against 1.95 s and 0.85 s on the NVMe disk. The disk's ~0.45 s in the fetch matches the
+microbenchmark's floor for one synced file per blob. What remains is about 0.4 s of
+recipient CPU over the 1.1 s transfer, plus the write-out, which runs only after the fetch
+has completed. Overlapping the two would hide most of the write-out, but then a failed
+fetch would leave a partial output tree. `PROF=2` block profiling adds about 1.5 s to the
+10 GiB write-out, so time measurements use `PROF=1`.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

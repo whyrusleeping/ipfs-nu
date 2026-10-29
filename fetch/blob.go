@@ -26,17 +26,18 @@ func (r *run) blob(ctx context.Context, c cid.CID, size uint64) error {
 		return nil
 	}
 	if c.Hash() != cid.BLAKE3 || (size > 0 && size <= r.oneRequest()) {
-		if err := r.wholeSized(ctx, c, size); err != nil {
+		// Held was checked just above; the store's one connection is the bottleneck of
+		// many-small-file fetches, so no lookup is repeated that the walk can answer.
+		if err := r.fetchWhole(ctx, c, size); err != nil {
 			return err
 		}
-		if info, ok, err := r.st.Has(c); err == nil && ok {
-			r.update(func(p *Progress) {
-				p.Bytes += int64(info.Size)
-				if size == 0 {
-					p.BytesTotal += int64(info.Size)
-				}
-			})
+		if size == 0 {
+			if info, ok, err := r.st.Has(c); err == nil && ok {
+				size = info.Size
+				r.update(func(p *Progress) { p.BytesTotal += int64(size) })
+			}
 		}
+		r.update(func(p *Progress) { p.Bytes += int64(size) })
 		return nil
 	}
 	// One download per blob per Fetcher; later callers wait for it and re-check the store.

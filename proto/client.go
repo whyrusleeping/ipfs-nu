@@ -194,6 +194,33 @@ func FetchRanges(ctx context.Context, open Opener, p *store.Partial, ranges []bl
 	return c.end(c.eof())
 }
 
+// ReadRanges is FetchRanges into any sink: it fetches chunk-group ranges of a BLAKE3 blob
+// of known size from one peer and verifies each group before handing it to sink (whose nil
+// fields discard, as in transfer measurements).
+func ReadRanges(ctx context.Context, open Opener, mh cid.Multihash, size uint64, ranges []blob.Range, sink blob.Sink) error {
+	if len(ranges) == 0 || len(ranges) > MaxRanges {
+		return fmt.Errorf("proto: 1 to %d ranges per request", MaxRanges)
+	}
+	for _, r := range ranges {
+		if !r.Valid(size) {
+			return fmt.Errorf("proto: range %v outside a %d-byte blob", r, size)
+		}
+	}
+	c, got, err := bytesCall(ctx, open, BytesRequest{MH: mh, Ranges: ranges})
+	if err != nil {
+		return err
+	}
+	if got != size {
+		return c.end(corrupt("peer reports size %d, want %d", got, size))
+	}
+	for _, r := range ranges {
+		if err := readSlice(c.r, mh, size, r, sink); err != nil {
+			return c.end(err)
+		}
+	}
+	return c.end(c.eof())
+}
+
 // FetchWhole fetches a whole object from one peer into memory, verifies it and only then
 // stores it. It is the path for every whole-object-verified CID (SHA-256 of any codec and
 // BLAKE3 DRISL) and for BLAKE3 blobs of at most one chunk group; peers announcing more than

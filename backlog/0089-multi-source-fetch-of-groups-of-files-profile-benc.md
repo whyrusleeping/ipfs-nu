@@ -24,3 +24,4 @@ Result: per-run range lanes (no per-blob endgame duplication; mid 2:1 349→970 
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-29: round 2 (user request): transfer-only benchmark `bench/cmd/xferbench` (lan-bench `xfer1`/`xfer2`), `NU_BLOCKPROFILE` (`PROF=2`). Tree recipient was bound by the store's single SQLite connection: SQL group commit for fetched whole blobs (`store.Batch.Sync`), no outboard file for copied blobs ≤ 1 MiB (D17). Tree 2:1 fetch 308–324 → 540–561 MB/s, 1:1 315–324 → 373–392; big/group/mid unchanged. Evidence: docs/validation.md "Transfer only, and the tree again".

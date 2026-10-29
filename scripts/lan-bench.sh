@@ -5,19 +5,23 @@
 #
 #   SRC1=alphac-2 SRC2=alphac-1 DST=alphac-3 RUNS=3 ./scripts/lan-bench.sh [phase...]
 #
-# Phases (default all): deploy gen baseline add get1 get2 clean.
+# Phases (default all): deploy gen baseline add get1 get2 clean; also xfer1 xfer2.
 # Workloads (WORKLOADS, default "big tree"): big = one 10 GiB file; tree = 10,000 files of
 # 100 KiB (~1 GiB); mid = 1,000 files of 4 MiB (4 GiB); group = 20 files of 256 MiB (5 GiB).
 # Both sources generate identical bytes (seeded), so they add to the same CIDs; gen skips
 # workloads already generated. Every timed run starts from a fresh repo with page caches
 # dropped on all hosts. The recipient is daemonless (`nu get <link> -o out`, the J1
 # journey); sources run `nu daemon`. PROF=1 builds with -tags nuprof and saves CPU
-# profiles of each recipient run and of the source daemons under $OUT.prof/.
+# profiles of each recipient run and of the source daemons under $OUT.prof/; PROF=2 adds
+# block profiles (waits on locks, channels, the database), which slow I/O loops. xfer1/xfer2
+# are get1/get2 with bench/cmd/xferbench as the recipient: the same requests, verified and
+# discarded, nothing stored (the transfer ceiling without the recipient's disk).
 set -euo pipefail
 
 SRC1=${SRC1:-alphac-2} SRC2=${SRC2:-alphac-1} DST=${DST:-alphac-3}
 RUNS=${RUNS:-3} BIG_GIB=${BIG_GIB:-10} TREE_FILES=${TREE_FILES:-10000} TREE_KIB=${TREE_KIB:-100}
 WORKLOADS=${WORKLOADS:-big tree} PROF=${PROF:-}
+BLOCK=$( [ "$PROF" = 2 ] && echo 1 || true)
 D='$HOME/nu-bench'           # remote work dir (expanded remotely)
 OUT=${OUT:-/tmp/lan-bench-$(date +%Y%m%d-%H%M%S).log}
 phases=${*:-deploy gen baseline add get1 get2 clean}
@@ -30,10 +34,12 @@ txbytes() { r "$1" "cat /sys/class/net/$2/statistics/tx_bytes"; }
 
 deploy() {
   CGO_ENABLED=0 go build -trimpath ${PROF:+-tags nuprof} -o /tmp/nu-bench-bin ./cmd/nu
+  CGO_ENABLED=0 go build -trimpath -o /tmp/xferbench-bin ./bench/cmd/xferbench
   for h in "$SRC1" "$SRC2" "$DST"; do
     r "$h" "mkdir -p $D && pkill -x nu || true"
     scp -q /tmp/nu-bench-bin "$h:nu-bench/nu"
   done
+  scp -q /tmp/xferbench-bin "$DST:nu-bench/xferbench"
   log "deploy: $(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty)${PROF:+ nuprof} to $SRC1 $SRC2 $DST"
 }
 
@@ -105,7 +111,7 @@ prepare() {
     local w adds=""
     for w in $WORKLOADS; do adds+="./nu --json add $(wadd $w) >$w.json 2>/dev/null && "; done
     r "$h" "cd $D && pkill -x nu; sleep 0.5; rm -rf repo && export NU_PATH=$D/repo && ./nu init >/dev/null 2>&1 && $adds
-      (${PROF:+NU_CPUPROFILE=$D/daemon.cpu} setsid ./nu daemon </dev/null >daemon.log 2>&1 &) && sleep 2 && ./nu status | grep -c 'peer id'" >/dev/null &
+      (${PROF:+NU_CPUPROFILE=$D/daemon.cpu} ${BLOCK:+NU_BLOCKPROFILE=$D/daemon.block} setsid ./nu daemon </dev/null >daemon.log 2>&1 &) && sleep 2 && ./nu status | grep -c 'peer id'" >/dev/null &
   done
   wait
 }
@@ -115,7 +121,9 @@ srcprof() {
   local h; mkdir -p "$OUT.prof"
   for h in "$@"; do
     r "$h" "pkill -INT -x nu; while pgrep -x nu >/dev/null; do sleep 0.2; done"
-    scp -q "$h:nu-bench/daemon.cpu" "$OUT.prof/src-$h-$(date +%H%M%S).cpu" 2>/dev/null || true
+    local t; t=$(date +%H%M%S)
+    scp -q "$h:nu-bench/daemon.cpu" "$OUT.prof/src-$h-$t.cpu" 2>/dev/null || true
+    [ -z "$BLOCK" ] || scp -q "$h:nu-bench/daemon.block" "$OUT.prof/src-$h-$t.block" 2>/dev/null || true
   done
 }
 cidof() { r "$1" "grep -o '\"cid\": *\"[^\"]*\"' $D/$2.json | head -1 | cut -d'\"' -f4"; }
@@ -126,11 +134,11 @@ addrof() { echo "/ip4/$(getent hosts "$1" | awk '{print $1}')/udp/4171/quic-v1";
 getrun() {
   local label=$1 w=$2 link=$3; shift 3
   local bytes; bytes=$(wbytes $w)
-  r "$DST" "cd $D && rm -rf rrepo out get.cpu"
+  r "$DST" "cd $D && rm -rf rrepo out get.cpu get.block"
   drop
   declare -A tx0; local h ifs=()
   for h in "$@"; do ifs+=("$(iface "$h")"); tx0[$h]=$(txbytes "$h" "${ifs[-1]}"); done
-  local res; res=$(r "$DST" "cd $D && s=\$(date +%s.%N); ${PROF:+NU_CPUPROFILE=$D/get.cpu} NU_PATH=$D/rrepo ./nu get '$link' -o out 2>&1 | while read -r l; do echo \"\$(echo \"\$(date +%s.%N) - \$s\" | bc) \$l\"; done; echo \"END \$(echo \"\$(date +%s.%N) - \$s\" | bc)\"")
+  local res; res=$(r "$DST" "cd $D && s=\$(date +%s.%N); ${PROF:+NU_CPUPROFILE=$D/get.cpu} ${BLOCK:+NU_BLOCKPROFILE=$D/get.block} NU_PATH=$D/rrepo ./nu get '$link' -o out 2>&1 | while read -r l; do echo \"\$(echo \"\$(date +%s.%N) - \$s\" | bc) \$l\"; done; echo \"END \$(echo \"\$(date +%s.%N) - \$s\" | bc)\"")
   local total fetch_start write_start
   total=$(echo "$res" | awk '/^END/{print $2}')
   fetch_start=$(echo "$res" | awk '$2=="fetching"{print $1; exit}')
@@ -141,7 +149,20 @@ getrun() {
   local ok; ok=$(echo "$res" | grep -c '^[0-9.]* wrote' || true)
   log "get $label $w: total ${total}s, fetch ${fetch}s = $(echo "$bytes / 1000000 / $fetch" | bc) MB/s, write-out $(echo "$total - ${write_start:-$total}" | bc)s | tx:$split | ok=$ok"
   [ "$ok" = 1 ] || log "$res"
-  if [ -n "$PROF" ]; then mkdir -p "$OUT.prof"; scp -q "$DST:nu-bench/get.cpu" "$OUT.prof/get-${label// /_}-$w.cpu"; fi
+  if [ -n "$PROF" ]; then mkdir -p "$OUT.prof"; scp -q "$DST:nu-bench/get.cpu" "$OUT.prof/get-${label// /_}-$w.cpu"; [ -z "$BLOCK" ] || scp -q "$DST:nu-bench/get.block" "$OUT.prof/get-${label// /_}-$w.block"; fi
+}
+
+# xferrun LABEL WORKLOAD LINK SRCHOSTS...: transfer only (xferbench), cold caches.
+xferrun() {
+  local label=$1 w=$2 link=$3; shift 3
+  drop
+  declare -A tx0; local h ifs=()
+  for h in "$@"; do ifs+=("$(iface "$h")"); tx0[$h]=$(txbytes "$h" "${ifs[-1]}"); done
+  local res; res=$(r "$DST" "cd $D && ./xferbench ${PROF:+-cpuprofile $D/xfer.cpu} '$link' 2>&1")
+  local split="" i=0
+  for h in "$@"; do split+=" $h=$(( ($(txbytes "$h" "${ifs[$i]}") - ${tx0[$h]}) / 1048576 ))MiB"; i=$((i+1)); done
+  log "xfer $label $w: ${res#xfer: } | tx:$split"
+  if [ -n "$PROF" ]; then mkdir -p "$OUT.prof"; scp -q "$DST:nu-bench/xfer.cpu" "$OUT.prof/xfer-${label// /_}-$w.cpu"; fi
 }
 
 verify() { # compare the last recipient output with the source
@@ -175,6 +196,29 @@ get2() {
       getrun "2:1 run $i" $w "nu://$c1?peer=$p1&addr=$(addrof "$SRC1")&peer=$p2&addr=$(addrof "$SRC2")" "$SRC1" "$SRC2"
     done
     verify $w
+  done
+  srcprof "$SRC1" "$SRC2"
+}
+
+xfer1() {
+  r "$SRC2" "pkill -x nu || true"
+  prepare "$SRC1"
+  local p1 w c i; p1=$(peerof "$SRC1")
+  for w in $WORKLOADS; do
+    c=$(cidof "$SRC1" $w)
+    for i in $(seq "$RUNS"); do xferrun "1:1 run $i" $w "nu://$c?peer=$p1&addr=$(addrof "$SRC1")" "$SRC1"; done
+  done
+  srcprof "$SRC1"
+}
+
+xfer2() {
+  prepare "$SRC1" "$SRC2"
+  local p1 p2 w c i; p1=$(peerof "$SRC1"); p2=$(peerof "$SRC2")
+  for w in $WORKLOADS; do
+    c=$(cidof "$SRC1" $w)
+    for i in $(seq "$RUNS"); do
+      xferrun "2:1 run $i" $w "nu://$c?peer=$p1&addr=$(addrof "$SRC1")&peer=$p2&addr=$(addrof "$SRC2")" "$SRC1" "$SRC2"
+    done
   done
   srcprof "$SRC1" "$SRC2"
 }

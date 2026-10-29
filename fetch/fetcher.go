@@ -313,6 +313,7 @@ type run struct {
 
 	lanesOnce sync.Once
 	ln        *lanes // range-request scheduler for large blobs, created on first use
+	commits   committer
 
 	pmu  sync.Mutex
 	prog Progress
@@ -482,6 +483,11 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 	if info, ok, err := r.st.Has(c); err != nil || (ok && info.Complete) {
 		return err
 	}
+	return r.fetchWhole(ctx, c, size)
+}
+
+// fetchWhole is wholeSized for an object the caller found missing.
+func (r *run) fetchWhole(ctx context.Context, c cid.CID, size uint64) error {
 	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -523,8 +529,8 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 			p.release() // before the store write: its sync must not idle the peer
 			if err == nil {
 				won = true
-				cancel()                   // the source can stop
-				putErr = r.st.Put(c, data) // a failure is local storage, not the peer's fault
+				cancel()                // the source can stop
+				putErr = r.put(c, data) // a failure is local storage, not the peer's fault
 				break
 			}
 			if ctx.Err() != nil {

@@ -17,6 +17,11 @@ import (
 // largest blob without an outboard).
 const inlineMax = blob.GroupSize
 
+// noOutboardMax is the largest copied BLAKE3 blob stored without an outboard file: one
+// fetch request (64 groups), always served whole, so a server builds its outboard in
+// memory instead of every small file costing a second file, fsync and rename.
+const noOutboardMax = 64 * blob.GroupSize
+
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // AddBlob streams size bytes from r into the store under the default hash and returns the
@@ -93,7 +98,7 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *B
 	}()
 
 	var m cid.Multihash
-	if h == cid.BLAKE3 && size >= 0 {
+	if h == cid.BLAKE3 && size > noOutboardMax {
 		// One pass: data to the staging file while the outboard is built.
 		if ob, err = s.stagingFile("obao-*"); err != nil {
 			return cid.CID{}, err
@@ -130,11 +135,11 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *B
 			}
 			return c, s.putInline(m, data, b)
 		}
-		// The staged bytes are counted; the outboard is still to come.
-		if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
-			return cid.CID{}, err
-		}
-		if h == cid.BLAKE3 {
+		if h == cid.BLAKE3 && size > noOutboardMax {
+			// The staged bytes are counted; the outboard is still to come.
+			if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
+				return cid.CID{}, err
+			}
 			if ob, err = s.stagingFile("obao-*"); err != nil {
 				return cid.CID{}, err
 			}

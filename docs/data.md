@@ -409,7 +409,7 @@ currently announce their root only; the swarm key is not yet provided.
 ## D17. Store and replication
 
 - Store BLAKE3 blobs as files with Bao outboards and SHA-256 blobs as files without one;
-  small blobs may be inline. Objects are keyed by multihash. `--nocopy` references source
+  small blobs may be inline, and copied BLAKE3 blobs of at most 1 MiB keep no outboard. Objects are keyed by multihash. `--nocopy` references source
   files in place.
 - **URL import:** `nu add https://…` and collection item pushes with URL files
   ([D22](collections.md#ingest)) fetch over HTTPS with `httpsrc`'s SSRF and
@@ -431,11 +431,16 @@ currently announce their root only; the swarm key is not yet provided.
   in `$NU_PATH` have mode `0600`.
 - Local layout (schema version 1, `PRAGMA user_version` with forward migrations): raw
   blobs of at most 16 KiB and DRISL blocks live in the database; larger blobs are files
-  `blobs/<xx>/<multihash hex>` with the outboard beside them as `.obao`. Writes stream
+  `blobs/<xx>/<multihash hex>` with the outboard beside them as `.obao`. Copied BLAKE3
+  blobs of at most 1 MiB (one fetch request, always served whole) have no `.obao`: a
+  server builds the outboard in memory per request, so each small file costs one file,
+  sync and rename rather than two. Partial and `--nocopy` blobs keep theirs. Writes stream
   through `staging/` and are synced and renamed into place before their row commits, so
   objects appear atomically and a crash leaves only orphan files, which GC removes. Adds of
   many files stage blobs in batches (256 blobs or 256 MiB), sync a batch's files in
-  parallel so the filesystem shares the flushes, and commit its rows in one transaction. A partial
+  parallel so the filesystem shares the flushes, and commit its rows in one transaction.
+  Fetches sync each whole blob on its own and commit the rows of all blobs synced
+  meanwhile in one transaction, since the store has a single database connection. A partial
   BLAKE3 blob keeps sparse data and outboard files plus a bitmap of verified groups that is
   saved only after the data is synced; fetching resumes from it after a restart.
 - `--nocopy` blobs store only the outboard and the source's path, size and mtime. Each use

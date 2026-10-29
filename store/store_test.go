@@ -413,7 +413,7 @@ func TestKillMidWrite(t *testing.T) {
 	staged, _ := os.ReadDir(filepath.Join(dir, "staging"))
 	var rows int
 	_ = s.db.QueryRow(`SELECT count(*) FROM blobs`).Scan(&rows)
-	if blobs != 2 || rows != 1 || len(staged) != 0 { // the first blob and its outboard
+	if blobs != 1 || rows != 1 || len(staged) != 0 { // the first blob (1 MiB: no outboard)
 		t.Fatalf("after crash: %d blob files, %d rows, %d staged", blobs, rows, len(staged))
 	}
 	// Only the committed blob is charged (A1): the orphan and the emptied staging are not.

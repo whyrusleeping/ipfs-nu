@@ -26,7 +26,7 @@ func TestBatch(t *testing.T) {
 	if _, err := b.AddBlobHash(bytes.NewReader(data), int64(len(data)), s.opts.DefaultHash); err != nil {
 		t.Fatal(err)
 	}
-	if b.Len() != 2 || b.Bytes() <= int64(2*len(data)) {
+	if b.Len() != 2 || b.Bytes() != int64(2*len(data)) { // small blobs: no outboards
 		t.Fatalf("staged %d blobs, %d bytes", b.Len(), b.Bytes())
 	}
 	if _, ok, err := s.Has(c1); err != nil || ok {

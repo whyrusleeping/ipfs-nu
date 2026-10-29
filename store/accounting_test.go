@@ -113,7 +113,7 @@ func TestAccountingCounters(t *testing.T) {
 	check("empty")
 
 	// A copied blob with an outboard and an inline block.
-	big := int64(3*blob.GroupSize + 5)
+	big := int64(noOutboardMax + 3*blob.GroupSize + 5)
 	c, err := s.AddBlob(&patternReader{n: big}, big)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestBudgetAdmission(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	s := open(t, dir)
-	blobSize := int64(64 * blob.GroupSize) // large next to the WAL growth counted in DB
+	blobSize := int64(noOutboardMax + blob.GroupSize) // large next to the WAL growth counted in DB
 	phys := blobSize + int64(blob.OutboardSize(uint64(blobSize)))
 	st, _ := s.Stats()
 	// Room for the DB plus one such blob and a bit, not two.
@@ -327,7 +327,7 @@ func TestBudgetAdmission(t *testing.T) {
 func TestAttribution(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, t.TempDir())
-	n := int64(2 * blob.GroupSize)
+	n := int64(noOutboardMax + 2*blob.GroupSize)
 	add := func(off int64) (cid.CID, int64) {
 		c, err := s.AddBlob(pat(off, n), n)
 		if err != nil {

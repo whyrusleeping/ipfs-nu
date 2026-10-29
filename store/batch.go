@@ -49,6 +49,7 @@ type stagedBlob struct {
 	data, ob *os.File
 	srcPath  string
 	srcMtime int64
+	synced   bool // by Batch.Sync
 }
 
 // syncParallel bounds the concurrent fsyncs of a Commit. Concurrent fsyncs share journal
@@ -76,6 +77,44 @@ func (b *Batch) ImportCachePut(src Source, h cid.Hash, c cid.CID) {
 func (b *Batch) Len() int     { return len(b.pending) + len(b.blocks) }
 func (b *Batch) Bytes() int64 { return b.bytes }
 
+// Sync makes the files staged so far durable now, so that Commit does not sync them.
+// Batches synced by their own goroutines and then Appended commit together as one
+// transaction without serializing their fsyncs.
+func (b *Batch) Sync() error {
+	var files []*os.File
+	for _, p := range b.pending {
+		if !p.synced {
+			files = append(files, p.files()...)
+		}
+	}
+	if err := SyncFiles(files); err != nil {
+		return err
+	}
+	for i := range b.pending {
+		b.pending[i].synced = true
+	}
+	return nil
+}
+
+// Append moves everything staged in o into b, leaving o empty.
+func (b *Batch) Append(o *Batch) {
+	b.pending = append(b.pending, o.pending...)
+	b.blocks = append(b.blocks, o.blocks...)
+	b.cache = append(b.cache, o.cache...)
+	b.bytes += o.bytes
+	o.pending, o.blocks, o.cache, o.bytes = nil, nil, nil, 0
+}
+
+func (p stagedBlob) files() []*os.File {
+	var out []*os.File
+	for _, f := range []*os.File{p.data, p.ob} {
+		if f != nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 func (b *Batch) stage(p stagedBlob) {
 	b.pending = append(b.pending, p)
 	if p.data != nil {
@@ -93,15 +132,7 @@ func (b *Batch) Commit() error {
 	if len(b.pending) == 0 && len(b.blocks) == 0 && len(b.cache) == 0 {
 		return nil
 	}
-	var files []*os.File
-	for _, p := range b.pending {
-		for _, f := range []*os.File{p.data, p.ob} {
-			if f != nil {
-				files = append(files, f)
-			}
-		}
-	}
-	if err := SyncFiles(files); err != nil {
+	if err := b.Sync(); err != nil {
 		return err
 	}
 	s := b.s

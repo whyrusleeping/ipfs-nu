@@ -815,6 +815,15 @@ are bounded in total and per client address (`503` + `Retry-After`).
 - **X6** The report (files, dirs, bytes, skipped with reasons) is returned in the
   operation result and printed by the CLI; `get` is not "success" if skipped is non-empty
   without saying so.
+- **X7** `get` writes while it fetches. Once the structure is held (and X1 has passed),
+  each file is written as its bytes arrive: a large blob is copied group by group as they
+  verify (`store.OpenStream`). An output path that does not exist is written as
+  `<path>.nu-partial` and renamed to `<path>` only when everything is written. Only the
+  top level is renamed, not each file inside it. A failed get leaves the partial, says so
+  in the operation log, and leaves `<path>` absent. The next get of the same output
+  replaces the partial; fetched content stays in the store, so it does not transfer again.
+  An existing output path is updated in place under X4/X5, and only after the fetch has
+  succeeded, so a failed get leaves it untouched.
 
 ### Negative-test matrix
 

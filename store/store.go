@@ -73,6 +73,8 @@ type Store struct {
 	// stmts caches the prepared per-object queries (queryRow, exec).
 	stmtMu sync.Mutex
 	stmts  map[string]*sql.Stmt
+	// watchers wakes OpenStream readers (stream.go).
+	watchers watchers
 }
 
 // LinksFunc is a walk profile: the links of a block that a recursive pin follows.
@@ -505,8 +507,11 @@ func (s *Store) putBlockAs(codec cid.Codec, m cid.Multihash, data []byte, state 
 		return err
 	}
 	s.gcMu.RLock()
-	defer s.gcMu.RUnlock()
 	_, err := s.exec(insertBlock, mhKey(m), int(codec), data, s.nowUnix())
+	s.gcMu.RUnlock()
+	if err == nil {
+		s.announce(m)
+	}
 	return err
 }
 
@@ -573,13 +578,19 @@ func (s *Store) insertBlocks(fill func(add func(cid.Codec, cid.Multihash, []byte
 	ptx := newPreparedTx(tx)
 	defer ptx.close()
 	now := s.nowUnix()
+	var added []cid.Multihash
 	if err := fill(func(codec cid.Codec, m cid.Multihash, data []byte) error {
+		added = append(added, m)
 		_, err := ptx.Exec(insertBlock, mhKey(m), int(codec), data, now)
 		return err
 	}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.announce(added...)
+	return nil
 }
 
 // preparedTx runs a transaction's statements prepared once per query text, so a batch of

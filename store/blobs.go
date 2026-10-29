@@ -208,7 +208,11 @@ func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, src
 	if err := s.commitBlobIn(tx, m, size, dataFile, obFile, srcPath, srcMtime, fromPartial); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.announce(m)
+	return nil
 }
 
 // txRunner is a *sql.Tx or a preparedTx over one.

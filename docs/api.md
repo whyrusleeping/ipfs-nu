@@ -760,7 +760,9 @@ filesystem onto another entry (case-insensitive APFS/NTFS, NFD-normalizing HFS+)
 skipped and reported with the entry it collides with, and so is everything under a
 skipped directory; a pre-existing file of exactly that name is replaced. The report
 counts files, directories and bytes and lists skipped entries with reasons; the CLI
-prints each one (rules X1–X6 of the [contract](operations.md#x-extraction-nu-get--o)).
+prints each one. `get` runs it while the fetch is still running, writing a new output
+under `<path>.nu-partial` until it is complete (rules X1–X7 of the
+[contract](operations.md#x-extraction-nu-get--o)).
 
 ## Daemonless commands
 

@@ -626,6 +626,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	// Keyed by full CID: the same bytes linked as a raw blob and as a DRISL node are two
 	// objects to fetch (0079; the store holds a DRISL read only for bytes stored as DRISL).
 	seen := map[cid.CID]bool{root: true}
+	links := map[cid.CID][]blobRef{} // each structure node's links, for the blob order
 	var blobs []blobRef
 	var frontier []cid.CID
 	if root.Codec() == cid.Raw {
@@ -675,6 +676,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 			if err != nil {
 				return fmt.Errorf("fetch: walking %s: %w", c, err)
 			}
+			links[c] = kids
 			for _, k := range kids {
 				if seen[k.c] || (r.opts.Skip != nil && r.opts.Skip(k.c)) {
 					continue
@@ -695,6 +697,7 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	if len(blobs) == 0 {
 		return nil
 	}
+	blobs = depthFirst(root, links, blobs)
 	r.stage(StageBlobs)
 	// Blobs already held (from treeSync or earlier fetches) are counted, not fetched; one
 	// batched lookup instead of one per blob.
@@ -755,6 +758,40 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	}
 	errLarge := parallelWeighted(ctx, large, int64(r.f.cfg.Blobs)*maxWeight, 16*r.f.cfg.Blobs, weight, fetchOne)
 	return errors.Join(errLarge, <-errSmall)
+}
+
+// depthFirst orders blobs (found level by level) as a depth-first walk of the structure
+// in link order meets them: for a tree that is path order, the order `get` writes files
+// in, so files complete in the order they are written out.
+func depthFirst(root cid.CID, links map[cid.CID][]blobRef, blobs []blobRef) []blobRef {
+	want := make(map[cid.CID]blobRef, len(blobs))
+	for _, b := range blobs {
+		want[b.c] = b
+	}
+	out := make([]blobRef, 0, len(blobs))
+	visited := map[cid.CID]bool{}
+	var visit func(c cid.CID)
+	visit = func(c cid.CID) {
+		for _, k := range links[c] {
+			if visited[k.c] {
+				continue
+			}
+			visited[k.c] = true
+			if b, ok := want[k.c]; ok {
+				out = append(out, b)
+			} else {
+				visit(k.c)
+			}
+		}
+	}
+	if b, ok := want[root]; ok {
+		out = append(out, b)
+	}
+	visit(root)
+	if len(out) != len(blobs) { // not reachable through recorded links: keep the walk's order
+		return blobs
+	}
+	return out
 }
 
 func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {

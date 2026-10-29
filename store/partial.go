@@ -25,6 +25,8 @@ type Partial struct {
 	Size    uint64
 	f, ob   *os.File
 	mu      sync.Mutex
+	cond    *sync.Cond // on mu: a group was verified, or the handle closed (stream.go)
+	closed  bool
 	flushMu sync.Mutex // serialize snapshots so older maps cannot overwrite newer ones
 	groups  []byte     // bitmap of verified groups
 	dirty   bool
@@ -88,6 +90,8 @@ func (s *Store) Partial(m cid.Multihash, size uint64) (*Partial, error) {
 		p.release()
 		return nil, err
 	}
+	p.cond = sync.NewCond(&p.mu)
+	s.setLive(p, true)
 	return p, nil
 }
 
@@ -155,6 +159,9 @@ func (p *Partial) mark(g uint64) {
 	p.mu.Lock()
 	p.groups[g/8] |= 1 << (g % 8)
 	p.dirty = true
+	if p.cond != nil {
+		p.cond.Broadcast()
+	}
 	p.mu.Unlock()
 }
 
@@ -280,6 +287,13 @@ func (p *Partial) Close() error {
 
 func (p *Partial) close() error {
 	p.release()
+	if p.cond != nil {
+		p.s.setLive(p, false)
+		p.mu.Lock()
+		p.closed = true
+		p.cond.Broadcast()
+		p.mu.Unlock()
+	}
 	return errors.Join(p.f.Close(), p.ob.Close())
 }
 

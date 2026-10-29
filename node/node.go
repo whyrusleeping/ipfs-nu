@@ -76,7 +76,9 @@ type Fetcher interface {
 	// held and complete in the store. hints are the providers named by a share link (may
 	// be empty: the fetcher then relies on lookup). progress, if non-nil, is called with
 	// bytes fetched so far and the total when known (0 otherwise); callers rate-limit
-	// nothing, so implementations should call it at most a few times per second. Fetch
+	// nothing, so implementations should call it at most a few times per second. The
+	// first call comes only once all structure under root is held (blobs may still be
+	// arriving): `get` starts writing files then. Fetch
 	// returns when the content is held, or an *apiv0.Error (not_found when no provider
 	// has it, unavailable when none is reachable) wrapping the cause.
 	Fetch(ctx context.Context, root cid.CID, hints []link.Provider, progress func(done, total int64)) error

@@ -161,7 +161,18 @@ func (b *Batch) Commit() error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	ms := make([]cid.Multihash, 0, len(b.blocks)+len(b.pending))
+	for _, p := range b.blocks {
+		ms = append(ms, p.m)
+	}
+	for _, p := range b.pending {
+		ms = append(ms, p.m)
+	}
+	s.announce(ms...)
+	return nil
 }
 
 // Abort closes and removes whatever is still staged and empties the batch. After a Commit

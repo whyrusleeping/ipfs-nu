@@ -2288,6 +2288,29 @@ has completed. Overlapping the two would hide most of the write-out, but then a 
 fetch would leave a partial output tree. `PROF=2` block profiling adds about 1.5 s to the
 10 GiB write-out, so time measurements use `PROF=1`.
 
+**Streaming `get` (X7).** `get` now extracts while it fetches. Once the structure is held,
+each file is written as its bytes arrive, a large blob group by group as they verify
+(`store.OpenStream` follows the live partial). A new output is written as
+`<out>.nu-partial` and renamed when complete. Blobs are fetched in depth-first link order,
+which is path order and so the order files are written in. In the plain level-by-level
+order, 16 extraction workers waited on files fetched late, and the 2:1 tree still had a
+0.8 s tail. Same hosts and method, no profiling, two runs, every digest matched. Total
+wall time per `get`; "tail" is the time after the fetch returned:
+
+| Workload | 1:1 before → after | 2:1 before → after | tail after |
+|---|---|---|---|
+| big (10 GiB) | 22.1–22.4 s → **20.5–20.7 s** | 13.8–14.1 s → **12.2–12.9 s** | 0.4–0.7 s (was 3.2 s) |
+| group | 10.9–11.1 → **10.7–11.1** | 6.8 → **6.3–6.4** | 0.1–0.5 |
+| mid | 8.6–8.7 → **8.3** | 5.2 → **4.8** | 0.1–0.2 |
+| tree | 3.6–3.8 → **3.6–3.7** | 2.8–3.0 → **2.7–2.9** | 0.1–0.2 / 0.5 |
+
+The fetch itself runs 5–12% slower while the output is written beside it (big 2:1:
+1008–1022 → 881–917 MB/s), because both writes share the recipient's disk and CPU. Total
+time still falls. A 1:1 tree fetch slows about as much as the write-out saves. During
+these runs another user's process (`valsd`, 1.2–1.5 cores) ran on all three hosts. Some
+runs counted more interface tx than the transfer (up to 1.3× on 1:1, where no request is
+ever duplicated), which is that process's traffic.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

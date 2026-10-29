@@ -195,7 +195,8 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   peer that claimed it (Bao binds the size to the root). A partial blob whose size differs
   from the proven size is discarded, and peers that claimed another size are dropped.
 - Without `/nu/tree/1`, trees are fetched by a layer-1 walk: the nu-tree walk's structure
-  nodes level by level in parallel batches, then the blobs in parallel.
+  nodes level by level in parallel batches, then the blobs in parallel. Blobs start in
+  depth-first link order (path order for a tree), the order `get` writes files in.
 
 ### `/nu/tree/1`
 

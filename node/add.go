@@ -163,10 +163,7 @@ func (a *adder) addFile(path string, f fs.File, fi fs.FileInfo) (cid.CID, error)
 		}
 		return cid.CID{}, err
 	}
-	// A cache entry may precede its blob's commit: ImportCacheGet only trusts held blobs.
-	if err := a.n.Store.ImportCachePut(src, a.hash, c); err != nil {
-		return cid.CID{}, err
-	}
+	a.batch.ImportCachePut(src, a.hash, c) // written with the blob
 	return c, a.commitIfFull()
 }
 

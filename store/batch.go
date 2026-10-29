@@ -15,14 +15,30 @@ import (
 // and the row insert to Commit. Commit syncs every staged file in parallel, so the
 // filesystem can merge the flushes, and then makes all the blobs visible in one
 // transaction. A blob is never visible before its bytes are durable, and a crash before
-// Commit leaves only staging files, which Open removes. Blobs that fit inline go straight
-// to the database as with the Store. The returned CIDs are held only once Commit returns.
-// A Batch keeps its staged files open; commit at a threshold (Len, Bytes). It is not safe
-// for concurrent use.
+// Commit leaves only staging files, which Open removes. Blobs that fit inline and import
+// cache entries are kept in memory and written in the same transaction, so a batch of
+// small files costs one database commit rather than two per file. The returned CIDs are
+// held only once Commit returns. A Batch keeps its staged files open and its inline blobs
+// in memory; commit at a threshold (Len, Bytes). It is not safe for concurrent use.
 type Batch struct {
 	s       *Store
 	pending []stagedBlob
+	blocks  []stagedBlock
+	cache   []stagedCache
 	bytes   int64
+}
+
+// stagedBlock is an inline raw blob waiting for Commit.
+type stagedBlock struct {
+	m    cid.Multihash
+	data []byte
+}
+
+// stagedCache is an import cache entry waiting for Commit.
+type stagedCache struct {
+	src Source
+	h   cid.Hash
+	c   cid.CID
 }
 
 // stagedBlob is a blob written to staging files and waiting for Commit. data is nil for
@@ -51,8 +67,13 @@ func (b *Batch) AddBlobHash(r io.Reader, size int64, h cid.Hash) (cid.CID, error
 // AddNoCopy is Store.AddNoCopy, staged in the batch.
 func (b *Batch) AddNoCopy(path string) (cid.CID, error) { return b.s.addNoCopy(path, b) }
 
-// Len is the number of staged blobs; Bytes their staged file bytes.
-func (b *Batch) Len() int     { return len(b.pending) }
+// ImportCachePut is Store.ImportCachePut, written at Commit.
+func (b *Batch) ImportCachePut(src Source, h cid.Hash, c cid.CID) {
+	b.cache = append(b.cache, stagedCache{src, h, c})
+}
+
+// Len is the number of staged blobs; Bytes their staged file and inline bytes.
+func (b *Batch) Len() int     { return len(b.pending) + len(b.blocks) }
 func (b *Batch) Bytes() int64 { return b.bytes }
 
 func (b *Batch) stage(p stagedBlob) {
@@ -69,7 +90,7 @@ func (b *Batch) stage(p stagedBlob) {
 // nothing staged becomes visible, and the batch is empty too.
 func (b *Batch) Commit() error {
 	defer b.Abort()
-	if len(b.pending) == 0 {
+	if len(b.pending) == 0 && len(b.blocks) == 0 && len(b.cache) == 0 {
 		return nil
 	}
 	var files []*os.File
@@ -91,8 +112,21 @@ func (b *Batch) Commit() error {
 		return err
 	}
 	defer tx.Rollback()
+	ptx := newPreparedTx(tx)
+	defer ptx.close()
+	now := s.nowUnix()
+	for _, p := range b.blocks {
+		if _, err := ptx.Exec(insertBlock, mhKey(p.m), int(cid.Raw), p.data, now); err != nil {
+			return err
+		}
+	}
 	for _, p := range b.pending {
-		if err := s.commitBlobIn(tx, p.m, p.size, fileName(p.data), fileName(p.ob), p.srcPath, p.srcMtime, false); err != nil {
+		if err := s.commitBlobIn(ptx, p.m, p.size, fileName(p.data), fileName(p.ob), p.srcPath, p.srcMtime, false); err != nil {
+			return err
+		}
+	}
+	for _, e := range b.cache {
+		if _, err := ptx.Exec(importCachePut, e.src.Path, int(e.h), e.src.Size, e.src.Mtime, e.src.Inode, e.c.Bytes(), now); err != nil {
 			return err
 		}
 	}
@@ -110,7 +144,7 @@ func (b *Batch) Abort() {
 			}
 		}
 	}
-	b.pending, b.bytes = nil, 0
+	b.pending, b.blocks, b.cache, b.bytes = nil, nil, nil, 0
 }
 
 // SyncFiles fsyncs files concurrently (at most syncParallel at a time) and joins the

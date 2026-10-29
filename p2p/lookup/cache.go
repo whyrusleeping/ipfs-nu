@@ -41,11 +41,16 @@ type CacheConfig struct {
 	MaxPeers, MaxAddressesPerPeer int
 }
 type Cache struct {
-	mu      sync.Mutex
-	config  CacheConfig
-	entries []Entry
-	changed chan struct{}
+	mu       sync.Mutex
+	config   CacheConfig
+	entries  []Entry
+	changed  chan struct{}
+	lastSave time.Time
 }
+
+// refreshSaveInterval bounds how often refresh-only Remember calls (a known peer
+// re-announcing a known address, the common mDNS case) rewrite the persisted file.
+const refreshSaveInterval = time.Minute
 
 func NewCache(ctx context.Context, cfg CacheConfig) (*Cache, error) {
 	if cfg.Now == nil {
@@ -134,27 +139,55 @@ func (c *Cache) Remember(ctx context.Context, h Hint, source string, confidence 
 		return wire.ErrLimit
 	}
 	now := c.config.Now()
-	next := append([]Entry(nil), c.entries...)
+	peer := h.Peer.String()
+	fresh := make([]Entry, 0, len(h.Addresses))
+	index := make([]int, 0, len(h.Addresses))
+	refresh := true
 	for _, a := range h.Addresses {
 		normalized, err := NormalizeAddress(h.Peer, a)
 		if err != nil {
 			return err
 		}
-		e := Entry{Peer: h.Peer.String(), Address: normalized.String(), Source: source, Seen: now, Expires: now.Add(ttl), Confidence: confidence}
+		e := Entry{Peer: peer, Address: normalized.String(), Source: source, Seen: now, Expires: now.Add(ttl), Confidence: confidence}
 		if _, err := decodeEntry(e, now); err != nil {
 			return err
 		}
-		index := -1
-		for i, old := range next {
+		found := -1
+		for i, old := range c.entries {
 			if old.Peer == e.Peer && old.Address == e.Address && old.Source == source {
-				index = i
+				found = i
 				break
 			}
 		}
-		if index < 0 {
+		// An expired but not yet pruned entry is invisible to lookups, so reviving it is a change.
+		if found < 0 || !c.entries[found].Expires.After(now) {
+			refresh = false
+		}
+		fresh = append(fresh, e)
+		index = append(index, found)
+	}
+	if refresh && (c.config.Persistence == nil || now.Sub(c.lastSave) < refreshSaveInterval) {
+		// Only Seen/Expires/Confidence move: no waiter needs waking, and the next
+		// save (new entry or interval elapsed) persists the refreshed values.
+		for i, e := range fresh {
+			c.entries[index[i]] = e
+		}
+		return nil
+	}
+	next := append([]Entry(nil), c.entries...)
+	for i, e := range fresh {
+		if index[i] >= 0 {
+			next[index[i]] = e
+			continue
+		}
+		dup := false
+		for j := len(c.entries); j < len(next); j++ {
+			if next[j].Address == e.Address {
+				next[j], dup = e, true
+			}
+		}
+		if !dup {
 			next = append(next, e)
-		} else {
-			next[index] = e
 		}
 	}
 	old := c.entries
@@ -165,9 +198,12 @@ func (c *Cache) Remember(ctx context.Context, h Hint, source string, confidence 
 			c.entries = old
 			return err
 		}
+		c.lastSave = now
 	}
-	close(c.changed)
-	c.changed = make(chan struct{})
+	if !refresh {
+		close(c.changed)
+		c.changed = make(chan struct{})
+	}
 	return nil
 }
 func (c *Cache) Addresses(id wire.PeerID) []Address {
@@ -177,9 +213,10 @@ func (c *Cache) Addresses(id wire.PeerID) []Address {
 }
 func (c *Cache) addressesLocked(id wire.PeerID) []Address {
 	now := c.config.Now()
+	peer := id.String()
 	var out []Address
 	for _, e := range c.entries {
-		if e.Peer != id.String() || !e.Expires.After(now) {
+		if e.Peer != peer || !e.Expires.After(now) {
 			continue
 		}
 		a, err := decodeEntry(e, now)

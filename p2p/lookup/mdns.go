@@ -43,6 +43,8 @@ type multicastSocket struct {
 	conn  *net.UDPConn
 	group *net.UDPAddr
 	iface net.Interface
+	v4    *ipv4.PacketConn
+	v6    *ipv6.PacketConn
 }
 type MDNS struct {
 	config                      MDNSConfig
@@ -53,6 +55,8 @@ type MDNS struct {
 	cancel                      context.CancelFunc
 	wg                          sync.WaitGroup
 	once                        sync.Once
+	queryMu                     sync.Mutex
+	lastQuery                   time.Time
 }
 
 func NewMDNS(ctx context.Context, cfg MDNSConfig, cache *Cache) (*MDNS, error) {
@@ -109,8 +113,11 @@ func NewMDNS(ctx context.Context, cfg MDNSConfig, cache *Cache) (*MDNS, error) {
 			if err != nil {
 				continue
 			}
+			socket := multicastSocket{conn: conn, group: group, iface: iface}
 			if family == 4 {
 				p := ipv4.NewPacketConn(conn)
+				socket.v4 = p
+				_ = p.SetControlMessage(ipv4.FlagInterface, true)
 				err = p.SetMulticastInterface(&iface)
 				if err == nil {
 					err = p.SetMulticastLoopback(true)
@@ -120,6 +127,8 @@ func NewMDNS(ctx context.Context, cfg MDNSConfig, cache *Cache) (*MDNS, error) {
 				}
 			} else {
 				p := ipv6.NewPacketConn(conn)
+				socket.v6 = p
+				_ = p.SetControlMessage(ipv6.FlagInterface, true)
 				err = p.SetMulticastInterface(&iface)
 				if err == nil {
 					err = p.SetMulticastLoopback(true)
@@ -132,7 +141,7 @@ func NewMDNS(ctx context.Context, cfg MDNSConfig, cache *Cache) (*MDNS, error) {
 				_ = conn.Close()
 				continue
 			}
-			m.sockets = append(m.sockets, multicastSocket{conn, group, iface})
+			m.sockets = append(m.sockets, socket)
 		}
 	}
 	if len(m.sockets) == 0 {
@@ -258,7 +267,20 @@ func (m *MDNS) send(socket multicastSocket, msg *dns.Msg, to *net.UDPAddr) {
 	}
 	_, _ = socket.conn.WriteToUDP(b, to)
 }
+
+// query sends at most one query per second (RFC 6762 §5.2); lookups run per dial
+// and otherwise rely on the answers to the recent query.
 func (m *MDNS) query() {
+	m.queryMu.Lock()
+	now := time.Now()
+	recent := now.Sub(m.lastQuery) < time.Second
+	if !recent {
+		m.lastQuery = now
+	}
+	m.queryMu.Unlock()
+	if recent {
+		return
+	}
 	q := &dns.Msg{Question: []dns.Question{{Name: m.service, Qtype: dns.TypePTR, Qclass: dns.ClassINET}}}
 	for _, s := range m.sockets {
 		m.send(s, q, s.group)
@@ -342,11 +364,30 @@ func (m *MDNS) readLoop(socket multicastSocket) {
 	defer m.wg.Done()
 	packet := make([]byte, 9001)
 	for {
-		n, from, err := socket.conn.ReadFromUDP(packet)
+		var n, ifIndex int
+		var src net.Addr
+		var err error
+		if socket.v4 != nil {
+			var cm *ipv4.ControlMessage
+			if n, cm, src, err = socket.v4.ReadFrom(packet); cm != nil {
+				ifIndex = cm.IfIndex
+			}
+		} else {
+			var cm *ipv6.ControlMessage
+			if n, cm, src, err = socket.v6.ReadFrom(packet); cm != nil {
+				ifIndex = cm.IfIndex
+			}
+		}
 		if err != nil {
 			return
 		}
-		if n > 9000 {
+		// Every socket binds *:5353 and the OS delivers the group's packets from all
+		// interfaces to each of them, so keep only those that arrived on our own.
+		if ifIndex != 0 && ifIndex != socket.iface.Index {
+			continue
+		}
+		from, ok := src.(*net.UDPAddr)
+		if !ok || n > 9000 {
 			continue
 		}
 		if err := checkDNSCounts(packet[:n], 128); err != nil {

@@ -69,32 +69,38 @@ func (s *Store) DBReclaimable() (int64, error) {
 
 // Reclaimer returns, for an object held as info, the bytes deleting it returns to the
 // filesystem once GC runs: a blob file with its outboard, or for a database block (DRISL
-// structure, inline blob) the overflow pages of its row. A row's in-page part becomes
-// free space inside a page that keeps other rows; SQLite reuses it but does not return it.
+// structure, inline blob) the overflow pages of its row, and its leaf page when the row
+// fills it alone. A smaller in-page part becomes free space inside a page that keeps other
+// rows; SQLite reuses it but does not return it.
 func (s *Store) Reclaimer() (func(c cid.CID, info Info) int64, error) {
 	var page int64
 	if err := s.db.QueryRow(`PRAGMA page_size`).Scan(&page); err != nil {
 		return nil, err
 	}
-	// Index b-tree (WITHOUT ROWID) payload limits, as in SQLite's btree.c.
+	// Table b-tree leaf payload limits (blocks is a rowid table), as in SQLite's btree.c.
 	usable := page
-	maxLocal := (usable-12)*64/255 - 23
+	maxLocal := usable - 35
 	minLocal := (usable-12)*32/255 - 23
 	return func(c cid.CID, info Info) int64 {
 		inDB := c.Codec() != cid.Raw || (info.Size <= inlineMax && !info.NoCopy)
 		if !inDB {
 			return int64(info.Physical)
 		}
-		// Record: header, key (multihash) and codec/data/created columns.
+		// Record: header, key (multihash) and codec/data/created/alt columns.
 		payload := int64(info.Size) + int64(len(c.Multihash().Bytes())) + 24
-		if payload <= maxLocal {
-			return 0
+		local, over := payload, int64(0)
+		if payload > maxLocal {
+			local = minLocal + (payload-minLocal)%(usable-4)
+			if local > maxLocal {
+				local = minLocal
+			}
+			over = (payload - local + usable - 5) / (usable - 4)
 		}
-		local := minLocal + (payload-minLocal)%(usable-4)
-		if local > maxLocal {
-			local = minLocal
+		// A cell (local part, overflow pointer, rowid and size varints, cell pointer)
+		// larger than half a leaf page has the page to itself, which then frees too.
+		if cell := local + 4 + 9 + 2; 2*cell > usable-8 {
+			over++
 		}
-		over := (payload - local + usable - 5) / (usable - 4)
 		return over * page
 	}, nil
 }

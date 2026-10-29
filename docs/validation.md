@@ -2129,6 +2129,58 @@ hardware offload it is ~9% faster than quic-go, and both are near the 1175 MB/s 
 rate. Switching QUIC stacks would not change Nu's per-connection rate on this hardware;
 the NIC and the GSO choice decide it.
 
+## Small-file add/get and mDNS profiling (0088, 2026-10-29)
+
+CPU profiles (`go build -tags nuprof ./cmd/nu`, then `NU_CPUPROFILE=<file>`; see
+`cmd/nu/prof.go`) of add, get, ls/cat and gateway flows. Workloads: `tiny`, 50,000 × 2 KiB
+files in 100 directories (98 MB, all inline blobs); `tree`, 10,000 × 100 KiB; `big`, one
+file. Gateway listings, file downloads (2 GiB at ~1.7 GB/s) and CLI commands (30–130 ms)
+were not worth changing. The costs that were:
+
+- **One SQLite commit per inline blob.** `add` put every ≤ 16 KiB blob and its import
+  cache entry in two autocommit transactions, and a `/nu/tree/1` fetch put every item in
+  its own. Each WAL commit writes several pages. Now the add `Batch` stages inline blobs
+  and import cache entries in memory and writes them in its commit transaction, and the
+  tree client stores items through `Store.PutMany`, one transaction per 256 items or 4 MiB.
+  Its Cursor only covers stored items.
+- **`blocks` was a WITHOUT ROWID table** with rows up to 16 KiB. SQLite keeps whole rows in
+  interior b-tree pages, so every lookup and insert read overflow pages on the way down.
+  A microbenchmark of 50,000 rows: 2 KiB rows 34 → 15 µs insert and 38 → 19 µs lookup;
+  12 KiB rows 74 → 29 µs and 126 → 34 µs. Schema 5 makes it a rowid table with a
+  multihash index. It copied a 250 MB `nu.db` in about 1 s on tmpfs, and the space it
+  frees is returned at the end. The reclaim estimate now uses table-leaf payload limits,
+  and counts the leaf page of a row that fills a page alone.
+- **Smaller per-object costs.** The SQL of per-object queries was re-parsed on every call
+  (now prepared once per store). Statement journals went to temporary files
+  (`temp_store=MEMORY`). The page cache was 2 MiB (now 32 MiB; RSS of a 50k-file add
+  47 → 103 MB). The fetch walk looked up each blob and structure node one by one after
+  `/nu/tree/1` had stored them (now `HasMany`/`GetMany` per level). Extraction made
+  about six `os.Root` calls per file (now three).
+- **mDNS storm.** On a host with 13 multicast interfaces, each per-interface socket
+  received every interface's packets. Each dial attempt (for example to DHT peers) sent
+  a query. Each answer rewrote and fsynced the peer cache file. Two Nu processes made
+  ~900 mDNS packets/s. The recipient of a loopback get spent ~15 s of CPU in mDNS
+  during a 25 s fetch. Now each socket handles only its own interface's packets,
+  queries go out at most once a second, and refresh-only answers save the cache at most
+  once a minute: ~25 packets/s. Identify also re-enumerated interfaces on every message
+  (1.8 s of CPU in a 50k-file get); the listing is now reused for a second.
+
+alphac-2 → alphac-3 (as in [LAN benchmarks](#lan-benchmarks-add-11-and-21-get-2026-10-22)),
+daemonless recipient, caches dropped, two runs each, HEAD `8190c80` vs this change:
+
+| Measurement | Before | After |
+|---|---|---|
+| `add` tiny (50k × 2 KiB) | 18.8–19.1 s | **4.9 s** |
+| `add` tree (10k × 100 KiB) | 7.05 s | 6.3–6.4 s |
+| `get` tiny 1:1, fetch | 17.3 s | **3.7 s** |
+| `get` tiny 1:1, write-out | 15.3–17.0 s | 9.7–12.8 s |
+| `get` tree 1:1 total | 16.3–17.0 s | 16.1–17.9 s (QUIC-bound, unchanged) |
+
+Writing out many small files stays bound by per-file creates and fsyncs. Extracting in
+parallel would be the next step. Loopback gets on the dev host are capped at ~85 MB/s,
+because `swarm.gso = auto` judges the default-route NIC, not the loopback path. That is
+not a LAN figure.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

@@ -9,6 +9,7 @@ import (
 	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/core/drisl"
 	"github.com/whyrusleeping/nu/p2p/wire"
+	"github.com/whyrusleeping/nu/store"
 )
 
 // TreeStore receives the verified items of a /nu/tree/1 response; resuming at a cursor
@@ -17,6 +18,19 @@ type TreeStore interface {
 	Get(c cid.CID) ([]byte, error)
 	Put(c cid.CID, data []byte) error
 }
+
+// treePutMany is a TreeStore that stores many items at once (*store.Store: one
+// transaction). FetchTree then stores items in batches; the result's Cursor and counts
+// cover only the items stored.
+type treePutMany interface {
+	PutMany([]store.Block) error
+}
+
+// Tree batch bounds: store after this many verified items or bytes.
+const (
+	treeBatchItems = 256
+	treeBatchBytes = 4 << 20
+)
 
 // TreeResult describes one /nu/tree/1 response.
 type TreeResult struct {
@@ -64,6 +78,30 @@ type treeRead struct {
 	st  TreeStore
 	req *TreeRequest
 	res TreeResult
+	// With a treePutMany store, pend holds verified items not yet stored and stored is
+	// res as of the last stored batch.
+	many      treePutMany
+	pend      []store.Block
+	pendBytes int
+	stored    TreeResult
+}
+
+// flush stores the pending items. On error the result falls back to the last stored
+// batch, so its Cursor never passes an item the store lacks.
+func (t *treeRead) flush() error {
+	if t.many == nil {
+		return nil
+	}
+	if len(t.pend) > 0 {
+		if err := t.many.PutMany(t.pend); err != nil {
+			t.res = t.stored
+			t.pend, t.pendBytes = nil, 0
+			return err
+		}
+	}
+	t.stored = t.res
+	t.pend, t.pendBytes = t.pend[:0], 0
+	return nil
 }
 
 func (t *treeRead) frame() (byte, []byte, error) {
@@ -141,7 +179,10 @@ func (t *treeRead) visit(l *loc, c cid.CID, k itemKind, _ func() bool) ([]byte, 
 	if err := c.Verify(payload); err != nil {
 		return nil, corrupt("tree item does not match %s", c)
 	}
-	if err := t.st.Put(c, payload); err != nil {
+	if t.many != nil {
+		t.pend = append(t.pend, store.Block{CID: c, Data: payload})
+		t.pendBytes += len(payload)
+	} else if err := t.st.Put(c, payload); err != nil {
 		return nil, err
 	}
 	if k == kindBlob {
@@ -151,12 +192,28 @@ func (t *treeRead) visit(l *loc, c cid.CID, k itemKind, _ func() bool) ([]byte, 
 	}
 	t.res.Bytes += int64(len(payload))
 	done(k == kindBlob)
+	if len(t.pend) >= treeBatchItems || t.pendBytes >= treeBatchBytes {
+		if err := t.flush(); err != nil {
+			return nil, err
+		}
+	}
 	return payload, nil
 }
 
 // readTree runs the client side of the walk over a response body.
 func readTree(r *bufio.Reader, st TreeStore, req *TreeRequest) (TreeResult, error) {
 	t := &treeRead{r: r, st: st, req: req, res: TreeResult{Cursor: req.Cursor}}
+	t.stored = t.res
+	t.many, _ = st.(treePutMany)
+	res, err := t.read()
+	if ferr := t.flush(); ferr != nil {
+		return t.res, errors.Join(err, ferr)
+	}
+	return res, err
+}
+
+func (t *treeRead) read() (TreeResult, error) {
+	st, req := t.st, t.req
 	w := newTreeWalk(req, st.Get)
 	w.visit = t.visit
 	err := w.run()

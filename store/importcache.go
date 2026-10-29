@@ -23,7 +23,7 @@ func (s *Store) ImportCacheGet(src Source, h cid.Hash) (cid.CID, Info, bool, err
 	var b []byte
 	var size, mtime int64
 	var inode uint64
-	err := s.db.QueryRow(`SELECT cid, size, mtime, inode FROM import_cache WHERE path = ? AND hash = ?`,
+	err := s.queryRow(`SELECT cid, size, mtime, inode FROM import_cache WHERE path = ? AND hash = ?`,
 		src.Path, int(h)).Scan(&b, &size, &mtime, &inode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cid.CID{}, Info{}, false, nil
@@ -47,7 +47,9 @@ func (s *Store) ImportCacheGet(src Source, h cid.Hash) (cid.CID, Info, bool, err
 
 // ImportCachePut records that src hashed to c under h.
 func (s *Store) ImportCachePut(src Source, h cid.Hash, c cid.CID) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO import_cache (path, hash, size, mtime, inode, cid, used)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, src.Path, int(h), src.Size, src.Mtime, src.Inode, c.Bytes(), s.nowUnix())
+	_, err := s.exec(importCachePut, src.Path, int(h), src.Size, src.Mtime, src.Inode, c.Bytes(), s.nowUnix())
 	return err
 }
+
+const importCachePut = `INSERT OR REPLACE INTO import_cache (path, hash, size, mtime, inode, cid, used)
+	VALUES (?, ?, ?, ?, ?, ?, ?)`

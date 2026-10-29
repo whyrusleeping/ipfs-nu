@@ -623,7 +623,19 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	}
 	for len(frontier) > 0 {
 		r.stage(StageStructure)
-		if err := parallel(ctx, frontier, r.f.cfg.Structure, func(ctx context.Context, c cid.CID) error {
+		// One batched lookup per level: after treeSync most of the level is held.
+		held, err := r.st.GetMany(frontier)
+		if err != nil {
+			return err
+		}
+		var missing []cid.CID
+		for _, c := range frontier {
+			if _, ok := held[c]; !ok {
+				missing = append(missing, c)
+			}
+		}
+		r.update(func(p *Progress) { p.Objects += int64(len(frontier) - len(missing)) })
+		if err := parallel(ctx, missing, r.f.cfg.Structure, func(ctx context.Context, c cid.CID) error {
 			if err := r.whole(ctx, c); err != nil {
 				return err
 			}
@@ -634,9 +646,11 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		}
 		var next []cid.CID
 		for _, c := range frontier {
-			data, err := r.st.Get(c)
-			if err != nil {
-				return err
+			data, ok := held[c]
+			if !ok {
+				if data, err = r.st.Get(c); err != nil {
+					return err
+				}
 			}
 			kids, err := r.children(c, data)
 			if err != nil {
@@ -663,6 +677,28 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 		return nil
 	}
 	r.stage(StageBlobs)
+	// Blobs already held (from treeSync or earlier fetches) are counted, not fetched; one
+	// batched lookup instead of one per blob.
+	cs := make([]cid.CID, len(blobs))
+	for i, b := range blobs {
+		cs[i] = b.c
+	}
+	held, err := r.st.HasMany(cs)
+	if err != nil {
+		return err
+	}
+	var heldBytes, heldObjects int64
+	rest := blobs[:0]
+	for _, b := range blobs {
+		if info, ok := held[b.c]; ok && info.Complete {
+			heldBytes += int64(info.Size)
+			heldObjects++
+			continue
+		}
+		rest = append(rest, b)
+	}
+	blobs = rest
+	r.update(func(p *Progress) { p.Bytes += heldBytes; p.Objects += heldObjects })
 	// Large blobs each use every peer; small ones (at most one range request) are one
 	// request each and run 16× wider, which also lets their commit fsyncs share flushes.
 	var small, large []blobRef

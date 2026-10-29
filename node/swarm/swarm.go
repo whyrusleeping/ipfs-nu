@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,7 +135,7 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		log = slog.Default()
 	}
 	if cfg.InterfaceIPs == nil {
-		cfg.InterfaceIPs = InterfaceIPs
+		cfg.InterfaceIPs = cachedInterfaceIPs
 	}
 	if cfg.Private {
 		gate := cfg.AllowPeer
@@ -631,6 +632,23 @@ func InterfaceIPs() []net.IP {
 	}
 	return ips
 }
+
+// cachedInterfaceIPs is InterfaceIPs reused for a second. Every identify message and
+// address listing expands the unspecified listen addresses, and each enumeration costs one
+// netlink address dump per interface.
+var cachedInterfaceIPs = func() func() []net.IP {
+	var mu sync.Mutex
+	var at time.Time
+	var ips []net.IP
+	return func() []net.IP {
+		mu.Lock()
+		defer mu.Unlock()
+		if at.IsZero() || time.Since(at) > time.Second {
+			ips, at = InterfaceIPs(), time.Now()
+		}
+		return slices.Clone(ips)
+	}
+}()
 
 // LoopbackInterfaces returns the loopback interfaces, for mDNS in in-process tests.
 func LoopbackInterfaces() ([]net.Interface, error) {

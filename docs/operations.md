@@ -543,6 +543,8 @@ was rotated after the backup needs `nu login` again) and, per cluster (`local`, 
   and its version bump commit in one SQLite transaction. A `nu.db` created before 0078 is
   also rewritten once (`VACUUM`) to switch on incremental space reclaim; that needs free
   space about the size of `nu.db`, and when it fails the store keeps working without it.
+  Schema 5 copies the `blocks` table once (into a rowid table), which also needs free
+  space about the size of `nu.db`; the pages and WAL it frees are returned at the end.
 - **U3 Interrupted upgrade.** A crash, kill or power loss during migration leaves the
   database at the last completed step; the next open resumes from there
   (`store.TestInterruptedUpgrade` kills the process inside the last migration). No marker

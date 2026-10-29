@@ -70,6 +70,9 @@ type Store struct {
 	lastPressureGC time.Time
 	// removals counts committed removals of held objects (Removals, many.go).
 	removals atomic.Uint64
+	// stmts caches the prepared per-object queries (queryRow, exec).
+	stmtMu sync.Mutex
+	stmts  map[string]*sql.Stmt
 }
 
 // LinksFunc is a walk profile: the links of a block that a recursive pin follows.
@@ -97,7 +100,7 @@ func Open(dir string, opts Options) (*Store, error) {
 	} else {
 		f.Close()
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(10000)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-32768)")
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +124,52 @@ func Open(dir string, opts Options) (*Store, error) {
 }
 
 // Close closes the database.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.stmtMu.Lock()
+	for _, st := range s.stmts {
+		st.Close()
+	}
+	s.stmts = nil
+	s.stmtMu.Unlock()
+	return s.db.Close()
+}
+
+// stmt returns q prepared once per store. The per-object queries run once per file of a
+// tree, and parsing them each time cost about as much as running them.
+func (s *Store) stmt(q string) (*sql.Stmt, error) {
+	s.stmtMu.Lock()
+	defer s.stmtMu.Unlock()
+	if st := s.stmts[q]; st != nil {
+		return st, nil
+	}
+	st, err := s.db.Prepare(q)
+	if err != nil {
+		return nil, err
+	}
+	if s.stmts == nil {
+		s.stmts = map[string]*sql.Stmt{}
+	}
+	s.stmts[q] = st
+	return st, nil
+}
+
+// queryRow is db.QueryRow with a cached prepared statement.
+func (s *Store) queryRow(q string, args ...any) *sql.Row {
+	st, err := s.stmt(q)
+	if err != nil {
+		return s.db.QueryRow(q, args...) // reports the error through Scan
+	}
+	return st.QueryRow(args...)
+}
+
+// exec is db.Exec with a cached prepared statement.
+func (s *Store) exec(q string, args ...any) (sql.Result, error) {
+	st, err := s.stmt(q)
+	if err != nil {
+		return nil, err
+	}
+	return st.Exec(args...)
+}
 
 // RegisterProfile adds a walk profile for recursive pins (e.g. "atrepo", "drisl").
 func (s *Store) RegisterProfile(name string, fn LinksFunc) {
@@ -202,6 +250,21 @@ var migrations = []migration{
 	// served only from bytes stored as DRISL (0077: a raw file's bytes read as DRISL would
 	// be a node with links nobody published).
 	{sql: `ALTER TABLE blocks ADD COLUMN alt INTEGER NOT NULL DEFAULT 0;`},
+	// 5: blocks as a rowid table with a separate multihash index. Its rows carry inline
+	// blobs of up to 16 KiB; WITHOUT ROWID keeps whole rows in the interior b-tree pages,
+	// so every lookup and insert read overflow pages on the way down (2-4x slower). The
+	// copy keeps the usage counters (DROP TABLE fires no triggers).
+	{sql: `CREATE TABLE blocks_new (
+		mh BLOB NOT NULL PRIMARY KEY, codec INTEGER NOT NULL, data BLOB NOT NULL,
+		created INTEGER NOT NULL, alt INTEGER NOT NULL DEFAULT 0
+	);
+	INSERT INTO blocks_new (mh, codec, data, created, alt) SELECT mh, codec, data, created, alt FROM blocks;
+	DROP TABLE blocks;
+	ALTER TABLE blocks_new RENAME TO blocks;
+	CREATE TRIGGER usage_blocks_i AFTER INSERT ON blocks BEGIN
+		UPDATE usage SET bytes = bytes + length(new.data) WHERE class = 'blocks'; END;
+	CREATE TRIGGER usage_blocks_d AFTER DELETE ON blocks BEGIN
+		UPDATE usage SET bytes = bytes - length(old.data) WHERE class = 'blocks'; END;`},
 }
 
 // migrateHeld fills partials.held from the group bitmaps (migration 3).
@@ -256,6 +319,14 @@ func migrateTo(db *sql.DB, target int) error {
 	}
 	if v > len(migrations) {
 		return fmt.Errorf("%w (database %d, this build %d)", ErrNewerSchema, v, len(migrations))
+	}
+	if v < target {
+		// Migrations rewrite tables (5 copies blocks): return the pages they freed and
+		// the WAL they grew, which count against the store's budget (best effort).
+		defer func() {
+			_, _ = db.Exec(`PRAGMA incremental_vacuum`)
+			_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+		}()
 	}
 	for ; v < target; v++ {
 		tx, err := db.Begin()
@@ -325,7 +396,7 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 	m := c.Multihash()
 	var codec, alt int
 	var size int64
-	err := s.db.QueryRow(`SELECT codec, alt, length(data) FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&codec, &alt, &size)
+	err := s.queryRow(`SELECT codec, alt, length(data) FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&codec, &alt, &size)
 	if err == nil {
 		if codecMatch(c.Codec(), codec, alt) {
 			if alt == int(c.Codec()) {
@@ -361,7 +432,7 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 		return Info{}, false, err
 	}
 	var held int64
-	err = s.db.QueryRow(`SELECT size, held FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size, &held)
+	err = s.queryRow(`SELECT size, held FROM partials WHERE mh = ?`, mhKey(m)).Scan(&size, &held)
 	if err == nil {
 		return Info{Codec: cid.Raw, Size: uint64(size), Physical: uint64(held) + blob.OutboardSize(uint64(size))}, true, nil
 	}
@@ -378,7 +449,7 @@ func (s *Store) Has(c cid.CID) (Info, bool, error) {
 func (s *Store) Get(c cid.CID) ([]byte, error) {
 	var data []byte
 	var codec, alt int
-	err := s.db.QueryRow(`SELECT data, codec, alt FROM blocks WHERE mh = ?`, mhKey(c.Multihash())).Scan(&data, &codec, &alt)
+	err := s.queryRow(`SELECT data, codec, alt FROM blocks WHERE mh = ?`, mhKey(c.Multihash())).Scan(&data, &codec, &alt)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && !codecMatch(c.Codec(), codec, alt) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, c)
 	}
@@ -435,9 +506,122 @@ func (s *Store) putBlockAs(codec cid.Codec, m cid.Multihash, data []byte, state 
 	}
 	s.gcMu.RLock()
 	defer s.gcMu.RUnlock()
-	// The same bytes stored under the other codec record it as alt (Get, codecMatch).
-	_, err := s.db.Exec(`INSERT INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, ?)
-		ON CONFLICT (mh) DO UPDATE SET alt = excluded.codec WHERE blocks.codec != excluded.codec AND blocks.alt = 0`,
-		mhKey(m), int(codec), data, s.nowUnix())
+	_, err := s.exec(insertBlock, mhKey(m), int(codec), data, s.nowUnix())
 	return err
+}
+
+// insertBlock stores a block row. The same bytes stored under the other codec record it
+// as alt (Get, codecMatch).
+const insertBlock = `INSERT INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, ?)
+	ON CONFLICT (mh) DO UPDATE SET alt = excluded.codec WHERE blocks.codec != excluded.codec AND blocks.alt = 0`
+
+// Block is one whole object for PutMany.
+type Block struct {
+	CID  cid.CID
+	Data []byte
+}
+
+// PutMany is Put for many objects. It verifies all of them first and stores the
+// database-held ones in one transaction, which costs about as much as one Put: a caller
+// storing many small objects (a /nu/tree/1 response) should prefer it. On error none of
+// the database-held objects are stored.
+func (s *Store) PutMany(blocks []Block) error {
+	var need int64
+	for _, b := range blocks {
+		if err := b.CID.Verify(b.Data); err != nil {
+			return err
+		}
+		if b.CID.Codec() != cid.Raw || len(b.Data) <= inlineMax {
+			need += int64(len(b.Data))
+		}
+	}
+	if err := s.admit(need); err != nil {
+		return err
+	}
+	if err := s.insertBlocks(func(add func(cid.Codec, cid.Multihash, []byte) error) error {
+		for _, b := range blocks {
+			if b.CID.Codec() != cid.Raw || len(b.Data) <= inlineMax {
+				if err := add(b.CID.Codec(), b.CID.Multihash(), b.Data); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, b := range blocks {
+		if b.CID.Codec() == cid.Raw && len(b.Data) > inlineMax {
+			if _, err := s.PutBlob(b.CID, bytesReader(b.Data), int64(len(b.Data))); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// insertBlocks runs fill in one transaction, giving it an add that inserts a block row
+// with one prepared statement. Admission is the caller's.
+func (s *Store) insertBlocks(fill func(add func(cid.Codec, cid.Multihash, []byte) error) error) error {
+	s.gcMu.RLock()
+	defer s.gcMu.RUnlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	ptx := newPreparedTx(tx)
+	defer ptx.close()
+	now := s.nowUnix()
+	if err := fill(func(codec cid.Codec, m cid.Multihash, data []byte) error {
+		_, err := ptx.Exec(insertBlock, mhKey(m), int(codec), data, now)
+		return err
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// preparedTx runs a transaction's statements prepared once per query text, so a batch of
+// many rows does not parse the same SQL for each one.
+type preparedTx struct {
+	tx    *sql.Tx
+	stmts map[string]*sql.Stmt
+}
+
+func newPreparedTx(tx *sql.Tx) *preparedTx { return &preparedTx{tx: tx, stmts: map[string]*sql.Stmt{}} }
+
+func (p *preparedTx) stmt(q string) (*sql.Stmt, error) {
+	if st := p.stmts[q]; st != nil {
+		return st, nil
+	}
+	st, err := p.tx.Prepare(q)
+	if err != nil {
+		return nil, err
+	}
+	p.stmts[q] = st
+	return st, nil
+}
+
+func (p *preparedTx) Exec(q string, args ...any) (sql.Result, error) {
+	st, err := p.stmt(q)
+	if err != nil {
+		return nil, err
+	}
+	return st.Exec(args...)
+}
+
+// QueryRow is sql.Tx.QueryRow; a prepare error is reported by Scan.
+func (p *preparedTx) QueryRow(q string, args ...any) *sql.Row {
+	st, err := p.stmt(q)
+	if err != nil {
+		return p.tx.QueryRow(q, args...)
+	}
+	return st.QueryRow(args...)
+}
+
+func (p *preparedTx) close() {
+	for _, st := range p.stmts {
+		st.Close()
+	}
 }

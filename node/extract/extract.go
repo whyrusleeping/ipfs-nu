@@ -116,7 +116,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		root = r
 		return nil
 	}
-	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}}
+	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}, checked: map[string]bool{}}
 	defer x.closeUnsynced()
 	for e, err := range walk {
 		if err != nil {
@@ -143,7 +143,8 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 				if err != nil {
 					return rep, err
 				}
-				err = writeFile(ctx, parent, filepath.Base(dest), e, rep, nil)
+				fi, _ := parent.Lstat(filepath.Base(dest))
+				err = writeFile(ctx, parent, filepath.Base(dest), fi, e, rep, nil)
 				parent.Close()
 				if err != nil {
 					return rep, err
@@ -162,14 +163,19 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "inside skipped directory " + parent})
 			continue
 		}
-		if err := checkNoSymlinks(root, filepath.Dir(name)); err != nil {
-			return rep, err
+		if dir := filepath.Dir(name); !x.checked[dir] {
+			if err := checkNoSymlinks(root, dir); err != nil {
+				return rep, err
+			}
+			x.checked[dir] = x.written[dir] // a directory this run made or reused stays checked
 		}
+		var existing os.FileInfo // name's Lstat, nil if absent
 		if e.Kind == KindDir || e.Kind == KindFile {
-			other, err := x.collides(root, name)
+			other, fi, err := x.collides(root, name)
 			if err != nil {
 				return rep, err
 			}
+			existing = fi
 			if other != "" {
 				rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "name maps onto existing entry " + other + " on this filesystem (case or Unicode normalization)"})
 				if e.Kind == KindDir {
@@ -186,7 +192,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			x.wrote(name)
 			rep.Dirs++
 		case KindFile:
-			if err := writeFile(ctx, root, name, e, rep, x); err != nil {
+			if err := writeFile(ctx, root, name, existing, e, rep, x); err != nil {
 				return rep, err
 			}
 			x.wrote(name)
@@ -208,6 +214,7 @@ type extraction struct {
 	written     map[string]bool            // names written by this run
 	listed      map[string]map[string]bool // directory → names present (lazily read)
 	skippedDirs []string                   // tree-relative prefixes ("a/b/") whose contents are skipped
+	checked     map[string]bool            // directories already checked for symlinks on the way
 	unsynced    []*os.File                 // new files renamed into place, still open, not yet synced
 }
 
@@ -255,26 +262,27 @@ func (x *extraction) wrote(name string) {
 	}
 }
 
-// collides returns the existing entry name that name would map onto, or "".
-func (x *extraction) collides(root *os.Root, name string) (string, error) {
-	if x.written[name] {
-		return "", nil
-	}
+// collides returns the existing entry name that name would map onto, or "", and name's
+// Lstat when it exists (nil when absent or unreadable: the write reports that).
+func (x *extraction) collides(root *os.Root, name string) (string, os.FileInfo, error) {
 	fi, err := root.Lstat(name)
 	if err != nil {
-		return "", nil // absent (or unreadable: the write reports that)
+		return "", nil, nil
+	}
+	if x.written[name] {
+		return "", fi, nil
 	}
 	dir, base := filepath.Dir(name), filepath.Base(name)
 	names := x.listed[dir]
 	if names == nil {
 		d, err := root.Open(dir)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		entries, err := d.ReadDir(-1)
 		d.Close()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		names = make(map[string]bool, len(entries))
 		for _, de := range entries {
@@ -283,22 +291,22 @@ func (x *extraction) collides(root *os.Root, name string) (string, error) {
 		x.listed[dir] = names
 	}
 	if names[base] {
-		return "", nil // a pre-existing file of exactly this name: replaced, as documented
+		return "", fi, nil // a pre-existing file of exactly this name: replaced, as documented
 	}
 	// Name the entry the filesystem resolved it to: the listed name that is the same
 	// file (case folding, Unicode normalization or any other mapping), else a case-only
 	// match.
 	for n := range names {
 		if other, err := root.Lstat(filepath.Join(dir, n)); err == nil && os.SameFile(fi, other) {
-			return n, nil
+			return n, fi, nil
 		}
 	}
 	for n := range names {
 		if strings.EqualFold(n, base) {
-			return n, nil
+			return n, fi, nil
 		}
 	}
-	return "(a differently spelled name)", nil
+	return "(a differently spelled name)", fi, nil
 }
 
 // underSkipped returns the skipped directory prefix containing rel, or "".
@@ -402,14 +410,14 @@ func ensureDir(root *os.Root, dir string, parentsOK bool) error {
 // inside the root). A file that replaces an existing one is synced before the rename, so
 // the replacement is atomic across a crash. A new file is renamed at once and handed to x
 // to be synced with others before the extraction succeeds; with a nil x it is synced
-// before the rename too.
-func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Report, x *extraction) error {
+// before the rename too. existing is name's Lstat (nil when absent).
+func writeFile(ctx context.Context, root *os.Root, name string, existing os.FileInfo, e Entry, rep *Report, x *extraction) error {
 	if e.Open == nil {
 		return apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path)
 	}
 	show := filepath.Join(root.Name(), name)
 	replacing := false
-	if fi, err := root.Lstat(name); err == nil {
+	if fi := existing; fi != nil {
 		replacing = true
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return symlinkErr(show)
@@ -434,7 +442,12 @@ func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Re
 	if err != nil {
 		return err
 	}
-	defer root.Remove(tmpName)
+	renamed := false
+	defer func() {
+		if !renamed {
+			root.Remove(tmpName)
+		}
+	}()
 	later := x != nil && !replacing
 	n, err := io.Copy(tmp, src)
 	if err == nil {
@@ -450,6 +463,7 @@ func writeFile(ctx context.Context, root *os.Root, name string, e Entry, rep *Re
 	}
 	if err == nil {
 		err = root.Rename(tmpName, name)
+		renamed = err == nil
 	}
 	if err != nil {
 		if later {

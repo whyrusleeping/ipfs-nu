@@ -1345,12 +1345,15 @@ confidence. Persistence has a Load/Save snapshot interface for a later SQLite ad
 The interim FileStore uses JSON `{v:1, entries:[...]}`, at most 1 MiB/8192 entries,
 regular 0600 files, same-directory temporary files, fsync, atomic rename and directory
 fsync. Callers own the private parent directory. Invalid versions/entries fail closed.
+A new (peer, address, source) entry is saved and wakes lookups at once; a call that only
+refreshes existing entries (mDNS re-announcements) updates them in memory and saves at
+most once a minute.
 
 mDNS advertises PTR/SRV/TXT plus A/AAAA under `_p2p._udp.local.` on UDP 5353
 (224.0.0.251 and ff02::fb), using `dnsaddr=<multiaddr>/p2p/<id>` TXT strings.
 TXT, SRV and address records use cache-flush; PTR does not. SRV port 4001 is a
 compatibility placeholder: only TXT multiaddrs are used for peer connectivity.
-Query on startup and lookup, then every 30 s; answer matching service/instance/host
+Query on startup and lookup, then every 30 s, at most once per second; answer matching service/instance/host
 queries, including unicast-response requests. Advertise at most eight addresses,
 TTL 120 s, expand wildcard listeners to the selected interface's IPs, and omit
 unscoped link-local IPv6. Packet limit is 9000 bytes, 128 questions/records total
@@ -1360,6 +1363,9 @@ Cluster service names are `_p2p-<first-10-hex-SHA256(clusterID)>._udp.local.`;
 this is collision avoidance, not authentication or privacy. Discovery is enabled
 unless DisableMDNS is set; explicit interfaces allow loopback-only test harnesses.
 No multicast-capable interface is a reported startup error, not silent enablement.
+There is one socket per interface and family, and each handles only the packets that
+arrived on its own interface (the kernel delivers the group's packets to every socket
+bound to 5353).
 
 ## D16. Testing and diagnostics
 

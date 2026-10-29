@@ -111,6 +111,44 @@ func TestCacheHintsRestartParallel(t *testing.T) {
 		t.Fatal("cluster service naming")
 	}
 }
+
+type countingStore struct{ saves int }
+
+func (s *countingStore) Load(context.Context) ([]lookup.Entry, error) { return nil, nil }
+func (s *countingStore) Save(context.Context, []lookup.Entry) error   { s.saves++; return nil }
+
+func TestCacheRefreshDefersSave(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	store := &countingStore{}
+	cache, err := lookup.NewCache(ctx, lookup.CacheConfig{Persistence: store, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hint := func(port string) lookup.Hint {
+		a, err := wire.ParseMultiaddr("/ip4/127.0.0.1/udp/"+port+"/quic-v1", 1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lookup.Hint{Peer: id(t), Addresses: []wire.Multiaddr{a}}
+	}
+	remember := func(port string, saves int) {
+		t.Helper()
+		if err := cache.Remember(ctx, hint(port), "mdns", 0.5, 2*time.Minute); err != nil || store.saves != saves {
+			t.Fatal("saves", store.saves, "want", saves, err)
+		}
+	}
+	remember("4171", 1)
+	now = now.Add(30 * time.Second)
+	remember("4171", 1) // refresh only: no save within the interval
+	if a := cache.Addresses(id(t)); len(a) != 1 || !a[0].Expires.Equal(now.Add(2*time.Minute)) {
+		t.Fatal("refresh not applied in memory", a)
+	}
+	remember("4172", 2) // new address saves immediately
+	now = now.Add(time.Minute)
+	remember("4172", 3) // refresh after the interval persists
+}
+
 func multicastLoopback(t *testing.T) net.Interface {
 	t.Helper()
 	iface, err := net.InterfaceByName("lo")

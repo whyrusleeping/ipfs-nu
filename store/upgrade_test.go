@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/whyrusleeping/nu/core/cid"
 )
 
 func rawDB(t *testing.T, dir string) *sql.DB {
@@ -64,6 +67,12 @@ func TestInterruptedUpgrade(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO partials (mh, size, groups, updated) VALUES (?, ?, ?, 0)`, []byte{1, 2, 3}, size, groups); err != nil {
 		t.Fatal(err)
 	}
+	// A structure block, which migration 5 copies into the rowid blocks table.
+	node := []byte{0xa1, 0x61, 0x61, 0x01} // DRISL {"a": 1}
+	nodeCID := cid.New(cid.DRISL, cid.Sum(cid.SHA256, node))
+	if _, err := db.Exec(`INSERT INTO blocks (mh, codec, data, created) VALUES (?, ?, ?, 0)`, nodeCID.Multihash().Bytes(), int(cid.DRISL), node); err != nil {
+		t.Fatal(err)
+	}
 	db.Close()
 
 	cmd := exec.Command(os.Args[0], "-test.run=^TestInterruptedUpgrade$")
@@ -84,8 +93,11 @@ func TestInterruptedUpgrade(t *testing.T) {
 		t.Fatalf("migrated partial held = %d (%v), want %d", held, err, heldBytes(groups, size))
 	}
 	st, err := s.Stats()
-	if err != nil || st.Partials != held {
+	if err != nil || st.Partials != held || st.Blocks != int64(len(node)) {
 		t.Fatalf("usage counters after resume: %+v %v", st, err)
+	}
+	if got, err := s.Get(nodeCID); err != nil || !bytes.Equal(got, node) {
+		t.Fatalf("migrated block: %x %v", got, err)
 	}
 	s.Close()
 

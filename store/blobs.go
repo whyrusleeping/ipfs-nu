@@ -62,7 +62,7 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *B
 		if err != nil {
 			return cid.CID{}, err
 		}
-		return c, s.putBlock(cid.Raw, c.Multihash(), data)
+		return c, s.putInline(c.Multihash(), data, b)
 	}
 
 	// Admission (A6): a known size needs the data plus its outboard; an unknown size
@@ -128,7 +128,7 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *B
 			if err != nil {
 				return cid.CID{}, err
 			}
-			return c, s.putBlock(cid.Raw, m, data)
+			return c, s.putInline(m, data, b)
 		}
 		// The staged bytes are counted; the outboard is still to come.
 		if err := s.admit(int64(blob.OutboardSize(uint64(size)))); err != nil {
@@ -163,6 +163,20 @@ func (s *Store) addBlob(r io.Reader, size int64, h cid.Hash, want *cid.CID, b *B
 	return c, s.commitBlob(m, uint64(size), f.Name(), fileName(ob), "", 0)
 }
 
+// putInline stores a raw blob of at most inlineMax bytes in the database, or stages it in
+// b for b's commit transaction.
+func (s *Store) putInline(m cid.Multihash, data []byte, b *Batch) error {
+	if b == nil {
+		return s.putBlock(cid.Raw, m, data)
+	}
+	if err := s.admit(int64(len(data))); err != nil {
+		return err
+	}
+	b.blocks = append(b.blocks, stagedBlock{m: m, data: data})
+	b.bytes += int64(len(data))
+	return nil
+}
+
 func fileName(f *os.File) string {
 	if f == nil {
 		return ""
@@ -192,10 +206,16 @@ func (s *Store) commitBlobTx(m cid.Multihash, size uint64, dataFile, obFile, src
 	return tx.Commit()
 }
 
+// txRunner is a *sql.Tx or a preparedTx over one.
+type txRunner interface {
+	Exec(q string, args ...any) (sql.Result, error)
+	QueryRow(q string, args ...any) *sql.Row
+}
+
 // commitBlobIn is commitBlobTx's work inside tx (Batch.Commit runs it for many blobs).
 // Callers hold gcMu.RLock. Staged files of a blob already held as a full copy are left
 // for the caller to remove.
-func (s *Store) commitBlobIn(tx *sql.Tx, m cid.Multihash, size uint64, dataFile, obFile, srcPath string, srcMtime int64, fromPartial bool) error {
+func (s *Store) commitBlobIn(tx txRunner, m cid.Multihash, size uint64, dataFile, obFile, srcPath string, srcMtime int64, fromPartial bool) error {
 	var held sql.NullString
 	switch err := tx.QueryRow(`SELECT src_path FROM blobs WHERE mh = ?`, mhKey(m)).Scan(&held); {
 	case err == nil && held.String == "":
@@ -250,7 +270,7 @@ func (s *Store) blobRow(m cid.Multihash) (blobRow, error) {
 	var size int64
 	var src sql.NullString
 	var mtime sql.NullInt64
-	err := s.db.QueryRow(`SELECT size, outboard, src_path, src_mtime FROM blobs WHERE mh = ?`, mhKey(m)).
+	err := s.queryRow(`SELECT size, outboard, src_path, src_mtime FROM blobs WHERE mh = ?`, mhKey(m)).
 		Scan(&size, &r.outboard, &src, &mtime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrNotFound
@@ -295,7 +315,7 @@ func (b *Blob) Close() error {
 // OpenBlob opens a complete raw blob (inline or file) by multihash.
 func (s *Store) OpenBlob(m cid.Multihash) (*Blob, error) {
 	var data []byte
-	err := s.db.QueryRow(`SELECT data FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&data)
+	err := s.queryRow(`SELECT data FROM blocks WHERE mh = ?`, mhKey(m)).Scan(&data)
 	if err == nil {
 		return &Blob{MH: m, Size: uint64(len(data)), data: bytes.NewReader(data)}, nil
 	}

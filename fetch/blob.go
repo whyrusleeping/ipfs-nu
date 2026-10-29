@@ -133,9 +133,15 @@ func (r *run) have(ctx context.Context, mh cid.Multihash, size uint64) map[*peer
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			select {
+			case p.haves <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			rctx, cancel := r.timeout(ctx)
 			res, err := proto.Have(rctx, p.Open, qs)
 			cancel()
+			<-p.haves
 			if err != nil {
 				r.sw.report(ctx, p, err)
 				return
@@ -161,6 +167,8 @@ func (r *run) have(ctx context.Context, mh cid.Multihash, size uint64) map[*peer
 
 // largeBlob downloads a BLAKE3 blob across peers into a partial blob and commits it.
 func (r *run) largeBlob(ctx context.Context, c cid.CID, size uint64) error {
+	opened := r.lanes().beginOpen()
+	defer opened()
 	mh := c.Multihash()
 	psize, held, _, err := r.st.HeldRanges(mh)
 	if err != nil {
@@ -276,7 +284,7 @@ func (r *run) largeBlob(ctx context.Context, c cid.CID, size uint64) error {
 	} else if err != nil {
 		return err
 	}
-	err = r.download(ctx, part, holders)
+	err = r.download(ctx, part, holders, opened)
 	if err != nil {
 		return errors.Join(err, part.Close())
 	}
@@ -295,50 +303,296 @@ type chunk struct {
 	refused  map[*peer]bool // peers that answered "not held"
 }
 
-// sched hands chunks to per-peer workers: first unclaimed chunks, then, in the endgame,
-// a second request for chunks still in flight. The first copy to arrive wins; the other is
-// cancelled.
+// sched is one large blob's download: its chunks, holders and checkpoint state. The
+// scheduling fields are guarded by the run's lanes.mu.
 type sched struct {
-	mu        sync.Mutex
-	cond      *sync.Cond
+	ctx       context.Context
+	part      *store.Partial
 	chunks    []*chunk
 	first     int // index before which every chunk is done
 	remaining int
-	busy      int
+	busy      int // claimed chunks whose request (and the winner's checkpoint) is running
 	holders   map[*peer]holding
-	stuck     bool
-	err       error // local checkpoint failure, not a provider failure
+	finished  bool
+	done      chan struct{} // closed when finished
+	err       error         // local checkpoint failure, not a provider failure
+
+	flushMu    sync.Mutex
+	sinceFlush uint64
+	flushing   chan struct{}
 }
 
 func (s *sched) canServe(p *peer, c *chunk) bool {
 	return !c.done && !c.refused[p] && s.holders[p].covers(c.r)
 }
 
-func (s *sched) pick(p *peer) *chunk {
+// open returns the chunks from the first one not done.
+func (s *sched) open() []*chunk {
 	for s.first < len(s.chunks) && s.chunks[s.first].done {
 		s.first++
 	}
-	var dup *chunk
-	for _, c := range s.chunks[s.first:] {
-		if !s.canServe(p, c) || c.fetchers[p] != nil {
-			continue
-		}
-		if len(c.fetchers) == 0 {
-			return c
-		}
-		if dup == nil && len(c.fetchers) < 2 {
-			dup = c
-		}
-	}
-	return dup
+	return s.chunks[s.first:]
 }
 
-// download fetches the missing groups of part from holders.
-func (r *run) download(ctx context.Context, part *store.Partial, holders map[*peer]holding) error {
+func (s *sched) finish() {
+	if !s.finished {
+		s.finished = true
+		close(s.done)
+	}
+}
+
+// anyCandidate reports whether some usable peer could still serve some unfinished chunk.
+func (s *sched) anyCandidate(sw *swarm) bool {
+	for p := range s.holders {
+		if !sw.usable(p) {
+			continue
+		}
+		for _, c := range s.open() {
+			if s.canServe(p, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// flush counts n verified bytes and checkpoints the partial every `every` bytes. Only
+// one worker checkpoints at a time; the others keep downloading instead of queueing
+// behind fsync, with backpressure after one more checkpoint's worth of work so a stalled
+// disk cannot leave unbounded uncheckpointed data. Flush snapshots the bitmap before
+// syncing; groups verified meanwhile stay dirty for the next one.
+func (s *sched) flush(every uint64, n int64) error {
+	s.flushMu.Lock()
+	s.sinceFlush += uint64(n)
+	for s.sinceFlush >= every {
+		if s.flushing != nil {
+			done := s.flushing
+			s.flushMu.Unlock()
+			<-done
+			s.flushMu.Lock()
+			continue
+		}
+		s.sinceFlush, s.flushing = 0, make(chan struct{})
+		s.flushMu.Unlock()
+		err := s.part.Flush()
+		s.flushMu.Lock()
+		close(s.flushing)
+		s.flushing = nil
+		s.flushMu.Unlock()
+		return err
+	}
+	s.flushMu.Unlock()
+	return nil
+}
+
+// lanes schedules the range requests of every large blob one run downloads. Each holder
+// peer has workers that take the first unclaimed chunk they can serve from any open
+// download, in start order, so blobs of a few chunks keep every peer busy too. A chunk
+// already in flight is requested from a second peer (the endgame: the first copy wins,
+// the other is cancelled) only when no chunk of the run is unclaimed and no blob is still
+// being opened, that is at the tail of the run rather than of every blob.
+type lanes struct {
+	r       *run
+	mu      sync.Mutex
+	cond    *sync.Cond
+	jobs    []*sched
+	workers map[*peer]int
+	opening int
+	closed  bool
+	wg      sync.WaitGroup
+}
+
+func (r *run) lanes() *lanes {
+	r.lanesOnce.Do(func() {
+		r.ln = &lanes{r: r, workers: map[*peer]int{}}
+		r.ln.cond = sync.NewCond(&r.ln.mu)
+	})
+	return r.ln
+}
+
+// close stops the workers once no download is open (the end of the Fetch).
+func (l *lanes) close() {
+	l.mu.Lock()
+	l.closed = true
+	l.cond.Broadcast()
+	l.mu.Unlock()
+	l.wg.Wait()
+}
+
+// beginOpen counts a blob being prepared (have, size proof) until it registers or gives
+// up, so the endgame waits for it. The returned func ends it and may be called again.
+func (l *lanes) beginOpen() func() {
+	l.mu.Lock()
+	l.opening++
+	l.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			l.opening--
+			l.cond.Broadcast()
+			l.mu.Unlock()
+		})
+	}
+}
+
+// start gives each usable holder PeerRequests workers per open download, up to
+// PeerRequests×Blobs and the peer's request slots. Called with mu held.
+func (l *lanes) start(holders map[*peer]holding) {
+	cfg := l.r.f.cfg
+	for p := range holders {
+		if !l.r.sw.usable(p) {
+			continue
+		}
+		target := min(cfg.PeerRequests*len(l.jobs), cfg.PeerRequests*cfg.Blobs, cap(p.slots))
+		for ; l.workers[p] < target; l.workers[p]++ {
+			l.wg.Add(1)
+			go l.worker(p)
+		}
+	}
+}
+
+// pick returns the next chunk for p: the first unclaimed one it can serve, or in the
+// endgame a chunk one other peer is fetching. Called with mu held.
+func (l *lanes) pick(p *peer) (*sched, *chunk) {
+	unclaimed := false
+	for _, s := range l.jobs {
+		if s.finished {
+			continue
+		}
+		for _, c := range s.open() {
+			if c.done || len(c.fetchers) > 0 {
+				continue
+			}
+			if s.canServe(p, c) {
+				return s, c
+			}
+			unclaimed = true
+		}
+	}
+	if unclaimed || l.opening > 0 {
+		return nil, nil
+	}
+	for _, s := range l.jobs {
+		if s.finished {
+			continue
+		}
+		for _, c := range s.open() {
+			if len(c.fetchers) == 1 && c.fetchers[p] == nil && s.canServe(p, c) {
+				return s, c
+			}
+		}
+	}
+	return nil, nil
+}
+
+// checkStuck finishes the downloads no usable peer can make progress on. Called with mu
+// held.
+func (l *lanes) checkStuck() {
+	for _, s := range l.jobs {
+		if !s.finished && s.busy == 0 && !s.anyCandidate(l.r.sw) {
+			s.finish()
+		}
+	}
+}
+
+func (l *lanes) worker(p *peer) {
+	defer l.wg.Done()
+	r := l.r
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for {
+		if l.closed || !r.sw.usable(p) {
+			l.workers[p]--
+			l.checkStuck()
+			l.cond.Broadcast()
+			return
+		}
+		s, c := l.pick(p)
+		if c == nil {
+			l.checkStuck()
+			l.cond.Wait()
+			continue
+		}
+		cctx, cancel := r.timeout(s.ctx)
+		c.fetchers[p] = cancel
+		s.busy++
+		l.mu.Unlock()
+
+		var err error
+		if need := missingIn(s.part, c.r); len(need) > 0 {
+			if err = p.acquire(cctx); err == nil {
+				err = proto.FetchRanges(cctx, p.Open, s.part, need)
+				p.release()
+			}
+		}
+		// Cancelled here: another copy won, or the download is being torn down (otherwise
+		// a request timeout, which counts against the peer).
+		lost := cctx.Err() != nil && s.ctx.Err() == nil
+		cancel()
+
+		l.mu.Lock()
+		delete(c.fetchers, p)
+		won := false
+		switch {
+		case err == nil && !c.done:
+			c.done, won = true, true
+			s.remaining--
+			for _, other := range c.fetchers {
+				other()
+			}
+		case err != nil && lost && (c.done || s.finished):
+		case errors.Is(err, proto.ErrNotHeld), errors.Is(err, proto.ErrNotFound):
+			c.refused[p] = true
+		case err != nil:
+			r.sw.report(s.ctx, p, err)
+		}
+		if !won {
+			s.busy--
+		}
+		if err != nil {
+			l.checkStuck()
+		}
+		l.cond.Broadcast()
+		busy := errors.Is(err, proto.ErrBusy)
+		if !won && !busy {
+			continue
+		}
+		l.mu.Unlock()
+		var ferr error
+		if won {
+			// The winner stays busy until its checkpoint is done, so the download does
+			// not commit or close the partial under it.
+			r.update(func(pr *Progress) { pr.Bytes += c.bytes })
+			ferr = s.flush(r.f.cfg.FlushBytes, c.bytes)
+		} else {
+			// The peer is loaded by other clients; give it a moment before retrying.
+			select {
+			case <-time.After(20 * time.Millisecond):
+			case <-s.ctx.Done():
+			}
+		}
+		l.mu.Lock()
+		if won {
+			s.busy--
+			if ferr != nil && s.err == nil {
+				s.err = ferr
+				s.finish()
+			}
+			if s.remaining == 0 {
+				s.finish()
+			}
+			l.cond.Broadcast()
+		}
+	}
+}
+
+// download fetches the missing groups of part from holders through the run's lanes.
+// opened is called once the download is registered (see beginOpen).
+func (r *run) download(ctx context.Context, part *store.Partial, holders map[*peer]holding, opened func()) error {
 	cg := uint64(r.f.cfg.ChunkGroups)
 	groups := blob.Groups(part.Size)
-	s := &sched{holders: holders}
-	s.cond = sync.NewCond(&s.mu)
+	s := &sched{ctx: ctx, part: part, holders: holders, done: make(chan struct{})}
 	var heldBytes int64
 	for start := uint64(0); start < groups; start += cg {
 		c := &chunk{r: blob.Range{Start: start, End: min(start+cg, groups)}, fetchers: map[*peer]context.CancelFunc{}, refused: map[*peer]bool{}}
@@ -355,120 +609,40 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 	}
 	s.remaining = len(s.chunks)
 	r.update(func(p *Progress) { p.Bytes += heldBytes })
-	stop := context.AfterFunc(ctx, func() { s.mu.Lock(); s.cond.Broadcast(); s.mu.Unlock() })
-	defer stop()
 
-	var flushMu sync.Mutex
-	var sinceFlush uint64
-	var flushing chan struct{}
-	flush := func(n int64) error {
-		flushMu.Lock()
-		sinceFlush += uint64(n)
-		for sinceFlush >= r.f.cfg.FlushBytes {
-			if flushing != nil {
-				// Allow one checkpoint's worth of overlap, not an unbounded
-				// amount of uncheckpointed work if the disk stops making progress.
-				done := flushing
-				flushMu.Unlock()
-				<-done
-				flushMu.Lock()
-				continue
-			}
-			sinceFlush, flushing = 0, make(chan struct{})
-			flushMu.Unlock()
-			// Only this worker checkpoints. Other workers keep downloading instead
-			// of queueing behind fsync at every chunk boundary. Flush snapshots the
-			// bitmap BEFORE syncing; new groups remain dirty for the next Flush.
-			err := part.Flush()
-			flushMu.Lock()
-			close(flushing)
-			flushing = nil
-			flushMu.Unlock()
-			return err
-		}
-		flushMu.Unlock()
-		return nil
+	l := r.lanes()
+	l.mu.Lock()
+	if s.remaining == 0 {
+		s.finish()
+	} else {
+		l.jobs = append(l.jobs, s)
+		l.start(holders)
+		l.checkStuck()
+		l.cond.Broadcast()
 	}
-
-	worker := func(p *peer) {
-		for {
-			s.mu.Lock()
-			var c *chunk
-			for {
-				if s.remaining == 0 || s.stuck || ctx.Err() != nil || !r.sw.usable(p) {
-					s.cond.Broadcast()
-					s.mu.Unlock()
-					return
-				}
-				if c = s.pick(p); c != nil {
-					break
-				}
-				if s.busy == 0 && !s.anyCandidate(r.sw) {
-					s.stuck = true
-					continue
-				}
-				s.cond.Wait()
-			}
-			cctx, cancel := r.timeout(ctx)
-			c.fetchers[p] = cancel
-			s.busy++
-			s.mu.Unlock()
-
-			var err error
-			if need := missingIn(part, c.r); len(need) > 0 {
-				if err = p.acquire(cctx); err == nil {
-					err = proto.FetchRanges(cctx, p.Open, part, need)
-					p.release()
-				}
-			}
-			lost := cctx.Err() != nil && ctx.Err() == nil // cancelled because another copy won
-			cancel()
-
-			s.mu.Lock()
-			delete(c.fetchers, p)
-			s.busy--
-			won := false
-			switch {
-			case err == nil && !c.done:
-				c.done, won = true, true
-				s.remaining--
-				for _, other := range c.fetchers {
-					other()
-				}
-			case err != nil && lost && c.done:
-			case errors.Is(err, proto.ErrNotHeld):
-				c.refused[p] = true
-			case err != nil:
-				r.sw.report(ctx, p, err)
-			}
-			s.cond.Broadcast()
-			s.mu.Unlock()
-			if errors.Is(err, proto.ErrBusy) {
-				// The peer is loaded by other clients; give it a moment before retrying.
-				select {
-				case <-time.After(20 * time.Millisecond):
-				case <-ctx.Done():
-				}
-			}
-			if won {
-				r.update(func(pr *Progress) { pr.Bytes += c.bytes })
-				if err := flush(c.bytes); err != nil {
-					s.mu.Lock()
-					s.stuck, s.err = true, err
-					s.cond.Broadcast()
-					s.mu.Unlock()
+	l.mu.Unlock()
+	opened()
+	select {
+	case <-s.done:
+	case <-ctx.Done():
+	}
+	l.mu.Lock()
+	s.finish()
+	l.jobs = slices.DeleteFunc(l.jobs, func(j *sched) bool { return j == s })
+	// Requests still running (lost endgame copies, or all of them on cancellation or a
+	// checkpoint failure) write into part: let them unwind before it is committed or
+	// closed.
+	for s.busy > 0 {
+		for _, c := range s.chunks {
+			if !c.done || ctx.Err() != nil || s.err != nil {
+				for _, cancel := range c.fetchers {
+					cancel()
 				}
 			}
 		}
+		l.cond.Wait()
 	}
-	var wg sync.WaitGroup
-	for p := range holders {
-		for range r.f.cfg.PeerRequests {
-			wg.Add(1)
-			go func() { defer wg.Done(); worker(p) }()
-		}
-	}
-	wg.Wait()
+	l.mu.Unlock()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -479,21 +653,6 @@ func (r *run) download(ctx context.Context, part *store.Partial, holders map[*pe
 		return fmt.Errorf("%w: %s: %d of %d ranges unavailable", ErrNoProvider, part.MH, s.remaining, len(s.chunks))
 	}
 	return nil
-}
-
-// anyCandidate reports whether some usable peer could still serve some unfinished chunk.
-func (s *sched) anyCandidate(sw *swarm) bool {
-	for p := range s.holders {
-		if !sw.usable(p) {
-			continue
-		}
-		for _, c := range s.chunks[s.first:] {
-			if s.canServe(p, c) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // missingIn returns the groups of r that part does not hold, as ranges.

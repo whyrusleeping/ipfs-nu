@@ -2193,6 +2193,51 @@ Loopback gets on the dev host are capped at ~85 MB/s,
 because `swarm.gso = auto` judges the default-route NIC, not the loopback path. That is
 not a LAN figure.
 
+## Multi-source fetch: groups of files (2026-10-29)
+
+`scripts/lan-bench.sh` gained two workloads between `tree` and `big`: `mid`, 1,000 × 4 MiB
+files (4.19 GB), and `group`, 20 × 256 MiB (5.37 GB). `PROF=1` profiles the recipient of
+every run and the source daemons. Same hosts and method as
+[LAN benchmarks](#lan-benchmarks-add-11-and-21-get-2026-10-22): sources alphac-2 (and
+alphac-1 for 2:1), daemonless recipient alphac-3, caches dropped, two runs each, profiled
+builds before and after. "Sent" is the sources' interface tx bytes over the data size; the
+~1.06 floor is QUIC/UDP/Ethernet framing. Every output digest matched the source.
+
+| Workload | 1:1 before | 1:1 after | 2:1 before | 2:1 after | 2:1 sent before → after |
+|---|---|---|---|---|---|
+| big (1 × 10 GiB) | 565–571 MB/s | 560–573 | 1003–1026 | 1000–1024 | 1.06 → 1.06 |
+| group (20 × 256 MiB) | 546–551 | 554–562 | 961–974 | 974–989 | 1.06 → 1.06 |
+| mid (1,000 × 4 MiB) | 382–384 | **540–559** | 349–358 | **960–978** | **2.05 → 1.06** |
+| tree (10k × 100 KiB) | 72–82 | **315–324** | 155–157 | **308–324** | 1.06 → 1.06 |
+
+Findings and changes:
+
+1. **Few-chunk blobs were requested twice.** Each large blob had its own workers (4 per
+   peer) and its own endgame: once the blob had no unclaimed chunk, idle workers requested
+   in-flight chunks from the other peer. A 4-chunk blob with 2 peers meant every chunk was
+   fetched twice, so 2:1 was slower than 1:1. Only 4 large blobs were open at a time, and
+   each one's have round trip, partial setup and commit fsyncs left gaps. Now one set of
+   per-peer workers serves every open large blob (`fetch` lanes), duplicates happen only
+   in the endgame of the whole fetch, and large blobs open by size (Blobs × 64 MiB, each
+   counted as 1–64 MiB, at most 64), with `/nu/have/1` kept within the server's per-peer
+   limit. `fetch.TestFewChunkBlobsNotDuplicated` failed with 2.00× before.
+2. **Small blobs held the peer's request slot through the store write.** `FetchWhole`
+   stored (write, outboard, two fsyncs, commit) before the slot was released, so the 16
+   per-peer slots spent most of their time waiting on fsync. The slot is now released
+   before `Store.Put` (`proto.ReadWhole`), and small blobs open by size (Blobs × 16 MiB,
+   at most 256) instead of a fixed 64. Tree fetch is now ~3,100 files/s whether there are
+   one or two sources: 2× the limits measured the same, so the recipient's per-file
+   create/fsync/rename rate is the ceiling. A group commit (staged per blob, one
+   `store.Batch` commit for everything queued) was slower (143–184 MB/s): the database
+   commit is cheap in WAL mode, and serializing commits only adds a barrier on the
+   slowest fsync.
+3. **Unchanged:** big 1:1 stays bound by the sender's QUIC path. Source profiles are
+   dominated by `sendmsg` per packet, because alphac-1/2 have no UDP GSO offload (0085).
+   2:1 for big and group reaches ~1 GB/s of the 1.175 GB/s TCP line rate at the
+   recipient. The 3.2 s write-out of the 10 GiB file is a userspace copy plus fsync at
+   about 3.2 GB/s, against 4.3 GB/s for the disk. `copy_file_range` would help mainly on
+   reflink filesystems.
+
 ## Browser origin-isolation checks (0035)
 
 **Status: not yet run in any browser.** Required by the

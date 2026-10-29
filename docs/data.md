@@ -180,8 +180,11 @@ correctness; tree sync is an optional accelerator. Names travel through atproto 
   peer. Refusals, resets, truncation and timeouts say nothing about a peer's honesty.
 - A minimal client can fetch every Nu object with this protocol and walk DRISL links itself.
 - The fetcher divides large BLAKE3 blobs across peers in 1 MiB chunks (one range request
-  each, per-peer concurrency bounded), planned from `/nu/have/1`, and re-requests outstanding
-  chunks from a second peer during the endgame; the first verified copy wins. Blobs of known
+  each, per-peer concurrency bounded), planned from `/nu/have/1`. Per-peer workers take
+  chunks from every large blob open in the fetch, so blobs of a few chunks keep all peers
+  busy. Outstanding chunks are re-requested from a second peer only in the endgame of the
+  whole fetch (no chunk unclaimed, no blob still being planned); the first verified copy
+  wins. Blobs of known
   size up to one chunk are instead fetched whole in one request, many at a time, rotating
   over the peers. A fetch keeps its `/nu/bytes/1` requests to one peer within the servers'
   default per-peer limit (16) and treats status 4 as load: it waits briefly and retries

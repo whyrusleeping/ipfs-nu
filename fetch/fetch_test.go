@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"slices"
@@ -177,6 +178,43 @@ func TestMultiPeerWithCorruptPeer(t *testing.T) {
 		if got := readBlob(t, dst, e.CID); !bytes.Equal(got, file.Data) {
 			t.Fatalf("%s differs", name)
 		}
+	}
+}
+
+// Many blobs of a few chunks each from two peers are not requested twice: a chunk goes to
+// a second peer only at the tail of the whole fetch, not whenever one blob has no
+// unclaimed chunk left (which once doubled the bytes of a 4 MiB-file tree).
+func TestFewChunkBlobsNotDuplicated(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeouts.Ceiling())
+	defer cancel()
+	src := openStore(t, t.TempDir())
+	fsys := fstest.MapFS{}
+	const files, size = 48, 1 << 20 // 4 chunks of 16 groups each
+	for i := range files {
+		fsys[fmt.Sprintf("d/f%02d", i)] = &fstest.MapFile{Data: randBytes(byte(10+i), size)}
+	}
+	built, err := tree.BuildFS(fsys, "d", tree.BuildOptions{Blobs: src, Nodes: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := newHost(t, nil)
+	var mu sync.Mutex
+	var asked []blob.Range
+	peers := fetch.Static{
+		recordPeer{connect(t, b, newHost(t, src)), &mu, &asked},
+		recordPeer{connect(t, b, newHost(t, src)), &mu, &asked},
+	}
+	f := fetch.New(fetch.Config{Store: openStore(t, t.TempDir()), Providers: peers, ChunkGroups: 16})
+	if _, err := f.Get(ctx, built.Header, fetch.GetOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	var groups uint64
+	for _, r := range asked {
+		groups += r.End - r.Start
+	}
+	want := uint64(files) * blob.Groups(size)
+	if groups < want || groups > want*5/4 {
+		t.Fatalf("requested %d groups for %d", groups, want)
 	}
 }
 

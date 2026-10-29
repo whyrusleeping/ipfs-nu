@@ -199,11 +199,17 @@ func FetchRanges(ctx context.Context, open Opener, p *store.Partial, ranges []bl
 // BLAKE3 DRISL) and for BLAKE3 blobs of at most one chunk group; peers announcing more than
 // cid.MaxWholeObject bytes are refused before any body is read.
 func FetchWhole(ctx context.Context, open Opener, st *store.Store, c cid.CID) error {
-	data, err := fetchWhole(ctx, open, c.Multihash(), cid.MaxWholeObject)
+	data, err := ReadWhole(ctx, open, c)
 	if err != nil {
 		return err
 	}
 	return st.Put(c, data)
+}
+
+// ReadWhole is FetchWhole without the store write: it returns the verified object, so a
+// caller can free its per-peer request slot before the (syncing) Put.
+func ReadWhole(ctx context.Context, open Opener, c cid.CID) ([]byte, error) {
+	return fetchWhole(ctx, open, c.Multihash(), cid.MaxWholeObject)
 }
 
 func fetchWhole(ctx context.Context, open Opener, mh cid.Multihash, max uint64) ([]byte, error) {

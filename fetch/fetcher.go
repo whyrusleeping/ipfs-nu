@@ -27,13 +27,16 @@ var ErrNoProvider = errors.New("fetch: no provider has the content")
 type Config struct {
 	Store     *store.Store
 	Providers Providers // may be nil when every fetch passes Options.Peers
-	// PeerRequests is the number of concurrent range requests per peer for one blob (4).
+	// PeerRequests is the number of concurrent range requests per peer for each large blob
+	// being downloaded (4), up to PeerRequests×Blobs per peer.
 	PeerRequests int
 	// ChunkGroups is the size of a blob range request in 16 KiB groups (64, i.e. 1 MiB).
 	ChunkGroups int
 	// Structure is the number of structure nodes fetched in parallel per level (16).
 	Structure int
-	// Blobs is the number of blobs fetched in parallel (4 large, 16× that for small ones).
+	// Blobs scales how many blobs are fetched in parallel (4): small ones while their sizes
+	// fit Blobs×16 MiB, at most 64×Blobs; large ones while their sizes (each counted as 1
+	// to 64 MiB) fit Blobs×64 MiB, at most 16×Blobs.
 	Blobs int
 	// RequestTimeout bounds one request; a stalled peer is then treated as failing (2 min).
 	RequestTimeout time.Duration
@@ -203,6 +206,11 @@ func (f *Fetcher) Fetch(ctx context.Context, c cid.CID, o Options) (Result, erro
 	// when the walk is done.
 	d := r.discover(ctx, c)
 	defer d.stop()
+	defer func() {
+		if r.ln != nil {
+			r.ln.close()
+		}
+	}()
 	if len(r.sw.live()) == 0 && o.Source == nil {
 		if err := d.waitFirst(ctx); err != nil {
 			return r.result(), err
@@ -303,6 +311,9 @@ type run struct {
 	sw   *swarm
 	next atomic.Uint64 // rotates whole-object requests across peers
 
+	lanesOnce sync.Once
+	ln        *lanes // range-request scheduler for large blobs, created on first use
+
 	pmu  sync.Mutex
 	prog Progress
 }
@@ -340,8 +351,8 @@ type peer struct {
 	connectionFailures map[*host.Conn]bool // bounded by maxFails; guarded by swarm.mu
 	// slots bounds this fetch's concurrent /nu/bytes requests to the peer at the server's
 	// default per-peer limit, shared by small-blob and range requests, so a fetch does
-	// not make the peer refuse it as busy (0084).
-	slots chan struct{}
+	// not make the peer refuse it as busy (0084). haves does the same for /nu/have/1.
+	slots, haves chan struct{}
 }
 
 // acquire takes one of p's request slots, waiting for one to free up.
@@ -370,7 +381,7 @@ func (s *swarm) add(p Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.index[p.ID()] == nil {
-		pp := &peer{Peer: p, slots: make(chan struct{}, proto.DefaultMaxPeerRequests)}
+		pp := &peer{Peer: p, slots: make(chan struct{}, proto.DefaultMaxPeerRequests), haves: make(chan struct{}, proto.DefaultMaxPeerRequests)}
 		s.index[p.ID()] = pp
 		s.peers = append(s.peers, pp)
 		s.gen++
@@ -492,6 +503,7 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 	}
 	peers = r.ranked(c, peers)
 	var errs []error
+	var putErr error
 	won := false
 	// A peer busy with other clients is asked again after a short wait, while only busy
 	// refusals stand between this fetch and the object.
@@ -506,12 +518,13 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 				break
 			}
 			rctx, rcancel := r.timeout(ctx)
-			err := proto.FetchWhole(rctx, p.Open, r.st, c)
+			data, err := proto.ReadWhole(rctx, p.Open, c)
 			rcancel()
-			p.release()
+			p.release() // before the store write: its sync must not idle the peer
 			if err == nil {
 				won = true
-				cancel() // the source can stop
+				cancel()                   // the source can stop
+				putErr = r.st.Put(c, data) // a failure is local storage, not the peer's fault
 				break
 			}
 			if ctx.Err() != nil {
@@ -537,7 +550,7 @@ func (r *run) wholeSized(ctx context.Context, c cid.CID, size uint64) error {
 		}
 	}
 	if won {
-		return nil
+		return putErr
 	}
 	if err := parent.Err(); err != nil {
 		return err
@@ -718,9 +731,24 @@ func (r *run) walk(ctx context.Context, root cid.CID, size uint64) error {
 	}
 	// A blob nobody serves does not stop the others: every available blob is stored
 	// (a later fetch, or a placement retry, then has only the missing ones to ask for).
+	// Small blobs are held in memory between their request and their (syncing) store
+	// write, so their count is bounded by bytes too: 16 MiB per Blobs, at most 64×Blobs.
 	errSmall := make(chan error, 1)
-	go func() { errSmall <- parallelAll(ctx, small, 16*r.f.cfg.Blobs, fetchOne) }()
-	return errors.Join(parallelAll(ctx, large, r.f.cfg.Blobs, fetchOne), <-errSmall)
+	smallWeight := func(b blobRef) int64 { return int64(max(b.size, 16<<10)) }
+	go func() {
+		errSmall <- parallelWeighted(ctx, small, int64(r.f.cfg.Blobs)<<24, 64*r.f.cfg.Blobs, smallWeight, fetchOne)
+	}()
+	// Large blobs share the run's per-peer range workers (lanes), which need enough open
+	// blobs to keep every peer busy: many when they are a few chunks each, a few when big.
+	const maxWeight = 64 << 20
+	weight := func(b blobRef) int64 {
+		if b.size == 0 {
+			return maxWeight
+		}
+		return int64(min(max(b.size, r.oneRequest()), maxWeight))
+	}
+	errLarge := parallelWeighted(ctx, large, int64(r.f.cfg.Blobs)*maxWeight, 16*r.f.cfg.Blobs, weight, fetchOne)
+	return errors.Join(errLarge, <-errSmall)
 }
 
 func (r *run) children(c cid.CID, data []byte) ([]blobRef, error) {
@@ -792,31 +820,43 @@ func children(c cid.CID, data []byte) ([]blobRef, error) {
 	return out, err
 }
 
-// parallel runs fn over items with at most n at a time, stopping at the first error.
-// parallelAll is parallel without the cancellation: every item is attempted and the
-// errors are joined (ctx still stops it).
-func parallelAll[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
-	sem := make(chan struct{}, n)
-	var wg sync.WaitGroup
+// parallelWeighted runs fn over every item (ctx still stops it) and joins the errors.
+// Items run while their weights fit budget (an item heavier than budget runs alone) and
+// at most n at a time.
+func parallelWeighted[T any](ctx context.Context, items []T, budget int64, n int, weight func(T) int64, fn func(context.Context, T) error) error {
 	var mu sync.Mutex
+	cond := sync.NewCond(&mu)
+	stop := context.AfterFunc(ctx, func() { mu.Lock(); cond.Broadcast(); mu.Unlock() })
+	defer stop()
+	var used int64
+	running := 0
+	var wg sync.WaitGroup
 	var errs []error
 	for _, it := range items {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
+		w := weight(it)
+		mu.Lock()
+		for ctx.Err() == nil && running > 0 && (running >= n || used+w > budget) {
+			cond.Wait()
 		}
 		if ctx.Err() != nil {
+			mu.Unlock()
 			break
 		}
+		used += w
+		running++
+		mu.Unlock()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			if err := fn(ctx, it); err != nil {
-				mu.Lock()
+			err := fn(ctx, it)
+			mu.Lock()
+			if err != nil {
 				errs = append(errs, err)
-				mu.Unlock()
 			}
+			used -= w
+			running--
+			cond.Broadcast()
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -826,6 +866,7 @@ func parallelAll[T any](ctx context.Context, items []T, n int, fn func(context.C
 	return ctx.Err()
 }
 
+// parallel runs fn over items with at most n at a time, stopping at the first error.
 func parallel[T any](ctx context.Context, items []T, n int, fn func(context.Context, T) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

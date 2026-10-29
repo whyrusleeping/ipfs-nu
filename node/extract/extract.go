@@ -79,6 +79,11 @@ const (
 // path is refused before anything is written), then to write. Every write goes through
 // an os.Root at dest, so a symlink swapped into the destination while the extraction
 // runs still cannot redirect a write outside it (0077).
+//
+// Paths, directories and name collisions are handled in walk order; file bytes are
+// written by fileWorkers goroutines, so Entry.Open must be safe for concurrent use. A name
+// is checked for collisions only after every in-flight file it could fold onto has been
+// renamed into place.
 func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 	dest, err := filepath.Abs(dest)
 	if err != nil {
@@ -116,39 +121,72 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		root = r
 		return nil
 	}
-	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}, checked: map[string]bool{}}
+	x := &extraction{written: map[string]bool{}, listed: map[string]map[string]bool{}, checked: map[string]bool{},
+		rep: rep, pending: map[string]map[string]bool{}, pendingOther: map[string]bool{}}
 	defer x.closeUnsynced()
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan fileJob)
+	var workers sync.WaitGroup
+	defer func() { close(jobs); workers.Wait() }() // before closeUnsynced
+	for range fileWorkers {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := range jobs {
+				if wctx.Err() == nil {
+					x.record(writeFile(wctx, root, j.name, j.existing, j.e, x))
+					if x.failed() != nil {
+						cancel()
+					}
+				}
+				x.inflight.Done()
+			}
+		}()
+	}
+	fail := func(err error) (*Report, error) {
+		cancel()
+		x.inflight.Wait()
+		if werr := x.failed(); werr != nil {
+			err = werr // the write's own failure, not the cancellation it caused
+		}
+		return rep, err
+	}
 	for e, err := range walk {
 		if err != nil {
-			return rep, err
+			return fail(err)
 		}
 		if err := ctx.Err(); err != nil {
-			return rep, err
+			return fail(err)
+		}
+		if err := x.failed(); err != nil {
+			return fail(err)
 		}
 		rel, err := safeRelPath(e.Path)
 		if err != nil {
-			return rep, err
+			return fail(err)
 		}
 		if rel == "" {
 			// The root entry.
 			switch e.Kind {
 			case KindDir:
 				if err := openDest(); err != nil {
-					return rep, err
+					return fail(err)
 				}
 				rep.Dirs++
 				continue
 			case KindFile:
 				parent, err := os.OpenRoot(filepath.Dir(dest))
 				if err != nil {
-					return rep, err
+					return fail(err)
 				}
 				fi, _ := parent.Lstat(filepath.Base(dest))
-				err = writeFile(ctx, parent, filepath.Base(dest), fi, e, rep, nil)
+				n, err := writeFile(ctx, parent, filepath.Base(dest), fi, e, nil)
 				parent.Close()
 				if err != nil {
-					return rep, err
+					return fail(err)
 				}
+				x.record(n, nil)
 				continue
 			default:
 				rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "root is a " + string(e.Kind)})
@@ -156,7 +194,7 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			}
 		}
 		if err := openDest(); err != nil {
-			return rep, err
+			return fail(err)
 		}
 		name := filepath.FromSlash(rel)
 		if parent := x.underSkipped(rel); parent != "" {
@@ -165,15 +203,18 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		}
 		if dir := filepath.Dir(name); !x.checked[dir] {
 			if err := checkNoSymlinks(root, dir); err != nil {
-				return rep, err
+				return fail(err)
 			}
 			x.checked[dir] = x.written[dir] // a directory this run made or reused stays checked
 		}
 		var existing os.FileInfo // name's Lstat, nil if absent
 		if e.Kind == KindDir || e.Kind == KindFile {
+			if x.mayFoldOntoPending(name) {
+				x.drain()
+			}
 			other, fi, err := x.collides(root, name)
 			if err != nil {
-				return rep, err
+				return fail(err)
 			}
 			existing = fi
 			if other != "" {
@@ -187,13 +228,20 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 		switch e.Kind {
 		case KindDir:
 			if err := ensureDir(root, name, false); err != nil {
-				return rep, err
+				return fail(err)
 			}
 			x.wrote(name)
 			rep.Dirs++
 		case KindFile:
-			if err := writeFile(ctx, root, name, existing, e, rep, x); err != nil {
-				return rep, err
+			if e.Open == nil {
+				return fail(apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path))
+			}
+			x.dispatch(name)
+			select {
+			case jobs <- fileJob{name, existing, e}:
+			case <-wctx.Done():
+				x.inflight.Done()
+				return fail(ctx.Err())
 			}
 			x.wrote(name)
 		case KindSymlink:
@@ -202,7 +250,88 @@ func Extract(ctx context.Context, dest string, walk Walk) (*Report, error) {
 			rep.Skipped = append(rep.Skipped, Skipped{Path: e.Path, Reason: "unknown entry kind " + string(e.Kind)})
 		}
 	}
+	x.inflight.Wait()
+	if err := x.failed(); err != nil {
+		return rep, err
+	}
 	return rep, x.syncUnsynced()
+}
+
+// fileWorkers is the number of files written at once. Each file costs a store read and a
+// few metadata syscalls (create, rename) that serialize poorly; overlapping them is what
+// makes trees of many small files fast to write out.
+const fileWorkers = 16
+
+// fileJob is one file for the workers: its name under the root, its Lstat (nil if
+// absent) and the entry.
+type fileJob struct {
+	name     string
+	existing os.FileInfo
+	e        Entry
+}
+
+// record counts a worker's written file, or keeps its error (the first one).
+func (x *extraction) record(n int64, err error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if err != nil {
+		if x.err == nil {
+			x.err = err
+		}
+		return
+	}
+	x.rep.Files++
+	x.rep.Bytes += n
+}
+
+func (x *extraction) failed() error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.err
+}
+
+// dispatch notes a file handed to the workers: until it is renamed into place, another
+// name the filesystem might fold onto it cannot be checked (collides).
+func (x *extraction) dispatch(name string) {
+	x.inflight.Add(1)
+	dir, base := filepath.Dir(name), filepath.Base(name)
+	if k, ok := foldKey(base); ok {
+		if x.pending[dir] == nil {
+			x.pending[dir] = map[string]bool{}
+		}
+		x.pending[dir][k] = true
+	} else {
+		x.pendingOther[dir] = true
+	}
+}
+
+// mayFoldOntoPending reports whether name could be the same file, on a case-folding or
+// normalizing volume, as one still being written. ASCII names fold by case alone; any
+// other name (Unicode folding and normalization, e.g. U+212A KELVIN SIGN folds to "k")
+// may match anything.
+func (x *extraction) mayFoldOntoPending(name string) bool {
+	dir, base := filepath.Dir(name), filepath.Base(name)
+	k, ok := foldKey(base)
+	return x.pendingOther[dir] || (!ok && len(x.pending[dir]) > 0) || x.pending[dir][k]
+}
+
+// drain waits for every dispatched file to be written.
+func (x *extraction) drain() {
+	x.inflight.Wait()
+	clear(x.pending)
+	clear(x.pendingOther)
+}
+
+// foldKey is an ASCII name as case-insensitive filesystems compare it: lower case,
+// without the trailing dots and spaces Windows filesystems drop. ok is false for names
+// with other bytes.
+func foldKey(name string) (string, bool) {
+	for i := 0; i < len(name); i++ {
+		if name[i] >= 0x80 {
+			return "", false
+		}
+	}
+	return strings.TrimRight(strings.ToLower(name), ". "), true
 }
 
 // extraction tracks what this run wrote so that filesystem name transformations are
@@ -215,7 +344,17 @@ type extraction struct {
 	listed      map[string]map[string]bool // directory → names present (lazily read)
 	skippedDirs []string                   // tree-relative prefixes ("a/b/") whose contents are skipped
 	checked     map[string]bool            // directories already checked for symlinks on the way
-	unsynced    []*os.File                 // new files renamed into place, still open, not yet synced
+
+	// Files are written by workers (fileWorkers): inflight counts the dispatched ones, and
+	// pending/pendingOther note, per directory, the names dispatched since the last drain.
+	inflight     sync.WaitGroup
+	pending      map[string]map[string]bool // directory → foldKey of pending names
+	pendingOther map[string]bool            // directory → a pending name without a foldKey
+
+	mu       sync.Mutex // guards the fields below, shared with the workers
+	rep      *Report
+	err      error
+	unsynced []*os.File // new files renamed into place, still open, not yet synced
 }
 
 // maxUnsynced bounds the new files kept open for one parallel sync (0084).
@@ -224,18 +363,31 @@ const maxUnsynced = 256
 // deferSync takes a new file that is already renamed into place; files are synced
 // together, in parallel, because one fsync at a time costs milliseconds per file.
 func (x *extraction) deferSync(f *os.File) error {
+	x.mu.Lock()
 	x.unsynced = append(x.unsynced, f)
 	if len(x.unsynced) < maxUnsynced {
+		x.mu.Unlock()
 		return nil
 	}
-	return x.syncUnsynced()
+	batch := x.unsynced
+	x.unsynced = nil
+	x.mu.Unlock()
+	return syncFiles(batch)
 }
 
 // syncUnsynced fsyncs the pending new files concurrently and closes them.
 func (x *extraction) syncUnsynced() error {
-	errs := make([]error, len(x.unsynced))
+	x.mu.Lock()
+	batch := x.unsynced
+	x.unsynced = nil
+	x.mu.Unlock()
+	return syncFiles(batch)
+}
+
+func syncFiles(files []*os.File) error {
+	errs := make([]error, len(files))
 	var wg sync.WaitGroup
-	for i, f := range x.unsynced {
+	for i, f := range files {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -243,12 +395,13 @@ func (x *extraction) syncUnsynced() error {
 		}()
 	}
 	wg.Wait()
-	x.unsynced = x.unsynced[:0]
 	return errors.Join(errs...)
 }
 
 // closeUnsynced closes pending files after a failed extraction.
 func (x *extraction) closeUnsynced() {
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	for _, f := range x.unsynced {
 		f.Close()
 	}
@@ -410,25 +563,26 @@ func ensureDir(root *os.Root, dir string, parentsOK bool) error {
 // inside the root). A file that replaces an existing one is synced before the rename, so
 // the replacement is atomic across a crash. A new file is renamed at once and handed to x
 // to be synced with others before the extraction succeeds; with a nil x it is synced
-// before the rename too. existing is name's Lstat (nil when absent).
-func writeFile(ctx context.Context, root *os.Root, name string, existing os.FileInfo, e Entry, rep *Report, x *extraction) error {
+// before the rename too. existing is name's Lstat (nil when absent). It returns the bytes
+// written and is safe to run concurrently for different names.
+func writeFile(ctx context.Context, root *os.Root, name string, existing os.FileInfo, e Entry, x *extraction) (int64, error) {
 	if e.Open == nil {
-		return apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path)
+		return 0, apiv0.Errorf(apiv0.CodeFailed, "file entry %q has no bytes", e.Path)
 	}
 	show := filepath.Join(root.Name(), name)
 	replacing := false
 	if fi := existing; fi != nil {
 		replacing = true
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return symlinkErr(show)
+			return 0, symlinkErr(show)
 		}
 		if fi.IsDir() {
-			return apiv0.Errorf(apiv0.CodeConflict, "%s exists and is a directory", show)
+			return 0, apiv0.Errorf(apiv0.CodeConflict, "%s exists and is a directory", show)
 		}
 	}
 	src, err := e.Open(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer src.Close()
 	mode := FileMode
@@ -440,7 +594,7 @@ func writeFile(ctx context.Context, root *os.Root, name string, existing os.File
 	tmpName := filepath.Join(filepath.Dir(name), ".nu-extract-"+hex.EncodeToString(rnd[:]))
 	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	renamed := false
 	defer func() {
@@ -469,12 +623,10 @@ func writeFile(ctx context.Context, root *os.Root, name string, existing os.File
 		if later {
 			tmp.Close()
 		}
-		return err
+		return 0, err
 	}
-	rep.Files++
-	rep.Bytes += n
 	if later {
-		return x.deferSync(tmp)
+		return n, x.deferSync(tmp)
 	}
-	return nil
+	return n, nil
 }

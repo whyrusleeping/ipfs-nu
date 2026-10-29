@@ -2176,8 +2176,20 @@ daemonless recipient, caches dropped, two runs each, HEAD `8190c80` vs this chan
 | `get` tiny 1:1, write-out | 15.3–17.0 s | 9.7–12.8 s |
 | `get` tree 1:1 total | 16.3–17.0 s | 16.1–17.9 s (QUIC-bound, unchanged) |
 
-Writing out many small files stays bound by per-file creates and fsyncs. Extracting in
-parallel would be the next step. Loopback gets on the dev host are capped at ~85 MB/s,
+**Parallel extraction.** `extract.Extract` now writes file bytes on 16 workers. Paths,
+directories and collision checks stay in walk order. A name is checked only after every
+in-flight file it could fold onto (same ASCII case-fold key; any non-ASCII name) is in
+place, so case and normalization collisions are still reported. Same hosts, recipient
+only (the source ran the previous build), two runs each. Every output digest matched the
+source. 8, 16 and 32 workers were within noise:
+
+| Measurement | Before | After (16 workers) |
+|---|---|---|
+| `get` tiny 1:1, write-out | 10.0–12.9 s | **3.2–3.6 s** |
+| `get` tiny 1:1, total | 13.5–16.9 s | **6.6–7.4 s** |
+| `get` tree 1:1, write-out | 3.5 s | **0.8–0.9 s** |
+
+Loopback gets on the dev host are capped at ~85 MB/s,
 because `swarm.gso = auto` judges the default-route NIC, not the loopback path. That is
 not a LAN figure.
 

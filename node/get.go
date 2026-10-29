@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/whyrusleeping/nu/api/apiv0"
@@ -158,14 +159,18 @@ func defaultName(nd *content.Node, root cid.CID, p string) string {
 	return root.String()
 }
 
-// progress counts extracted bytes into the operation, rate-limited.
+// progress counts extracted bytes into the operation, rate-limited. Extraction writes
+// files concurrently, so add takes a lock.
 type progress struct {
 	o           *op.Operation
+	mu          sync.Mutex
 	done, total int64
 	last        time.Time
 }
 
 func (p *progress) add(n int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.done += int64(n)
 	if time.Since(p.last) > 100*time.Millisecond {
 		p.o.Progress(p.done, p.total, "bytes")

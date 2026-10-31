@@ -40,3 +40,4 @@ Fetchers drop such a peer as corrupt, so a rare memory bug looks like a maliciou
 ## Acceptance criteria
 
 ## Work log
+- 2026-10-29: resolved. The user reports alphac-2 (the sender) has bad RAM that occasionally flips bits, which explains one corrupt response in ~310 GB with an intact store. Not a Nu bug: Bao verification rejected it as designed. The xferbench corrupt-response reporting stays. Optional follow-up not done: keeping dropped-peer warnings in lan-bench.sh logs.

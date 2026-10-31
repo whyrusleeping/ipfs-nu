@@ -1,10 +1,10 @@
 ---
 id: "0092"
 title: Investigate a corrupt /nu/bytes/1 response between honest peers (1 in ~310 GB)
-status: todo
+status: done
 priority: 2
 created: "2026-10-29"
-updated: "2026-10-29"
+updated: "2026-10-31"
 depends_on: []
 spec_refs:
     - docs/data.md#/nu/bytes/1

@@ -2369,12 +2369,12 @@ corrupt data: blob: chunk group 47 does not verify", about 370 MiB into the firs
 fresh connection. The server's store was intact: the next three fetcher runs from the
 same server verified all 4 GiB. Neither 10 further runs (40 GB) nor 25 runs on one
 connection (100 GB) nor 40 runs on fresh connections (160 GB) reproduced it, so it was one
-event in about 310 GB. QUIC authenticates every packet, so the bytes changed after
-decryption or before sending: a buffer reused while stream data still referenced it, or
-a race in the server's read path. The fetcher would drop a peer that is in fact honest. In
-a 2:1 `nu get` that is silent apart from a log line, which `lan-bench.sh` does not keep
-for successful runs. `xferbench fetch` now reports every such response (peer, blob,
-range) and retries it, and exits non-zero if any occurred. Investigation: 0092.
+event in about 310 GB. The sender was alphac-2, which has known-bad RAM that occasionally
+flips a bit. QUIC authenticates packets, so a flip in the server's memory between reading
+the store and encrypting goes out intact and only Bao catches it. That is the cause
+(0092). Rejecting the response and dropping the peer for that fetch is the intended
+behaviour. `xferbench fetch` now reports every such response (peer, blob, range), retries
+it, and exits non-zero if any occurred, so a run from alphac-2 can show these.
 
 ## Browser origin-isolation checks (0035)
 

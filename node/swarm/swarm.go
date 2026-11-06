@@ -97,6 +97,9 @@ type Config struct {
 	RelayDatagram bool
 	// HardNAT is auto (default) or off; only consenting Nu path sessions use it.
 	HardNAT string
+	// NATTelemetry, if set, is the local NDJSON file that opt-in field NAT
+	// telemetry appends to (nat_telemetry.go). Empty (default) records nothing.
+	NATTelemetry string
 	// GSO is auto (default), on or off (host.ConfigureGSO). It is process-wide and takes
 	// effect for transports created after the first Start.
 	GSO string
@@ -730,6 +733,9 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	out.DHT.ProvidersHTTP = node.IngestHTTPConfig(r)
 	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
 		return Config{}, err
+	}
+	if cfg.Swarm.NATTelemetry == "on" {
+		out.NATTelemetry = r.Path(repo.NATTelemetryFile)
 	}
 	return out, nil
 }

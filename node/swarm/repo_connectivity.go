@@ -77,6 +77,9 @@ func applyConnectivityConfig(out *Config, in repo.SwarmConfig) error {
 		}
 		out.ProbeAllowed[id] = append(out.ProbeAllowed[id], addr)
 	}
+	if in.NATTelemetry != "" && in.NATTelemetry != "off" && in.NATTelemetry != "on" {
+		return fmt.Errorf("swarm.nat_telemetry: expected off or on, got %q", in.NATTelemetry)
+	}
 	switch in.RelayDatagram {
 	case "", "off":
 	case "on":

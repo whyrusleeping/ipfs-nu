@@ -215,6 +215,10 @@ type SwarmConfig struct {
 	// under random loss, so they stay opt-in until a loss-aware policy exists).
 	RelayDatagram string `toml:"relay_datagram,omitempty"`
 	HardNAT       string `toml:"hard_nat,omitempty"` // auto (default) or off
+	// NATTelemetry: "off" (default) or "on". On appends one address-free record per
+	// probe session (NAT profile pair, strategy, outcome, time to direct) to
+	// NATTelemetryFile in the repo; nothing is sent (networking D11c §6).
+	NATTelemetry string `toml:"nat_telemetry,omitempty"`
 	// GSO: auto (default; UDP segmentation offload only when the uplink NIC does it in
 	// hardware), on or off (p2p/host.ConfigureGSO).
 	GSO string `toml:"gso,omitempty"`

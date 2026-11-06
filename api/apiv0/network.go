@@ -18,6 +18,14 @@ type ConnectivityStatus struct {
 	NAT         *NATProfile        `json:"nat,omitempty"`
 	PortMapping *PortMappingStatus `json:"port_mapping,omitempty"`
 	IPv6        *IPv6Status        `json:"ipv6,omitempty"`
+	// NATTelemetry is set only when swarm.nat_telemetry is on.
+	NATTelemetry *NATTelemetryStatus `json:"nat_telemetry,omitempty"`
+}
+
+// NATTelemetryStatus locates the opt-in local telemetry export (networking D11c §6).
+type NATTelemetryStatus struct {
+	Path    string `json:"path"`
+	Records int64  `json:"records"` // appended by this daemon run
 }
 type RelayStatus struct {
 	PeerID    string    `json:"peer_id"`

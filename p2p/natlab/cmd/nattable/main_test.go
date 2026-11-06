@@ -2,6 +2,9 @@ package main
 
 import (
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +32,28 @@ func TestGate(t *testing.T) {
 	delete(rows, [3]string{"pair", k[0], k[1]})
 	if failed := render(io.Discard, rows, true, 50); len(failed) != 5 {
 		t.Fatal("want 5 failures, got", failed)
+	}
+}
+
+// Field telemetry rows (swarm.nat_telemetry) are reported with their strategy
+// counts and never gated, even for an always-direct profile pair.
+func TestFieldTelemetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nat-telemetry.ndjson")
+	data := `{"scenario":"field","from":"EIM/APDF","to":"public","strategy":"probe","outcome":"relayed","nu":"v0.1.0"}
+{"scenario":"field","from":"public","to":"EIM/APDF","strategy":"hard-nat","outcome":"direct","time_to_direct_ns":5000000000,"nu":"v0.1.0"}
+`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rows := map[[3]string]*row{}
+	if err := read(path, rows); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if failed := render(&out, rows, false, 50); len(failed) != 0 {
+		t.Fatal("field telemetry gated:", failed)
+	}
+	if !strings.Contains(out.String(), "| EIM/APDF ↔ public | field (hard-nat 1, probe 1) | reported | 1 / 2 | 50.0 % | 5s / 5s | info |") {
+		t.Fatal(out.String())
 	}
 }

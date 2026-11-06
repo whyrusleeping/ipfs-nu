@@ -9,6 +9,8 @@
 // IPv6 side must always be direct, except EIM↔random-APDM, which must be ≥ 98 %
 // over at least -campaign trials. Other pairs (APDM↔APDM) and other scenarios
 // are reported, not gated. -lab also fails when a software-lab row is missing.
+// Field telemetry (swarm.nat_telemetry exports, scenario "field") is reported
+// with its strategy counts and never gated.
 // Exit status 1 means a gated row failed or was missing.
 package main
 
@@ -29,6 +31,7 @@ type record struct {
 	From         string        `json:"from"`
 	To           string        `json:"to"`
 	Outcome      string        `json:"outcome"`
+	Strategy     string        `json:"strategy"` // field telemetry only
 	TimeToDirect time.Duration `json:"time_to_direct_ns"`
 }
 
@@ -36,6 +39,7 @@ type row struct {
 	a, b, scenario string
 	direct, trials int
 	times          []time.Duration
+	strategies     map[string]int
 }
 
 // labRows are the software-lab pairs p2p/disco's TestHardNATLab and
@@ -126,6 +130,12 @@ func read(path string, rows map[[3]string]*row) error {
 			rows[key] = x
 		}
 		x.trials++
+		if r.Strategy != "" {
+			if x.strategies == nil {
+				x.strategies = map[string]int{}
+			}
+			x.strategies[r.Strategy]++
+		}
 		if r.Outcome == "direct" {
 			x.direct++
 			if r.TimeToDirect > 0 {
@@ -187,7 +197,16 @@ func render(w io.Writer, rows map[[3]string]*row, lab bool, campaign int) (faile
 			slices.Sort(r.times)
 			times = fmt.Sprintf("%s / %s", r.times[len(r.times)/2].Round(time.Millisecond), r.times[len(r.times)-1].Round(time.Millisecond))
 		}
-		fmt.Fprintf(w, "| %s ↔ %s | %s | %s | %d / %d | %s | %s | %s |\n", r.a, r.b, r.scenario, required, r.direct, r.trials, rate, times, result)
+		scenario := r.scenario
+		if len(r.strategies) > 0 {
+			var s []string
+			for k, n := range r.strategies {
+				s = append(s, fmt.Sprintf("%s %d", k, n))
+			}
+			slices.Sort(s)
+			scenario += " (" + strings.Join(s, ", ") + ")"
+		}
+		fmt.Fprintf(w, "| %s ↔ %s | %s | %s | %d / %d | %s | %s | %s |\n", r.a, r.b, scenario, required, r.direct, r.trials, rate, times, result)
 	}
 	return failed
 }

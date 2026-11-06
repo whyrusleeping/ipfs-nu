@@ -40,12 +40,14 @@ type Config struct {
 type EventKind uint8
 
 const (
-	ProbeSent     EventKind = iota + 1 // a probe left on Addr
-	ProbeReceived                      // a valid probe arrived from Addr
-	ProbeRejected                      // an unauthorized, replayed or stale probe was dropped
-	PathDirect                         // Addr became the selected direct path; Elapsed is time since session start
-	PathRelay                          // the direct path was revoked; traffic falls back to the relay
-	Candidates                         // the remote candidate set changed; Candidates counts the authorized ones, Offered all received
+	ProbeSent      EventKind = iota + 1 // a probe left on Addr
+	ProbeReceived                       // a valid probe arrived from Addr
+	ProbeRejected                       // an unauthorized, replayed or stale probe was dropped
+	PathDirect                          // Addr became the selected direct path; Elapsed is time since session start
+	PathRelay                           // the direct path was revoked; traffic falls back to the relay
+	Candidates                          // the remote candidate set changed; Candidates counts the authorized ones, Offered all received
+	SessionStarted                      // the control handshake completed; probing starts now
+	SessionEnded                        // a started session's control stream ended
 )
 
 // Event is one diagnostic notification for Config.Observe.
@@ -56,6 +58,8 @@ type Event struct {
 	Elapsed    time.Duration
 	Candidates int
 	Offered    int
+	Via        Kind // PathDirect: kind of the selected candidate
+	Hard       bool // PathDirect: proven by the hard-NAT extension
 }
 
 func (d *Service) observe(e Event) {
@@ -298,6 +302,9 @@ func (d *Service) serve(s *session) {
 	defer func() {
 		d.mu.Lock()
 		d.revoke(s)
+		if s.ready {
+			d.observe(Event{Peer: s.peer, Kind: SessionEnded})
+		}
 		delete(d.sessions, s.peer)
 		delete(d.ids, s.id)
 		clear(s.tx)
@@ -330,6 +337,7 @@ func (d *Service) serve(s *session) {
 	s.hardCap = s.capable && len(hello) == 19
 	d.ids[id] = s
 	close(s.readyChan)
+	d.observe(Event{Peer: s.peer, Kind: SessionStarted})
 	d.mu.Unlock()
 	_ = s.stream.SetReadDeadline(time.Time{})
 	for {
@@ -821,6 +829,6 @@ func (d *Service) handleProbe(s *session, b []byte, from netip.AddrPort, now tim
 		if s.stats.TimeToDirect == 0 {
 			s.stats.TimeToDirect = now.Sub(s.start)
 		}
-		d.observe(Event{Peer: s.peer, Kind: PathDirect, Addr: from, Elapsed: now.Sub(s.start)})
+		d.observe(Event{Peer: s.peer, Kind: PathDirect, Addr: from, Elapsed: now.Sub(s.start), Via: c.Kind})
 	}
 }

@@ -98,6 +98,9 @@ func (c *connectivity) observe(e disco.Event) {
 	case disco.Candidates:
 		c.note(e.Peer, "peer offered %d candidate endpoints, %d admitted by local policy", e.Offered, e.Candidates)
 	}
+	if c.telemetry != nil {
+		c.telemetry.observe(e)
+	}
 }
 
 // fetchObserved wraps a fetch progress callback to measure time to first byte.
@@ -238,6 +241,9 @@ func (c *connectivity) diagnostics(out *apiv0.ConnectivityStatus) {
 		}
 	}
 	out.IPv6 = v6
+	if t := c.telemetry; t != nil {
+		out.NATTelemetry = &apiv0.NATTelemetryStatus{Path: t.path, Records: t.written.Load()}
+	}
 }
 
 // observedNAT estimates mapping behavior from the reflexive addresses that distinct

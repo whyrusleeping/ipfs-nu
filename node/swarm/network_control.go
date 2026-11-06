@@ -59,6 +59,19 @@ func (c *connectivity) initNetwork() error {
 			n.allow(id, a)
 		}
 	}
+	if path := c.s.cfg.NATTelemetry; path != "" {
+		t := newNATTelemetry(path)
+		t.status = func(id wire.PeerID) (disco.Status, bool) { return n.disco.Status(id) }
+		t.local = func() (netcheck.Profile, bool) { r, ok, _ := c.s.NATProfile(); return r.Profile, ok }
+		t.remote = func(ctx context.Context, id wire.PeerID) (netcheck.Profile, bool) {
+			p, ok, err := netcheck.FetchProfile(ctx, c.s.host, id)
+			return p, ok && err == nil
+		}
+		c.telemetry = t
+		if !c.spawn(func() { t.run(c.ctx) }) {
+			return net.ErrClosed
+		}
+	}
 	var err error
 	n.disco, err = disco.New(c.ctx, disco.Config{Host: c.s.host, Socket: c.socket, Candidates: n.candidates, Authorize: n.authorize, Observe: c.observe, Hard: c.s.hardNATConfig()})
 	if err != nil {

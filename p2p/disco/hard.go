@@ -619,7 +619,7 @@ func (d *Service) handleHardProbe(s *session, b []byte, from netip.AddrPort, loc
 	state.failures = 0
 	s.hardFailures = 0
 	d.hardPeers[s.peer] = state
-	d.observe(Event{Peer: s.peer, Kind: PathDirect, Addr: from, Elapsed: now.Sub(s.start)})
+	d.observe(Event{Peer: s.peer, Kind: PathDirect, Addr: from, Elapsed: now.Sub(s.start), Via: c.Kind, Hard: true})
 }
 func (d *Service) cancelHard(s *session) {
 	if s.hard != nil {

@@ -173,6 +173,9 @@ func connectivityChecks(c *apiv0.ConnectivityStatus) []check {
 			checks = append(checks, check{Name: "ipv6", Status: "ok", Detail: "no global IPv6 address on this machine"})
 		}
 	}
+	if t := c.NATTelemetry; t != nil {
+		checks = append(checks, check{Name: "nat telemetry", Status: "ok", Detail: fmt.Sprintf("on: %d records appended this run to %s; that file is everything recorded, kept locally and never sent", t.Records, t.Path)})
+	}
 	for _, p := range c.Paths {
 		detail := p.Path
 		if p.Direct != "" {

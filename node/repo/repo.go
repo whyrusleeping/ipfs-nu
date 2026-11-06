@@ -35,6 +35,8 @@ const (
 	LockFile = "daemon.lock"
 	// PeersFile is the persisted peer-address cache (p2p/lookup FileStore).
 	PeersFile = "peers.json"
+	// NATTelemetryFile is the opt-in field NAT telemetry export (swarm.nat_telemetry).
+	NATTelemetryFile = "nat-telemetry.ndjson"
 	// VersionFile records the layout version for future migrations.
 	VersionFile = "version"
 )

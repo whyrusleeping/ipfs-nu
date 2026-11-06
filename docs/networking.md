@@ -424,7 +424,9 @@ prediction, DNS target resolution or blanket-true authorization are installed.
 `peer_relay_allow = ["<peerID>", ...]` (public mode only) makes this node a bounded
 circuit relay for exactly those peers, and `relay_datagram = "off" | "on"` (default
 `off`) opts relayed legs into the Nu datagram relay extension on both the dialing and
-the accepting side; see [D11c §5](#5-relay-optimization).
+the accepting side; see [D11c §5](#5-relay-optimization). `nat_telemetry = "off" | "on"`
+(default `off`) keeps a local, address-free NAT outcome export; see
+[D11c §6](#6-measurement).
 
 `dht = "auto" | "client" | "off"` (default `auto`) selects Amino participation, and
 `lookup_domain = "<peer domain>"` / `routing_url = "https://…"` add a dnsaddr and a
@@ -1149,13 +1151,39 @@ relay leg.
 
 Extend the NAT lab with preserving/sequential/random allocation, jitter, mapping timeouts,
 CGNAT quotas and IPS-like drops. Test consumer routers, OpenWrt, pfSense/OPNsense with and
-without endpoint-independent NAT, and hotspots on two carriers. Field telemetry is opt-in:
-NAT-profile pair, strategy, outcome and time to direct. Publish a per-pair success table for
-each release; the hard-NAT targets are in the [milestones](../spec.md#milestones).
+without endpoint-independent NAT, and hotspots on two carriers. Publish a per-pair success
+table for each release; the hard-NAT targets are in the [milestones](../spec.md#milestones).
+
+**Field telemetry (0098)** is off by default: `[swarm] nat_telemetry = "off" | "on"`. There
+is no collection endpoint, so `on` only appends records to `nat-telemetry.ndjson` in the
+repo (mode 0600, capped at 1 MiB; then nothing more is written until the file is removed).
+That file is everything recorded; a user or operator reads it and shares it by hand. `nu
+doctor` shows its path and the records appended this run. One record per disco probe
+session (public mode only; each opted-in side records its own view), written when the
+first direct path is selected, or as `relayed` when none is selected within 60 s; a
+session that ends sooner is not recorded. The record has exactly these fields:
+
+```json
+{"scenario":"field","from":"EIM/APDF","to":"APDM-random/APDF","strategy":"hard-nat","outcome":"direct","time_to_direct_ns":5210000000,"nu":"v0.1.0"}
+```
+
+- `from`/`to`: this node's and the peer's IPv4 profile labels: `public`, `firewall/<filtering>`,
+  `EIM/<filtering>`, `ADM|APDM|EDM-<preserving|seq|random|?>/<EIF|ADF|APDF|?>`,
+  `mapped (UPnP|PCP|NAT-PMP)` (a held port mapping), `UDP-blocked` or `unknown`. The local
+  label comes from netcheck, the peer's from its `/nu/natprofile/1` answer on the existing
+  connection (`unknown` if it publishes none).
+- `strategy`: what produced the direct path (`lan`, `ipv6`, `mapped`, `probe` for
+  simultaneous probing of reflexive candidates, `hard-nat`), or for `relayed` the furthest
+  escalation tried (`hard-nat` if an attempt started, else `probe`).
+- `outcome` (`direct`/`relayed`), `time_to_direct_ns` (since the session started, direct
+  only) and `nu` (the Nu version).
+
+No content, PeerIDs, addresses, ports, timestamps or relay identities are recorded.
 
 The table is built by `p2p/natlab/cmd/nattable` from `natlab.Outcome` NDJSON records
 (`scenario: "pair"`, side labels, `direct`/`relayed`, time to direct); hardware-lab and
-telemetry records use the same shape. Gate: a pair with at least one EIM, public,
+telemetry records use the same shape (telemetry rows are `field`, reported with strategy
+counts and never gated). Gate: a pair with at least one EIM, public,
 router-mapped or IPv6 side is always direct, except EIM↔random-APDM, which must be direct
 in ≥ 98 % of at least the campaign's trials (50 per release). APDM↔APDM pairs and other
 scenarios are reported, not gated. `scripts/nat-table.sh` runs the software lab

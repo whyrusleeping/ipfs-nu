@@ -41,6 +41,7 @@ type connectivity struct {
 	closeOnce sync.Once
 	historyMu sync.Mutex // per-peer path history for doctor; leaf lock (see note)
 	history   map[wire.PeerID][]apiv0.PathEvent
+	telemetry *natTelemetry // nil unless Config.NATTelemetry
 }
 
 type pathPeer struct {

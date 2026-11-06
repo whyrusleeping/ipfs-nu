@@ -120,7 +120,8 @@ is notified and decides what to remove.
 Providing every blob of a 10M-file dataset from every follower is infeasible on Amino.
 Instead, followers provide one **swarm key** per followed name, the raw BLAKE3 CID of
 `"nu.follow\0" + did + "\0" + name`, plus their current tree root. The swarm key is
-announced through Amino and, if configured, delegated routing.
+announced through Amino (and, on nodes that opt in, the
+[IPNI profile](data.md#ipni-publishing), as part of the Amino set).
 
 - Swarm peers are candidate providers for every CID in the dataset. They are queried with
   `/nu/have/1`, which also covers peers on slightly older versions that hold most blobs.

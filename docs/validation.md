@@ -1554,6 +1554,81 @@ can participate without server mode, but announce only content it serves and add
 by callers. Amino records do not advertise a Nu transfer protocol, so Bitswap-only peers cannot
 fetch `/nu/bytes/1`. Publicly reachable server mode is the separate routing-service role.
 
+## IPNI publishing probe (0087, 2026-11-06)
+
+This is evidence for the [IPNI publishing](data.md#ipni-publishing) decision. It comes from
+live cid.contact lookups plus a source reading of storetheindex `1d2e419`, go-libipni
+`a2b7b22`, indexstar `99cc275`, index-provider `1c28694`, boxo v0.41.0 and Helia `cba1ed6`.
+
+**Live (cid.contact):**
+
+- `GET /multihash/<base58>` for a 32-byte BLAKE3 (0x1e) multihash returned 404, which means
+  parsed but not found. A SHA-256 multihash also returned 404. A malformed multihash
+  returned 400 `invalid multihash`, so the find path does accept BLAKE3 keys.
+  `/routing/v1/providers/` returns 404 even for `notacid`, so it tells us nothing here.
+- routing/v1 for a popular CID returned `peer` records whose `Protocols` were
+  `transport-ipfs-gateway-http` (Filecoin providers, `/dns/…/tcp/443/https`) and
+  `transport-bitswap` (Pinata).
+
+**Source:**
+
+- Ingest (`indexAdMultihashes`) drops only multihashes that fail `multihash.Decode` or
+  whose digest is shorter than `MinimumKeyLength`. There is no hash-function allowlist.
+- An ad with entries but empty metadata is rejected as malformed, so a transport code is
+  required. `ContextID` is at most 64 bytes, and `IsRm` removes a whole context; single
+  multihashes cannot be removed.
+- indexstar's routing/v1 translator still returns a record whose metadata it cannot decode,
+  with `ID` and `Addrs` but no `Protocols`. `filter-protocols=unknown` includes such
+  records, and boxo's client filters with `unknown,transport-bitswap` by default.
+- Discovery defaults: poll every 24 h, deactivate an unseen provider after 7 days, delete
+  it after 14. The base deployment manifests allow any publisher (`Allow`/`Publish`
+  true). Live, cid.contact accepted an unregistered publisher (below).
+- index-provider chunks entries 16384 multihashes per chunk. The ipnisync publisher serves
+  `/ipni/v1/ad/` over libp2p HTTP or plain HTTP, and the syncer tries libp2p HTTP first.
+  Ads are signed in a libp2p envelope (domain `indexer`, codec
+  `/indexer/ingest/adSignature`) and decode as dag-json or dag-cbor according to their
+  CID codec.
+- boxo `verifcid` allows BLAKE3 digests of 32–128 bytes, but boxo's HTTP block retrieval
+  (`httpnet`) caps a block at 2 MiB. Helia registers only SHA-256, SHA-512 and identity
+  unless the app supplies more hashers.
+
+**Live ingest round trip (2026-11-06):** `experiments/ipniprobe` (its own module) ran from
+the NATed dev host. It served its chain through a cloudflared quick tunnel
+(`/dns/<name>.trycloudflare.com/tcp/443/https`) and announced it with
+`PUT https://cid.contact/announce`. It used a throwaway Ed25519 identity, DAG-CBOR
+(DRISL-compatible) ads and entry chunks with SHA-256 CIDs, and two contexts. Each
+context listed one random BLAKE3 and one random SHA-256 multihash: one context had
+`transport-bitswap` metadata, the other a private-use code (`0x3f0087`). The provider
+address was `/ip4/<dev host public IPv4>/udp/4001/quic-v1`, where nothing listens.
+
+| Run | Setup | Result |
+|---|---|---|
+| 1 (`12D3KooWK7fv…`) | go-libipni v0.9.0 `ipnisync.Publisher`, provider `/ip4/192.0.2.1/…` | Nothing indexed. The publisher re-encodes every block as dag-json, so by source a DAG-CBOR CID fails the indexer's digest check. This run also had run 2's address problem. |
+| 2 (`12D3KooWHTLC…`) | Raw-bytes server, provider `/ip4/192.0.2.1/…` | Ads fetched, entries never fetched, provider never registered. The registry filters non-public addresses and rejects a new provider with none (`ErrMissingProviderAddr`). |
+| 3 (`12D3KooWEhhR…`) | Raw-bytes server, public provider address | Indexed. Not removed: the probe was killed while its poll looked hung (most likely it was reading the CDN's cached 404s, as in run 4), and its in-memory key went with it. The provider is unreachable, so it should be hidden after 7 days and deleted after 14. |
+| 4 (`12D3KooWHQxn…`) | Same as run 3, then `IsRm` for both contexts | Indexed, then removed. |
+
+Reproduce with `cloudflared tunnel --url http://127.0.0.1:8090` and then, in
+`experiments/ipniprobe`, `go run . -public https://<name>.trycloudflare.com -provider-addr
+/ip4/<public IPv4>/udp/4001/quic-v1`.
+
+Run 4 in detail:
+
+- Two indexer clients fetched each block once. They asked for
+  `/.well-known/libp2p` and `/.well-known/libp2p/protocols` first (404), then used plain
+  HTTPS. They fetched the ads by CID from the announce and never asked for `head`.
+- BLAKE3 and SHA-256 entries in both contexts were served about 1–2 s after the announce,
+  through both `/multihash/<b58>` and `/routing/v1/providers/<cid>`. The bitswap context
+  returned `"Protocols":["transport-bitswap"]`. The private-use context returned a `peer`
+  record with `ID` and `Addrs` but no `Protocols`, as the indexstar source predicts.
+- After the `IsRm` announce, request variants not cached before returned 404 within about
+  40 s.
+- The CDN in front of cid.contact (CloudFront) ignored the origin's `max-age=300`. A 404
+  for a key looked up before ingest was served for 20 minutes per `Accept-Encoding`
+  variant. Cached 200s up to 2421 s old were still served for removed keys 20 minutes
+  after the `IsRm`.
+- The live indexer accepted a publisher it had never seen, so `Allow` is open in practice.
+
 ## Pilot workloads
 
 Recruit archive/mirror teams with smaller Internet Archive/Wikipedia-shaped workflows.

@@ -11,6 +11,15 @@ builds against a locally patched quic-go created by `quicgo-cid/setup.sh`. It ho
 proposed upstream patch, submission text and the before/after Nu-path benchmark; see
 [its README](quicgo-cid/README.md).
 
+## IPNI ingest probe (0087)
+
+`ipniprobe/` is a **separate nested module** (it depends on go-libipni). It publishes a
+throwaway DAG-CBOR ad chain to cid.contact with random BLAKE3 and SHA-256 entries, checks
+that they are served, then removes them with `IsRm`. It needs a public HTTPS URL for its
+local server (for example a cloudflared quick tunnel) and a public provider address. Usage
+is in its doc comment; the results are in
+[validation](../docs/validation.md#ipni-publishing-probe-0087-2026-11-06).
+
 ## Circuit relay v2 (0013)
 
 `go test -run '^TestCircuitV2$' -v .` checks actual go-libp2p reservation clients

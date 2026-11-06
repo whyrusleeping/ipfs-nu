@@ -382,7 +382,7 @@ Try sources in this order:
    no providers). For Nu fetch, unset means `https://cid.contact` when the swarm binds a
    non-loopback address (as for `swarm.dht = "auto"`); `off` or `""` disables it. Every `peer` record
    with a literal-IP `/udp/<port>/quic-v1` address is a candidate, whatever protocols it
-   lists (Nu has no IPNI transport code; publishing is backlog 0087's question): its
+   lists (Nu has no IPNI transport code yet; see [IPNI publishing](#ipni-publishing)): its
    public addresses become untrusted session hints (`fetch.Delegated`), and `/nu/have/1`
    confirms it. The client honours `ingest.allow_http`/`allow_ips`. The IPFS importer
    uses the same client and parser for Bitswap and gateway providers
@@ -399,8 +399,8 @@ same way; [D21](dasl.md#fisl)), yield URLs that are fetched statelessly and veri
 CID through one retrieval path (`rasl.Retriever`). Private and isolated clusters do not query public
 indexers; isolated members make no RASL fetches.
 
-Announce pinned blob, file-node and tree-root CIDs through Amino and, if configured, delegated
-routing; never announce interior directory shards. Amino provider keys use each CID's native
+Announce pinned blob, file-node and tree-root CIDs through Amino (and, once implemented, the
+opt-in [IPNI profile](#ipni-publishing)); never announce interior directory shards. Amino provider keys use each CID's native
 multihash bytes: SHA-256 keys for structure and BLAKE3 (0x1e) keys for blobs. A bounded live
 check retrieved random BLAKE3 blob providers from an independent Amino client; do not derive a
 SHA-256 routing alias or use a separate DHT protocol. It did not verify the deterministic
@@ -415,6 +415,57 @@ content model. *Implementation (0072):* the daemon announces on pin and every 22
 (`node/swarm/dht.go`); `--no-announce` roots are remembered in `$NU_PATH/no-announce.json`
 and never enumerated (an announced pin or unpin of the root clears the mark). Follow pins
 currently announce their root only; the swarm key is not yet provided.
+
+### IPNI publishing
+
+*Decision (0087): adopt as an opt-in profile for publicly reachable nodes; not implemented (proposed as 0095).*
+Amino provides one record per key, republished every 22 h, which strains a node holding
+millions of blobs. IPNI indexers (cid.contact) instead ingest a signed, chained list of
+advertisements once and answer step 6 for every listed multihash. Nu fetch already reads
+IPNI (step 6), so publishing closes the loop without a new lookup path. Amino stays the
+default; whether an IPNI-publishing node can drop blob keys from Amino is to be measured.
+The profile:
+
+- **Who:** only on explicit opt-in, and only for nodes with a public literal-IP
+  `/udp/<port>/quic-v1` address that stay reachable. Indexers drop private and
+  documentation addresses, and they refuse (and briefly block) a new provider left with
+  none. They poll each provider daily, hide one unseen for 7 days and drop its index after
+  14, so NATed laptops are out. Never from private or isolated clusters.
+- **What:** exactly the CIDs Amino would announce (blobs, file nodes, tree roots; never
+  interior shards or `--no-announce` roots; follow pins per `follow.provide`), keyed by
+  native multihash. cid.contact ingests and serves BLAKE3 (0x1e) entries like SHA-256
+  ones, so blob keys need no SHA-256 alias, and the Amino key decision above is unchanged.
+- **Granularity:** one context ID per announced root (its CID bytes; IPNI allows 64).
+  Entries go in chained chunks of 16384 multihashes, about 36 B each, so a million CIDs
+  is about 36 MB, pulled once per indexer. Unpinning or GC of the root, or a
+  `--no-announce` mark, publishes an `IsRm` ad for its context. Versions that share blobs
+  list them once per context, so cost grows with retained announced roots.
+- **Format:** ads and entry chunks are DRISL (dag-cbor) blocks with SHA-256 CIDs, signed
+  with the node's Ed25519 peer key in IPNI's envelope (`/indexer/ingest/adSignature`).
+  `GET /ipni/v1/ad/head` returns the signed head, and `GET /ipni/v1/ad/<cid>` returns the
+  stored block bytes, which the indexer hashes against the CID. go-libipni's publisher
+  re-encodes blocks as dag-json, so it cannot serve DRISL chains. The indexer first asks
+  `/.well-known/libp2p/protocols` and otherwise uses plain HTTPS. The chain is served over
+  libp2p HTTP on the existing QUIC host, or over the public HTTPS gateway if one runs, and
+  announced with `PUT <indexer>/announce`. The indexer is `ipfs.routing_url`. Ads are
+  served within seconds of an announce, and an `IsRm` within a minute. The indexer's CDN
+  caches lookups, though. A 404 for a key looked up before ingest was still served
+  20 minutes later, and removed keys were still returned 20 minutes after their `IsRm`.
+  `/nu/have/1` catches the stale positives.
+- **Metadata:** a Nu transport code registered in the multicodec table (`/nu/bytes/1` with
+  `/nu/have/1`). Never `transport-bitswap`, because Nu content is not served over
+  Bitswap. Never `transport-ipfs-gateway-http` either: Nu's gateway serves no trustless
+  `?format=raw` blocks, IPFS HTTP block clients cap blocks at 2 MiB while Nu blobs are
+  whole files, and Helia has no BLAKE3 hasher by default. Until indexers know the code,
+  routing/v1 returns these records with no `Protocols`. Step 6 already accepts them, and
+  `/nu/have/1` confirms. Kubo's default `filter-protocols=unknown,transport-bitswap` also
+  returns them, so Kubo makes the same wasted Bitswap dial it already makes for Nu's Amino
+  records.
+- **Privacy:** an IPNI index is a public, long-lived list of what a node holds (Amino
+  records expire after 48 h). That is why the profile is opt-in per node.
+
+The probe evidence, including a live announce, find and remove round trip on cid.contact,
+is in [validation](validation.md#ipni-publishing-probe-0087-2026-11-06).
 
 ## D17. Store and replication
 

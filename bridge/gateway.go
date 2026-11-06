@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/whyrusleeping/nu/httpsrc"
+	"github.com/whyrusleeping/nu/p2p/lookup"
 )
 
 // GatewayProtocol is the routing/v1 protocol name (and IPNI transport) of HTTP trustless
@@ -22,10 +21,7 @@ import (
 const GatewayProtocol = "transport-ipfs-gateway-http"
 
 const (
-	maxGatewayProviders = 8         // gateways tried per lookup
-	maxRoutingRecords   = 64        // provider records parsed per lookup
-	maxRoutingResponse  = 256 << 10 // routing/v1 response bytes
-	routingTimeout      = 15 * time.Second
+	maxGatewayProviders = 8 // gateways tried per lookup
 	gatewayIdleTimeout  = 10 * time.Second
 	gatewayBlockTimeout = 60 * time.Second
 )
@@ -321,65 +317,18 @@ func (s *GatewaySource) fetch(ctx context.Context, gw string, id IPFSCID) ([]byt
 // FindGateways asks the routing endpoint for providers of id and returns the base URLs of
 // those announcing GatewayProtocol (at most maxGatewayProviders). A 404 is no providers.
 func (s *GatewaySource) FindGateways(ctx context.Context, id IPFSCID) ([]string, error) {
-	var body bytes.Buffer
-	res, err := s.Client.Fetch(ctx, s.Routing+"/routing/v1/providers/"+v1String(id), func(int64) (io.Writer, error) { body.Reset(); return &body, nil },
-		httpsrc.Options{MaxBytes: maxRoutingResponse, Timeout: routingTimeout, IdleTimeout: routingTimeout})
-	if err != nil {
-		var status *httpsrc.StatusError
-		if errors.As(err, &status) && status.Code == 404 {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return ParseGatewayProviders(body.Bytes(), res.ContentType)
+	recs, err := (&lookup.Providers{Client: s.Client, BaseURL: s.Routing}).Find(ctx, v1String(id))
+	return GatewayURLs(recs), err
 }
 
-// ParseGatewayProviders reads a routing/v1 providers response (JSON or NDJSON) and returns
-// the distinct gateway base URLs of `peer` records that list GatewayProtocol. Addresses
-// that are not HTTP(S) multiaddrs are skipped.
-func ParseGatewayProviders(b []byte, contentType string) ([]string, error) {
-	typ, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return nil, fmt.Errorf("routing: content type %q: %w", contentType, err)
-	}
-	type record struct {
-		Schema    string
-		Protocols []string
-		Addrs     []string
-	}
-	var recs []record
-	switch typ {
-	case "application/json":
-		var r struct{ Providers []record }
-		if err = json.Unmarshal(b, &r); err != nil {
-			return nil, fmt.Errorf("routing: %w", err)
-		}
-		recs = r.Providers
-	case "application/x-ndjson":
-		d := json.NewDecoder(bytes.NewReader(b))
-		for len(recs) < maxRoutingRecords {
-			var r record
-			if err = d.Decode(&r); err == io.EOF {
-				break
-			} else if err != nil {
-				return nil, fmt.Errorf("routing: %w", err)
-			}
-			recs = append(recs, r)
-		}
-	default:
-		return nil, fmt.Errorf("routing: unexpected content type %q", typ)
-	}
-	if len(recs) > maxRoutingRecords {
-		recs = recs[:maxRoutingRecords]
-	}
+// GatewayURLs returns the distinct gateway base URLs of provider records that list
+// GatewayProtocol (at most maxGatewayProviders). Addresses that are not HTTP(S)
+// multiaddrs are skipped.
+func GatewayURLs(recs []lookup.ProviderRecord) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, r := range recs {
-		gateway := false
-		for _, p := range r.Protocols {
-			gateway = gateway || p == GatewayProtocol
-		}
-		if r.Schema != "peer" || !gateway {
+		if !r.Has(GatewayProtocol) {
 			continue
 		}
 		for _, a := range r.Addrs {
@@ -389,7 +338,7 @@ func ParseGatewayProviders(b []byte, contentType string) ([]string, error) {
 			}
 		}
 	}
-	return out, nil
+	return out
 }
 
 // GatewayURL converts an HTTP(S) multiaddr (`/dns/h/tcp/443/https`, `/ip4/a/tcp/p/tls/http`,

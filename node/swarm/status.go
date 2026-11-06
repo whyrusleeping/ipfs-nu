@@ -15,6 +15,7 @@ import (
 // direct sessions and the cluster's dynamic membership gate remain in force.
 // Re-enabling public networking requires a restart, not an implicit gate clear.
 func (s *Swarm) DisablePublic() {
+	s.routing.Store(nil)
 	if s.dht != nil {
 		s.dht.close()
 	}

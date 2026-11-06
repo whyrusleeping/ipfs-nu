@@ -611,11 +611,12 @@ var IPFSRouting = "https://cid.contact"
 // ipfsGatewayHook adjusts the gateway source (tests: a local routing endpoint).
 var ipfsGatewayHook func(*bridge.GatewaySource)
 
-// newGatewaySource returns the HTTP trustless-gateway source, or nil when it is disabled or
-// this node is a private or isolated cluster member (D15: no public routing).
-func (n *Local) newGatewaySource() *bridge.GatewaySource {
+// ipfsRouting is the delegated-routing endpoint the importer asks for gateway and Bitswap
+// providers, or "" when it is disabled or this node is a private or isolated cluster
+// member (D15: no public routing).
+func (n *Local) ipfsRouting() string {
 	if c, _ := n.netCluster(); c != nil && c.Mode() != cluster.ModePublic {
-		return nil
+		return ""
 	}
 	routing := IPFSRouting
 	if v, err := n.Repo.ConfigGet("ipfs.routing_url"); err == nil {
@@ -623,7 +624,17 @@ func (n *Local) newGatewaySource() *bridge.GatewaySource {
 			routing = s
 		}
 	}
-	if routing == "" || routing == "off" {
+	if routing == "off" {
+		return ""
+	}
+	return routing
+}
+
+// newGatewaySource returns the HTTP trustless-gateway source, or nil when delegated
+// routing is off (ipfsRouting).
+func (n *Local) newGatewaySource() *bridge.GatewaySource {
+	routing := n.ipfsRouting()
+	if routing == "" {
 		return nil
 	}
 	cfg := n.httpConfig()
@@ -635,7 +646,7 @@ func (n *Local) newGatewaySource() *bridge.GatewaySource {
 	return src
 }
 
-// newNetworkSource races Bitswap (Amino provider discovery) and HTTP trustless gateways
+// newNetworkSource races Bitswap (Amino and delegated-routing provider discovery) and HTTP trustless gateways
 // (delegated routing); the first verified block wins and its transport is asked first for
 // the next block (bridge.FirstSource). Either one alone suffices. kind names the transports
 // used ("bitswap+gateway", "bitswap", "gateway"). Dry runs do not read ahead: they skip raw
@@ -683,23 +694,46 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 		return nil, nil, errors.New("IPFS Bitswap import requires a network exposing libp2p sessions")
 	}
 	h := netStack.Host()
+	// Delegated routing (IPNI) names Bitswap providers alongside Amino; either suffices.
+	var routed []bridge.ProviderFinder
+	if routing := n.ipfsRouting(); routing != "" {
+		p, err := lookup.NewProviders(httpsrc.New(n.httpConfig()), routing)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ipfs.routing_url: %w", err)
+		}
+		routed = append(routed, bridge.RoutingFinder{Providers: p})
+	}
 	if finder, ok := netStack.(bridge.ProviderFinder); ok {
-		src := bridge.NewBitswapSource(h, finder)
+		src := bridge.NewBitswapSource(h, append([]bridge.ProviderFinder{finder}, routed...)...)
 		return src, src.Close, nil
 	}
+	dht, err := n.aminoFinder(ctx, h, stack.Sessions())
+	if err != nil {
+		if len(routed) == 0 {
+			return nil, nil, err
+		}
+		src := bridge.NewBitswapSource(h, routed...)
+		return src, src.Close, nil
+	}
+	src := bridge.NewBitswapSource(h, append([]bridge.ProviderFinder{dht}, routed...)...)
+	return src, func() { src.Close(); _ = dht.Close() }, nil
+}
+
+// aminoFinder starts an Amino DHT client for the importer and bootstraps it.
+func (n *Local) aminoFinder(ctx context.Context, h *host.Host, sessions *host.Sessions) (*kad.Service, error) {
 	for _, protocol := range h.Protocols() {
 		if protocol == kad.Protocol {
-			return nil, nil, errors.New("amino provider discovery is already owned by another service")
+			return nil, errors.New("amino provider discovery is already owned by another service")
 		}
 	}
-	dht, err := kad.New(ctx, kad.Config{Host: h, Sessions: stack.Sessions()})
+	dht, err := kad.New(ctx, kad.Config{Host: h, Sessions: sessions})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	dns, err := lookup.NewDNS(lookup.DNSConfig{})
 	if err != nil {
 		_ = dht.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	bootstrapCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	bootstrapErr := dht.BootstrapDNS(bootstrapCtx, dns)
@@ -707,10 +741,9 @@ func (n *Local) newBitswapSource(ctx context.Context) (bridge.BlockSource, func(
 	if len(dht.Table().Peers()) == 0 {
 		_ = dht.Close()
 		if bootstrapErr != nil {
-			return nil, nil, fmt.Errorf("amino bootstrap failed: %w", bootstrapErr)
+			return nil, fmt.Errorf("amino bootstrap failed: %w", bootstrapErr)
 		}
-		return nil, nil, errors.New("amino returned no usable routing peers")
+		return nil, errors.New("amino returned no usable routing peers")
 	}
-	src := bridge.NewBitswapSource(h, dht)
-	return src, func() { src.Close(); _ = dht.Close() }, nil
+	return dht, nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/whyrusleeping/nu/api/apiv0"
 	"github.com/whyrusleeping/nu/httpsrc"
+	"github.com/whyrusleeping/nu/node/repo"
 )
 
 // PushNode is the item push part of a node (docs/collections.md "Ingest", docs/api.md
@@ -38,12 +39,16 @@ var IngestHTTP func(*httpsrc.Config)
 // prefixes exempt from the SSRF guard, e.g. that producer's subnet).
 func (n *Local) httpClient() *httpsrc.Client { return httpsrc.New(n.httpConfig()) }
 
-func (n *Local) httpConfig() httpsrc.Config {
+func (n *Local) httpConfig() httpsrc.Config { return IngestHTTPConfig(n.Repo) }
+
+// IngestHTTPConfig is the outbound HTTP policy of r's config (ingest.allow_http,
+// ingest.allow_ips), shared by URL imports, IPFS-import gateways and delegated routing.
+func IngestHTTPConfig(r *repo.Repo) httpsrc.Config {
 	var cfg httpsrc.Config
-	if v, err := n.Repo.ConfigGet("ingest.allow_http"); err == nil {
+	if v, err := r.ConfigGet("ingest.allow_http"); err == nil {
 		cfg.AllowHTTP, _ = v.(bool)
 	}
-	if v, err := n.Repo.ConfigGet("ingest.allow_ips"); err == nil {
+	if v, err := r.ConfigGet("ingest.allow_ips"); err == nil {
 		list, _ := v.([]any)
 		for _, x := range list {
 			s, _ := x.(string)

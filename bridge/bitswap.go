@@ -12,8 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/whyrusleeping/nu/core/cid"
 	"github.com/whyrusleeping/nu/kad"
 	"github.com/whyrusleeping/nu/p2p/host"
+	"github.com/whyrusleeping/nu/p2p/lookup"
 	"github.com/whyrusleeping/nu/p2p/wire"
 )
 
@@ -23,26 +25,56 @@ const (
 	maxBitswapMessage = (2 << 20) + 64<<10
 )
 
-// ProviderFinder exposes Amino provider discovery without coupling the importer to node
-// assembly. The native multihash bytes, not a SHA-256 alias, are the routing key.
+// ProviderFinder exposes provider discovery (Amino, delegated routing) without coupling
+// the importer to node assembly. The native multihash bytes, not a SHA-256 alias, are the
+// routing key.
 type ProviderFinder interface {
 	FindProviders(context.Context, []byte) ([]kad.Peer, error)
 }
+
+// RoutingFinder finds Bitswap providers through delegated routing (IPNI): records listing
+// transport-bitswap with a QUIC-v1 address, the only libp2p transport Nu dials.
+type RoutingFinder struct{ Providers *lookup.Providers }
+
+func (r RoutingFinder) FindProviders(ctx context.Context, key []byte) ([]kad.Peer, error) {
+	mh, err := cid.DecodeMultihash(key)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := r.Providers.Find(ctx, cid.New(cid.Raw, mh).String())
+	if err != nil {
+		return nil, fmt.Errorf("routing: %w", err)
+	}
+	var out []kad.Peer
+	for _, rec := range recs {
+		id, addrs, ok := rec.QUIC()
+		if !ok || !rec.Has(lookup.BitswapTransport) {
+			continue
+		}
+		p := kad.Peer{ID: id}
+		for _, a := range addrs {
+			p.Addrs = append(p.Addrs, a.Bytes())
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 type bitswapReply struct {
 	data []byte
 	err  error
 }
 type BitswapSource struct {
 	Host      *host.Host
-	Providers ProviderFinder
+	Providers []ProviderFinder // asked concurrently; their providers are merged
 	Timeout   time.Duration
 	mu        sync.Mutex
 	pending   map[IPFSCID][]chan bitswapReply
 	handler   bool
 }
 
-func NewBitswapSource(h *host.Host, p ProviderFinder) *BitswapSource {
-	return &BitswapSource{Host: h, Providers: p, Timeout: 60 * time.Second, pending: map[IPFSCID][]chan bitswapReply{}}
+func NewBitswapSource(h *host.Host, finders ...ProviderFinder) *BitswapSource {
+	return &BitswapSource{Host: h, Providers: finders, Timeout: 60 * time.Second, pending: map[IPFSCID][]chan bitswapReply{}}
 }
 func (s *BitswapSource) ensureHandler() error {
 	s.mu.Lock()
@@ -151,11 +183,14 @@ const (
 	bitswapDialTimeout = 10 * time.Second
 )
 
-// GetBlock finds providers of id, sends the want to each reachable one concurrently and
-// returns the first verified block. It fails when every provider was unreachable or
-// answered DONT_HAVE, or at the deadline.
+// GetBlock asks every provider finder at once and sends the want to each new provider as
+// its finder answers (a peer named again is dialed at its new addresses unless a want
+// already reached it), returning the first
+// verified block. It fails when every provider was unreachable or answered DONT_HAVE, or
+// at the deadline; when no finder named a provider, with the finders' errors if they all
+// failed.
 func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
-	if s.Providers == nil {
+	if len(s.Providers) == 0 {
 		return nil, errors.New("bitswap: provider finder required")
 	}
 	if s.Host == nil {
@@ -188,49 +223,90 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 		}
 		s.mu.Unlock()
 	}()
-	ps, e := s.Providers.FindProviders(ctx, append([]byte{0x12, 32}, id.Digest[:]...))
-	if e != nil {
-		return nil, e
+	type found struct {
+		ps  []kad.Peer
+		err error
 	}
-	type sent struct{ err error }
-	results := make(chan sent, len(ps))
+	key := append([]byte{0x12, 32}, id.Digest[:]...)
+	finds := make(chan found, len(s.Providers))
+	for _, f := range s.Providers {
+		go func(f ProviderFinder) {
+			ps, err := f.FindProviders(ctx, key)
+			finds <- found{ps, err}
+		}(f)
+	}
+	type sent struct {
+		id  wire.PeerID
+		err error
+	}
+	results := make(chan sent)
 	sem := make(chan struct{}, maxBitswapDials)
-	tries := 0
-	for _, p := range ps {
-		if p.ID == s.Host.ID() {
-			continue
-		}
-		tries++
-		go func(p kad.Peer) {
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results <- sent{ctx.Err()}
-				return
-			}
-			defer func() { <-sem }()
-			dctx, dcancel := context.WithTimeout(ctx, bitswapDialTimeout)
-			defer dcancel()
-			if err := s.want(dctx, p, id); err != nil {
-				results <- sent{fmt.Errorf("%s: %w", p.ID, err)}
-				return
-			}
-			results <- sent{}
-		}(p)
+	// Per provider: the addresses already tried and whether a want reached it. A peer
+	// named again with new addresses (a stale IPNI record, then Amino's current one) is
+	// dialed at those unless a want already reached it.
+	type known struct {
+		addrs  map[string]bool
+		wanted bool
 	}
-	if tries == 0 {
-		return nil, &MissingBlockError{CID: id, Err: errors.New("bitswap: no providers found")}
-	}
+	peers := map[wire.PeerID]*known{s.Host.ID(): {wanted: true}}
 	var errs []string
-	pending, wanted, refused := tries, 0, 0
+	var findErrs []error
+	finding, tries, pending, wanted, refused := len(s.Providers), 0, 0, 0, 0
 	for {
 		select {
+		case f := <-finds:
+			finding--
+			if f.err != nil {
+				findErrs = append(findErrs, f.err)
+				errs = append(errs, f.err.Error())
+			}
+			for _, p := range f.ps {
+				k, again := peers[p.ID]
+				if !again {
+					k = &known{addrs: map[string]bool{}}
+					peers[p.ID] = k
+				} else if k.wanted {
+					continue
+				}
+				fresh := p.Addrs[:0:0]
+				for _, a := range p.Addrs {
+					if !k.addrs[string(a)] {
+						k.addrs[string(a)] = true
+						fresh = append(fresh, a)
+					}
+				}
+				if len(fresh) == 0 && again {
+					continue
+				}
+				p.Addrs = fresh
+				tries++
+				pending++
+				go func(p kad.Peer) {
+					r := sent{id: p.ID}
+					select {
+					case sem <- struct{}{}:
+						dctx, dcancel := context.WithTimeout(ctx, bitswapDialTimeout)
+						if err := s.want(dctx, p, id); err != nil {
+							r.err = fmt.Errorf("%s: %w", p.ID, err)
+						}
+						dcancel()
+						<-sem
+					case <-ctx.Done():
+						r.err = ctx.Err()
+					}
+					select {
+					case results <- r:
+					case <-ctx.Done():
+					}
+				}(p)
+			}
 		case r := <-results:
 			pending--
 			if r.err != nil {
 				errs = append(errs, r.err.Error())
 			} else {
 				wanted++
+				peers[r.id].wanted = true
 			}
 		case reply := <-replyCh:
 			if reply.err != nil {
@@ -238,7 +314,7 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 				errs = append(errs, reply.err.Error())
 				break
 			}
-			if e = id.Verify(reply.data); e != nil {
+			if e := id.Verify(reply.data); e != nil {
 				refused++
 				errs = append(errs, e.Error())
 				break
@@ -249,6 +325,19 @@ func (s *BitswapSource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 				return nil, fmt.Errorf("bitswap: all providers failed: %s; %w", strings.Join(errs, "; "), ctx.Err())
 			}
 			return nil, ctx.Err()
+		}
+		if finding > 0 {
+			continue
+		}
+		if tries == 0 {
+			if len(findErrs) == len(s.Providers) {
+				return nil, errors.Join(findErrs...)
+			}
+			msg := "bitswap: no providers found"
+			if len(errs) > 0 {
+				msg += ": " + strings.Join(errs, "; ")
+			}
+			return nil, &MissingBlockError{CID: id, Err: errors.New(msg)}
 		}
 		if pending == 0 && refused >= wanted {
 			return nil, &MissingBlockError{CID: id, Err: fmt.Errorf("bitswap: no provider supplied the block: %s", strings.Join(errs, "; "))}

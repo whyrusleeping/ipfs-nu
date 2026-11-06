@@ -116,7 +116,12 @@ requires explicit operator mapping; no IPFS Cluster API or authority/key migrati
 implied.
 
 Remote blocks use Nu's own QUIC-v1 host and a minimal client-only Bitswap implementation;
-provider lookup uses the existing Amino DHT (`kad/`). Request only the root and referenced
+provider lookup asks the existing Amino DHT (`kad/`) and the delegated-routing endpoint
+`ipfs.routing_url` (below) at once. A routing `peer` record counts as a Bitswap provider
+when it lists `transport-bitswap` and has a literal-IP `/udp/<port>/quic-v1` address; the
+want goes to each provider as its lookup answers (a peer named again is dialed only at
+addresses not yet tried, and not at all once a want reached it), and either
+lookup alone suffices (an Amino bootstrap failure leaves the routing lookup). Request only the root and referenced
 blocks, enforce bounded concurrency, response/block byte limits, deadlines and traversal
 budgets, and validate every CID before accepting a block. Bitswap's roughly 2 MiB block-size
 limit is enforced; unsupported/larger individual blocks fail explicitly. Each block is wanted
@@ -132,7 +137,9 @@ HTTP trustless gateways are the second network transport. Filecoin storage provi
 to IPNI with the `transport-ipfs-gateway-http` protocol, without Bitswap. For a block the
 importer asks the delegated-routing endpoint `ipfs.routing_url` (default
 `https://cid.contact`; `off` disables the transport) for
-`GET /routing/v1/providers/<cid>` (JSON or NDJSON, at most 256 KiB and 64 records, 15 s),
+`GET /routing/v1/providers/<cid>` (JSON or NDJSON, at most 256 KiB and 64 records, 15 s;
+`p2p/lookup.Providers`, the one parser for gateway and peer records, also used for Bitswap
+and Nu fetch providers, [D15](data.md#d15-content-provider-discovery)),
 keeps `peer` records listing `transport-ipfs-gateway-http`, and turns their
 `/dns|dns4|dns6|ip4|ip6/<host>/tcp/<port>/https` (or `/tls/http`, `/tls/sni/<h>/http`,
 `/http`) addresses into at most 8 gateway base URLs. It fetches

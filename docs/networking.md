@@ -58,8 +58,8 @@ peers, then does a self lookup; the table is refreshed every 5 minutes and re-bo
 when it holds fewer than K peers. Server mode follows the connectivity owner's AutoNAT
 verdict (`reach == "public"` → handler registered; anything else → client). The service
 is a lookup source (D13 step 7) beside optional `swarm.lookup_domain` (dnsaddr) and
-`swarm.routing_url` (routing/v1) sources, and `fetch.Kademlia` is a fetch provider source
-beside connected peers (which are now limited to peers whose identify advertises a `/nu`
+`swarm.routing_url` (routing/v1) sources, and `fetch.Kademlia` is a fetch provider source,
+beside `fetch.Delegated` (routing/v1 providers at `ipfs.routing_url`, [D15](data.md#d15-content-provider-discovery) step 6) and connected peers (which are now limited to peers whose identify advertises a `/nu`
 data protocol). Providing follows D15: on every pin and every 22 h the daemon announces
 each public-intent pin's root (sources explicit, public, my-names, follow; never cluster,
 surplus, collection or IPFS-import pins, whose content is member-only per

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -117,6 +118,7 @@ type Swarm struct {
 	closeErr     error
 	connectivity *connectivity
 	dht          *dht
+	routing      atomic.Pointer[lookup.Providers] // delegated provider routing (D15 step 6); nil when off
 	metrics      *netMetrics
 	peerRelay    *circuit.Server // relay_optimizer.go; nil unless PeerRelayAllow
 }
@@ -230,10 +232,13 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 		fc := cfg.Fetch
 		fc.Store = cfg.Store
-		fc.Providers = fetch.Multi{connected{s}, lan{s}, dhtProviders{s}}
+		fc.Providers = fetch.Multi{connected{s}, lan{s}, dhtProviders{s}, routedProviders{s}}
 		s.fetcher = fetch.New(fc)
 	}
 	if err := s.startDHT(bg); err != nil {
+		return nil, err
+	}
+	if err := s.startRouting(); err != nil {
 		return nil, err
 	}
 	ok = true
@@ -387,7 +392,7 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	if hintErr != nil {
 		s.log.Debug("some link hints are unusable", "err", hintErr)
 	}
-	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil && s.lookup.MDNS() == nil {
+	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil && s.lookup.MDNS() == nil && s.routing.Load() == nil {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no one to fetch %s from: the link names no reachable provider and no peer is connected", root).
 			WithAction("use a share link with its provider (`peer=`/`addr=`), be on the same network as a node that holds the content, or bind a non-loopback swarm.listen so the DHT can be used")
 	}
@@ -715,6 +720,14 @@ func RepoConfig(r *repo.Repo, key *wire.NodeKey, st *store.Store) (Config, error
 	}
 	out := Config{Key: key, Store: st, Listen: cfg.Swarm.Listen, MDNS: cfg.Swarm.MDNS, CacheFile: r.Path(repo.PeersFile), GSO: cfg.Swarm.GSO,
 		DHT: DHTConfig{Mode: cfg.Swarm.DHT, LookupDomain: cfg.Swarm.LookupDomain, RoutingURL: cfg.Swarm.RoutingURL, NoAnnounce: r.NoAnnounced}}
+	if v, err := r.ConfigGet("ipfs.routing_url"); err == nil {
+		url, _ := v.(string)
+		if url == "" {
+			url = "off"
+		}
+		out.DHT.ProvidersURL = url
+	}
+	out.DHT.ProvidersHTTP = node.IngestHTTPConfig(r)
 	if err := applyConnectivityConfig(&out, cfg.Swarm); err != nil {
 		return Config{}, err
 	}

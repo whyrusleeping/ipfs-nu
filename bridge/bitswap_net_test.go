@@ -21,6 +21,68 @@ func (p testProvider) FindProviders(context.Context, []byte) ([]kad.Peer, error)
 
 func TestBitswapSourceOverNuHost(t *testing.T) {
 	payload := []byte("bitswap 1.2 payload")
+	id, server, addr := bitswapServer(t, payload)
+	key, err := wire.GenerateNodeKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientHost, err := host.New(host.Config{Key: key, Listen: []string{"127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	src := NewBitswapSource(clientHost, testProvider{Peer: kad.Peer{ID: server.ID(), Addrs: [][]byte{addr.Bytes()}}})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := src.GetBlock(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+type laterProvider struct {
+	testProvider
+	delay time.Duration
+}
+
+func (p laterProvider) FindProviders(ctx context.Context, key []byte) ([]kad.Peer, error) {
+	time.Sleep(p.delay)
+	return p.testProvider.FindProviders(ctx, key)
+}
+
+// A peer one finder names at a stale address is dialed again at the address a later
+// finder names (a stale IPNI record, then Amino's current one).
+func TestBitswapSourceMergesProviderAddrs(t *testing.T) {
+	payload := []byte("merged provider addresses")
+	id, server, addr := bitswapServer(t, payload)
+	stale, err := wire.ParseMultiaddr("/ip4/127.0.0.1/udp/1/quic-v1/p2p/"+server.ID().String(), 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := wire.GenerateNodeKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := host.New(host.Config{Key: key, Listen: []string{"127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	src := NewBitswapSource(client, testProvider{Peer: kad.Peer{ID: server.ID(), Addrs: [][]byte{stale.Bytes()}}},
+		laterProvider{testProvider{Peer: kad.Peer{ID: server.ID(), Addrs: [][]byte{stale.Bytes(), addr.Bytes()}}}, 50 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if got, err := src.GetBlock(ctx, id); err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+// bitswapServer serves payload over Bitswap 1.2 and returns its CID, host and address.
+func bitswapServer(t *testing.T, payload []byte) (IPFSCID, *host.Host, wire.Multiaddr) {
+	t.Helper()
 	id := IPFSCID{Version: 1, Codec: codecRaw, Hash: hashSHA256, Digest: sha256.Sum256(payload)}
 	key, err := wire.GenerateNodeKey()
 	if err != nil {
@@ -30,7 +92,7 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	t.Cleanup(func() { server.Close() })
 	if err := server.Handle(BitswapProtocol, 4, func(st *host.Stream) {
 		remote := st.Conn().PeerID()
 		req, err := readDelimited(bufio.NewReader(st), maxBitswapMessage)
@@ -58,15 +120,6 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	key, err = wire.GenerateNodeKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientHost, err := host.New(host.Config{Key: key, Listen: []string{"127.0.0.1:0"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clientHost.Close()
 	addrs := server.Addrs()
 	if len(addrs) == 0 {
 		t.Fatal("server has no address")
@@ -79,16 +132,7 @@ func TestBitswapSourceOverNuHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := NewBitswapSource(clientHost, testProvider{Peer: kad.Peer{ID: server.ID(), Addrs: [][]byte{addr.Bytes()}}})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	got, err := src.GetBlock(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, payload) {
-		t.Fatalf("got %q", got)
-	}
+	return id, server, addr
 }
 func parseBitswapWant(message []byte) (IPFSCID, error) {
 	for len(message) > 0 {

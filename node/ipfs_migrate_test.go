@@ -360,7 +360,59 @@ func (f fakeNet) Connect(context.Context, wire.PeerID, []wire.Multiaddr) error {
 func (f fakeNet) Addrs() []wire.Multiaddr                                      { return f.h.Addrs() }
 func (f fakeNet) Sessions() *host.Sessions                                     { return nil }
 func (f fakeNet) FindProviders(context.Context, []byte) ([]kad.Peer, error) {
+	if f.p.ID == "" {
+		return nil, nil // Amino off: no provider records
+	}
 	return []kad.Peer{f.p}, nil
+}
+
+// With Amino finding nothing, a delegated-routing (IPNI) record announcing a Bitswap peer
+// over QUIC is enough to import from it.
+func TestIPFSImportRoutedBitswap(t *testing.T) {
+	r, _, err := repo.Open(filepath.Join(t.TempDir(), "nu"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := NewLocal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	d := ipfsfix.New()
+	root, files := migrationFixture(7, nil, d)
+	server, client := testHost(t), testHost(t)
+	if err := d.ServeBitswap(server, func(bridge.IPFSCID) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := server.Addrs()[0].Text()
+	routing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		fmt.Fprintf(w, `{"Schema":"peer","ID":"%s","Protocols":["transport-bitswap"],"Addrs":["%s","/ip4/127.0.0.1/tcp/4001"]}`+"\n", server.ID(), text)
+	}))
+	defer routing.Close()
+	IngestHTTP = func(c *httpsrc.Config) {
+		c.AllowHTTP, c.AllowedIPs = true, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	}
+	IPFSRouting = routing.URL
+	defer func() { IPFSRouting, IngestHTTP = "off", nil }()
+	if err := n.AttachNetwork(fakeNet{h: client}); err != nil {
+		t.Fatal(err)
+	}
+	o, err := n.ImportIPFS(context.Background(), apiv0.IPFSImportRequest{Root: root.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := n.WaitOperation(context.Background(), o.ID, 10*time.Second)
+	if err != nil || final.State != apiv0.StateSucceeded {
+		t.Fatalf("import: %+v %v", final, err)
+	}
+	var res apiv0.IPFSImportResult
+	if err := json.Unmarshal(final.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Root != plannedRoot(t, d, root) || res.Files != uint64(len(files)) {
+		t.Fatalf("import result: %+v", res)
+	}
 }
 
 // A network dry run walks structure only (no raw leaf or file chunk is requested), reports

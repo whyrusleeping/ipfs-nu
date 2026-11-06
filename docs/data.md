@@ -377,8 +377,16 @@ Try sources in this order:
 4. Candidate connected/LAN peers via `/nu/have/1`. LAN peers are those heard over mDNS
    ([D13](networking.md#v0-lookup-cache-and-mdns)).
 5. Amino DHT provider records.
-6. Delegated routing: `GET /routing/v1/providers/{cid}`. Today only the IPFS importer uses
-   it, for `transport-ipfs-gateway-http` providers ([migration](migration.md#sources-and-transport)).
+6. Delegated routing: `GET /routing/v1/providers/{cid}` at `ipfs.routing_url` (IPNI;
+   `p2p/lookup.Providers`, JSON or NDJSON, at most 256 KiB and 64 records, 15 s; a 404 is
+   no providers). For Nu fetch, unset means `https://cid.contact` when the swarm binds a
+   non-loopback address (as for `swarm.dht = "auto"`); `off` or `""` disables it. Every `peer` record
+   with a literal-IP `/udp/<port>/quic-v1` address is a candidate, whatever protocols it
+   lists (Nu has no IPNI transport code; publishing is backlog 0087's question): its
+   public addresses become untrusted session hints (`fetch.Delegated`), and `/nu/have/1`
+   confirms it. The client honours `ingest.allow_http`/`allow_ips`. The IPFS importer
+   uses the same client and parser for Bitswap and gateway providers
+   ([migration](migration.md#sources-and-transport)).
 
 Cluster members fetching cluster datasets instead use [D20 placement](cluster.md#placement):
 owners by rank, surplus holders, then other members. Private and isolated clusters never use

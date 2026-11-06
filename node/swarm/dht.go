@@ -40,6 +40,12 @@ type DHTConfig struct {
 	LookupDomain, RoutingURL string
 	// NoAnnounce lists roots (CID strings) never to provide (repo.NoAnnounced).
 	NoAnnounce func() ([]string, error)
+	// ProvidersURL is the delegated provider-routing endpoint asked for Nu CIDs (D15 step
+	// 6; ipfs.routing_url): "" is auto (lookup.DefaultProvidersURL when a non-loopback
+	// address is bound, as for the DHT), "off" disables it. ProvidersHTTP configures its
+	// HTTP client (tests: plain HTTP to loopback).
+	ProvidersURL  string
+	ProvidersHTTP httpsrc.Config
 }
 
 // MaxProvideKeys bounds the keys one provide cycle announces.
@@ -83,16 +89,39 @@ func dhtEnabled(cfg Config) (bool, error) {
 	default:
 		return false, fmt.Errorf("swarm.dht: expected auto, client or off, got %q", cfg.DHT.Mode)
 	}
-	for _, l := range cfg.Listen {
+	return nonLoopback(cfg.Listen), nil
+}
+
+// nonLoopback reports whether a listen address binds beyond loopback; a loopback-only
+// socket cannot reach public routing or the providers it names.
+func nonLoopback(listen []string) bool {
+	for _, l := range listen {
 		parts := strings.Split(strings.TrimPrefix(l, "/"), "/")
 		if len(parts) < 2 {
 			continue
 		}
 		if ip := net.ParseIP(parts[1]); ip != nil && !ip.IsLoopback() {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// startRouting sets up delegated provider routing for public swarms (ProvidersURL).
+func (s *Swarm) startRouting() error {
+	url := s.cfg.DHT.ProvidersURL
+	if s.cfg.Private || s.cfg.Isolated || url == "off" || url == "" && !nonLoopback(s.cfg.Listen) {
+		return nil
+	}
+	if url == "" {
+		url = lookup.DefaultProvidersURL
+	}
+	p, err := lookup.NewProviders(httpsrc.New(s.cfg.DHT.ProvidersHTTP), url)
+	if err != nil {
+		return fmt.Errorf("ipfs.routing_url: %w", err)
+	}
+	s.routing.Store(p)
+	return nil
 }
 
 // publicSources are the D13 sources a public swarm adds behind the lookup service: the
@@ -474,6 +503,33 @@ func (p dhtProviders) Find(ctx context.Context, c cid.CID, found func(fetch.Peer
 	err := fetch.Kademlia{DHT: d.svc, Sessions: p.s.sessions}.Find(ctx, c, func(peer fetch.Peer) { n++; found(peer) })
 	p.s.log.Info("DHT provider lookup", "cid", c, "providers", n, "elapsed", time.Since(started).Round(time.Millisecond), "err", err)
 	return err
+}
+
+// routedProviders is the fetcher's delegated-routing source (D15 step 6): IPNI records
+// with a QUIC address become session hints (fetch.Delegated); only public addresses are
+// accepted unless DHT.AllowPrivateAddresses.
+type routedProviders struct{ s *Swarm }
+
+func (p routedProviders) Find(ctx context.Context, c cid.CID, found func(fetch.Peer)) error {
+	r := p.s.routing.Load()
+	if r == nil {
+		return nil
+	}
+	started, n := time.Now(), 0
+	err := fetch.Delegated{Routing: r, Sessions: p.s.sessions, Self: p.s.host.ID(), Allow: p.s.allowProviderAddr}.Find(ctx, c, func(peer fetch.Peer) { n++; found(peer) })
+	p.s.log.Info("delegated provider lookup", "cid", c, "providers", n, "elapsed", time.Since(started).Round(time.Millisecond), "err", err)
+	if err != nil {
+		return fmt.Errorf("delegated routing: %w", err)
+	}
+	return nil
+}
+
+func (s *Swarm) allowProviderAddr(a wire.Multiaddr) bool {
+	if s.cfg.DHT.AllowPrivateAddresses {
+		return true
+	}
+	ep, ok := literalEndpoint(a)
+	return ok && IsPublicIP(ep.Addr())
 }
 
 // DHTStatus reports the DHT section of the node status.

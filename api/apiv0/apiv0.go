@@ -364,6 +364,8 @@ type Paths struct {
 // CARDir/<cid>.car or the network. Dataset writes the imported root as the dataset's new
 // head and version with an `imported` reference to the provenance manifest.
 type IPFSImportRequest struct {
+	// Root is an IPFS CID or /ipfs/<cid>, or a DNSLink name (example.org, vitalik.eth,
+	// /ipns/<domain>) resolved when the operation starts.
 	Root    string `json:"root,omitempty"`
 	CAR     string `json:"car,omitempty"`
 	DryRun  bool   `json:"dry_run,omitempty"`

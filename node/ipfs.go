@@ -26,6 +26,9 @@ import (
 type ipfsImportJob struct {
 	Request   apiv0.IPFSImportRequest `json:"request"`
 	Operation apiv0.Operation         `json:"operation"`
+	// Name is the DNSLink name Request.Root was given as; Request.Root then holds the CID it
+	// resolved to when the job started, so a resumed job imports the same root.
+	Name string `json:"name,omitempty"`
 	// Pins is the parsed inventory of a pinset job; Done the reports of its first
 	// len(Done) pins, persisted after each so a resumed job continues with the next.
 	Pins []bridge.Pin           `json:"pins,omitempty"`
@@ -46,7 +49,7 @@ var ipfsSourceHook func(bridge.BlockSource) bridge.BlockSource
 // deterministic outputs.
 func (n *Local) ImportIPFS(ctx context.Context, req apiv0.IPFSImportRequest) (*apiv0.Operation, error) {
 	job := ipfsImportJob{Request: req}
-	target, err := n.prepareIPFSImport(&job)
+	target, err := n.prepareIPFSImport(ctx, &job)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +80,7 @@ func absFile(what, p string, dir bool) (string, error) {
 }
 
 // prepareIPFSImport validates a request and returns the operation target.
-func (n *Local) prepareIPFSImport(job *ipfsImportJob) (string, error) {
+func (n *Local) prepareIPFSImport(ctx context.Context, job *ipfsImportJob) (string, error) {
 	req := &job.Request
 	var err error
 	if req.CARDir != "" {
@@ -116,9 +119,17 @@ func (n *Local) prepareIPFSImport(job *ipfsImportJob) (string, error) {
 	if req.CARDir != "" {
 		return "", apiv0.Errorf(apiv0.CodeInvalidArgument, "car_dir applies to pinset imports; give one root's CAR as car")
 	}
-	root, err := bridge.ParseIPFSCID(req.Root)
+	root, name, err := bridge.ParseImportTarget(req.Root)
 	if err != nil {
-		return "", apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid IPFS root %q: %v", req.Root, err)
+		return "", apiv0.Errorf(apiv0.CodeInvalidArgument, "invalid IPFS root %q: %v", req.Root, err).
+			WithAction("give an IPFS CID, /ipfs/<cid>, or a DNSLink or ENS name such as example.org or vitalik.eth")
+	}
+	if name != "" {
+		if root, err = n.dnsLinkResolver().Resolve(ctx, name); err != nil {
+			return "", apiv0.Errorf(apiv0.CodeNotFound, "%v", err).
+				WithAction("check the name's _dnslink TXT record (or ENS contenthash), or import its CID directly")
+		}
+		job.Name, req.Root = name, root.String()
 	}
 	if req.Dataset != "" {
 		if req.Scope == "" {
@@ -128,7 +139,29 @@ func (n *Local) prepareIPFSImport(job *ipfsImportJob) (string, error) {
 			return "", err
 		}
 	}
+	if name != "" {
+		return name + " → " + root.String(), nil
+	}
 	return root.String(), nil
+}
+
+// dnsLinkResolver resolves import names: the system resolver, and DNS-over-HTTPS for the
+// suffixes in DefaultDoH (ENS's .eth through eth.limo) as overridden by the ipfs.dns_resolvers
+// table (suffix → endpoint URL; "" selects the system resolver).
+func (n *Local) dnsLinkResolver() *bridge.DNSLinkResolver {
+	doh := map[string]string{}
+	for k, v := range bridge.DefaultDoH {
+		doh[k] = v
+	}
+	if v, err := n.Repo.ConfigGet("ipfs.dns_resolvers"); err == nil {
+		if m, ok := v.(map[string]any); ok {
+			for k, x := range m {
+				s, _ := x.(string)
+				doh[k] = s
+			}
+		}
+	}
+	return &bridge.DNSLinkResolver{DoH: doh, Client: n.httpClient()}
 }
 
 // importDataset finds a dataset an import may write: it must keep version history, since
@@ -223,6 +256,7 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, boo
 			return nil, false, err
 		}
 		out.Blocks = blocks
+		out.Name = job.Name
 		return out, false, nil
 	}
 	res, err := n.importIPFSRoot(o, job, root, src, kind)
@@ -230,9 +264,10 @@ func (n *Local) executeIPFSImport(o *op.Operation, job *ipfsImportJob) (any, boo
 		return nil, false, err
 	}
 	out := importResult(res, kind)
+	out.Name = job.Name
 	if job.Request.Dataset != "" {
 		stage("writing-dataset")
-		if out.Dataset, err = n.importHead(ctx, job.Request.Scope, job.Request.Dataset, res); err != nil {
+		if out.Dataset, err = n.importHead(ctx, job.Request.Scope, job.Request.Dataset, job.Name, res); err != nil {
 			return nil, false, err
 		}
 	}
@@ -336,7 +371,7 @@ func (n *Local) importIPFSRoot(o *op.Operation, job *ipfsImportJob, root bridge.
 // importHead writes the imported root as the dataset's head and version, whose signed
 // `imported` field references the provenance manifest. A replay after the write (a
 // resumed job) finds the same head and reference and writes nothing.
-func (n *Local) importHead(ctx context.Context, scope, name string, res bridge.ImportResult) (*apiv0.Dataset, error) {
+func (n *Local) importHead(ctx context.Context, scope, name, dnslink string, res bridge.ImportResult) (*apiv0.Dataset, error) {
 	c, d, err := n.importDataset(scope, name)
 	if err != nil {
 		return nil, err
@@ -354,7 +389,11 @@ func (n *Local) importHead(ctx context.Context, scope, name string, res bridge.I
 	if err != nil {
 		return nil, err
 	}
-	return n.writeHeadImported(ctx, c, name, d, res.Root, kind, size, "imported from "+imported.Source, "", imported)
+	message := "imported from " + imported.Source
+	if dnslink != "" {
+		message += " (" + dnslink + ")"
+	}
+	return n.writeHeadImported(ctx, c, name, d, res.Root, kind, size, message, "", imported)
 }
 
 // importPinset imports (or inventories) every recursive pin of a Kubo pin inventory and

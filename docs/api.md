@@ -80,7 +80,10 @@ from the start instead of treating it as an empty delta. A malformed cursor is
 `{"root":"<IPFS CID>","car":"/absolute/path/root.car"}` verifies every block against its
 original CID; omit `car` to retrieve over the network: Bitswap over QUIC-v1 with Amino
 provider lookup, raced with HTTP trustless gateways found through `ipfs.routing_url`
-([migration.md](migration.md#sources-and-transport)).
+([migration.md](migration.md#sources-and-transport)). `root` may also be `/ipfs/<cid>` or a
+DNSLink/ENS name (`example.org`, `vitalik.eth`, `/ipns/<domain>`), resolved when the
+operation starts ([migration.md](migration.md#dnslink-and-ens-names)); the result's `name`
+records it.
 `"dataset":"<ds>"` (an archive dataset; `"scope":"cluster"` for the networked cluster) also
 writes the Nu root as its head and a version whose `imported` field references the manifest;
 the result then carries `dataset`. A pinset: `{"pins":"/abs/pins.json","car_dir":"/abs/dir"}`

@@ -62,8 +62,8 @@ of drop-in compatibility. Never remove or modify the source installation automat
 ## Import profile (normative v1)
 
 The bridge is an importer, not an IPFS node. It never serves Bitswap, writes to Kubo, or
-claims that a Nu CID is an IPFS CID. Inputs are a canonical CIDv0 or CIDv1 root plus a
-source. CIDv0 is accepted as a dag-pb SHA-256 multihash and normalized internally; CIDv1
+claims that a Nu CID is an IPFS CID. Inputs are a canonical CIDv0 or CIDv1 root (or a
+[DNSLink/ENS name](#dnslink-and-ens-names) resolved to one) plus a source. CIDv0 is accepted as a dag-pb SHA-256 multihash and normalized internally; CIDv1
 accepts raw or dag-pb with SHA-256. Identity/inline CIDs, unsupported hash functions and
 codecs other than raw and dag-pb are refused (there is no block to retrieve or verify for an
 identity CID). Every received block, including each raw leaf and dag-pb node, is hashed using
@@ -141,16 +141,39 @@ keeps `peer` records listing `transport-ipfs-gateway-http`, and turns their
 request), trying gateways one at a time, and verifies the bytes against the CID. A gateway
 that serves wrong bytes is demoted and the next is tried. Gateways that already served a
 block are asked first for later blocks, so a DAG held by one provider needs one routing
-lookup. Gateways answer one block per request, so the transport reads ahead in walk order:
-the children of each arriving dag-pb node are queued before earlier-queued blocks, and up to
-8 queued blocks are fetched at once while fewer than 32 fetched blocks wait to be asked for
-(no read-ahead for dry runs, which skip raw leaves). A 404 from the routing endpoint means
+lookup. Gateways answer one block per request, so the transport reads ahead in walk order: every
+dag-pb node that arrives, read ahead or asked for, queues its children at their depth-first
+walk position (the link indexes from the root), and the earliest queued blocks are fetched,
+up to 16 at once, while fewer than 64 blocks and 32 MiB are fetched or in flight but not yet
+asked for. When the walk asks for a block that was not read ahead while that window is
+full, read-ahead blocks before it in walk order (supplied by Bitswap instead) are dropped;
+a block outside every queued walk (the next root of a pinset) drops them all. No read-ahead
+for dry runs, which skip raw leaves. A 404 from the routing endpoint means
 no providers; a block no gateway supplied is *missing*. Bitswap and the gateway transport are raced for each block until one has served:
 the first verified block wins and its transport is asked alone for the next block, falling
 back to the race when it fails. Either transport alone suffices. A private or isolated
 cluster member never uses the gateway transport (D15). The result's `source` is `car`, or
 the network transports used: `bitswap+gateway`, `bitswap` or `gateway`. Gateways never
 replace original-CID verification.
+
+### DNSLink and ENS names
+
+A single-root import may name its root instead of giving the CID: `/ipfs/<cid>` is the CID;
+a domain (`example.org`), `/ipns/<domain>` or `ipns://<domain>` is a
+[DNSLink](https://dnslink.dev) name, resolved once when the operation starts. The job keeps
+the resolved CID, so a resumed job imports the same root; the result's `name` and a dataset
+version's message record the name. Resolution reads the TXT records of `_dnslink.<domain>`,
+then of the domain itself, takes the lexicographically first `dnslink=/ipfs/…` or
+`dnslink=/ipns/…` value and follows `/ipns/<domain>` values (at most 8 links, 15 s in total).
+A value with a path inside the root, an `/ipns/` IPNS key (IPNS records are not supported)
+or no record fails before any block is fetched. ENS names (`.eth`) resolve the same way
+through a DNS-over-HTTPS endpoint that answers ENS contenthash records as DNSLink TXT, as in
+Kubo: the config table `ipfs.dns_resolvers` maps domain suffixes to RFC 8484 endpoints
+(POST, `application/dns-message`, 64 KiB, through `httpsrc`; the longest matching suffix
+wins; `""` selects the system resolver). Its default is
+`eth = "https://dns.eth.limo/dns-query"`; other names use the system resolver. A name is
+trusted naming, not verification: the resolver chooses the root, and every block is still
+verified against that root's CIDs.
 
 ## Resumption, provenance and cutover
 
@@ -232,7 +255,7 @@ cutover only when all pass; otherwise it lists what is missing:
 The report repeats the standing rules (Nu changes nothing in Kubo; back up the Kubo repo and
 keys; move readers/writers deliberately) and notes a single-copy policy.
 
-CLI/API: `nu import ipfs <cid>` retrieves through Bitswap/Amino and HTTP gateways; `nu import ipfs --car file
+CLI/API: `nu import ipfs <cid|name>` retrieves through Bitswap/Amino and HTTP gateways; `nu import ipfs --car file
 <cid>` imports a local CARv1; `nu import ipfs --pins pins.json [--car-dir d]` imports a
 pinset. `--dry-run` applies to all three. The local API's `POST /import/ipfs` accepts the same
 request and returns a durable operation ID. Operation request/stage/result survive daemon

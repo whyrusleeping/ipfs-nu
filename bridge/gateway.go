@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,39 +38,47 @@ const (
 // wrong bytes is demoted on the shared client and the next one is tried.
 //
 // Gateways answer one block per request, so the source reads ahead in the importer's walk
-// order: when a dag-pb node arrives its children are queued in front of everything queued
-// earlier (depth first, links in order), and queued blocks are fetched in the background,
-// gatewayFetches at a time, while fewer than Readahead fetched blocks wait to be asked for.
-// Dry runs, which skip raw leaves, set Readahead to 0.
+// order: every dag-pb block that arrives (read ahead or asked for) queues its children at
+// their depth-first walk position, and the earliest queued blocks are fetched in the
+// background, gatewayFetches at a time, while fewer than Readahead blocks (and
+// maxAheadBytes) are fetched or in flight but not yet asked for. Dry runs, which skip raw
+// leaves, set Readahead to 0.
 type GatewaySource struct {
 	Client    *httpsrc.Client
 	Routing   string // routing/v1 base URL
 	Readahead int
 	mu        sync.Mutex
 	known     []string // gateway base URLs, in order of first success
-	queue     []IPFSCID
+	queue     walkQueue
+	pos       map[IPFSCID]walkPos     // walk position of every block queued, fetched or asked
+	queued    map[IPFSCID]bool        // in queue and not yet started or asked for
 	ahead     map[IPFSCID]*aheadBlock // started, not yet asked for
+	expanded  map[IPFSCID]bool
+	bytes     int // bytes of fetched blocks in ahead
 	running   int
 	ctx       context.Context
 	cancel    context.CancelFunc
 }
 
 type aheadBlock struct {
-	done chan struct{}
-	b    []byte
-	err  error
+	done  chan struct{}
+	ready bool
+	b     []byte
+	err   error
 }
 
 const (
-	DefaultReadahead = 32
-	gatewayFetches   = 8
-	maxReadQueue     = 4096
+	DefaultReadahead = 64
+	gatewayFetches   = 16
+	maxAheadBytes    = 32 << 20
+	maxReadQueue     = 1 << 16
 )
 
 func NewGatewaySource(c *httpsrc.Client, routing string) *GatewaySource {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &GatewaySource{Client: c, Routing: strings.TrimRight(routing, "/"), Readahead: DefaultReadahead,
-		ahead: map[IPFSCID]*aheadBlock{}, ctx: ctx, cancel: cancel}
+		pos: map[IPFSCID]walkPos{}, queued: map[IPFSCID]bool{}, ahead: map[IPFSCID]*aheadBlock{}, expanded: map[IPFSCID]bool{},
+		ctx: ctx, cancel: cancel}
 }
 
 // Close stops reading ahead.
@@ -79,11 +88,19 @@ func (s *GatewaySource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 	s.mu.Lock()
 	a := s.ahead[id]
 	delete(s.ahead, id)
-	for i, q := range s.queue {
-		if q == id {
-			s.queue = append(s.queue[:i], s.queue[i+1:]...)
-			break
-		}
+	delete(s.queued, id)
+	if a != nil && a.ready {
+		s.bytes -= len(a.b)
+	}
+	p, ok := s.pos[id]
+	switch {
+	case !ok:
+		// A block outside every queued walk (a new root) starts a new walk.
+		s.dropAheadLocked(nil)
+		s.pos[id] = walkPos{}
+	case a == nil && len(s.ahead) >= s.Readahead:
+		// The walk passed blocks another source supplied: their read-ahead is stale.
+		s.dropAheadLocked(p)
 	}
 	s.pumpLocked()
 	s.mu.Unlock()
@@ -94,61 +111,119 @@ func (s *GatewaySource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error
 			return nil, ctx.Err()
 		}
 		if a.err == nil {
-			s.readahead(id, a.b)
+			s.expand(id, a.b)
 			return a.b, nil
 		}
 	}
 	b, err := s.get(ctx, id)
 	if err == nil {
-		s.readahead(id, b)
+		s.expand(id, b)
 	}
 	return b, err
 }
 
-// readahead queues the children of a dag-pb block ahead of earlier queued blocks.
-func (s *GatewaySource) readahead(id IPFSCID, b []byte) {
+// dropAheadLocked forgets fetched read-ahead blocks before walk position p (all when p is nil).
+func (s *GatewaySource) dropAheadLocked(p walkPos) {
+	for c, a := range s.ahead {
+		if a.ready && (p == nil || s.pos[c].less(p)) {
+			s.bytes -= len(a.b)
+			delete(s.ahead, c)
+		}
+	}
+}
+
+// expand queues the children of a dag-pb block at their walk positions, once per block.
+func (s *GatewaySource) expand(id IPFSCID, b []byte) {
 	if s.Readahead <= 0 || id.Codec != codecDagPB {
+		return
+	}
+	s.mu.Lock()
+	done := s.expanded[id]
+	s.expanded[id] = true
+	s.mu.Unlock()
+	if done {
 		return
 	}
 	pb, err := DecodePBNode(b)
 	if err != nil || len(pb.Links) == 0 {
 		return
 	}
-	var kids []IPFSCID
-	for _, l := range pb.Links {
-		if c, err := ParseIPFSBytes(l.CID); err == nil {
-			kids = append(kids, c)
-		}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.queue = append(kids, s.queue...)
-	if len(s.queue) > maxReadQueue {
-		s.queue = s.queue[:maxReadQueue]
+	parent := s.pos[id]
+	for i, l := range pb.Links {
+		c, err := ParseIPFSBytes(l.CID)
+		if _, seen := s.pos[c]; err != nil || seen || s.queue.Len() >= maxReadQueue {
+			continue
+		}
+		p := append(append(walkPos(nil), parent...), uint32(i))
+		s.pos[c] = p
+		s.queued[c] = true
+		heap.Push(&s.queue, walkItem{c, p})
 	}
 	s.pumpLocked()
 }
 
-// pumpLocked starts queued fetches while the concurrency and readahead budgets allow.
+// pumpLocked starts the earliest queued fetches while the concurrency and readahead budgets allow.
 func (s *GatewaySource) pumpLocked() {
-	for len(s.queue) > 0 && s.running < gatewayFetches && len(s.ahead) < s.Readahead && s.ctx.Err() == nil {
-		c := s.queue[0]
-		s.queue = s.queue[1:]
-		if s.ahead[c] != nil {
+	for s.queue.Len() > 0 && s.running < gatewayFetches && len(s.ahead) < s.Readahead && s.bytes < maxAheadBytes && s.ctx.Err() == nil {
+		c := heap.Pop(&s.queue).(walkItem).id
+		if !s.queued[c] {
 			continue
 		}
+		delete(s.queued, c)
 		a := &aheadBlock{done: make(chan struct{})}
 		s.ahead[c] = a
 		s.running++
 		go func() {
-			a.b, a.err = s.get(s.ctx, c)
-			close(a.done)
+			b, err := s.get(s.ctx, c)
 			s.mu.Lock()
+			a.b, a.err, a.ready = b, err, true
+			if s.ahead[c] == a && err == nil {
+				s.bytes += len(b)
+			}
 			s.running--
+			close(a.done)
+			s.mu.Unlock()
+			if err == nil {
+				s.expand(c, b) // also pumps
+				return
+			}
+			s.mu.Lock()
 			s.pumpLocked()
 			s.mu.Unlock()
 		}()
 	}
+}
+
+// walkPos is a block's position in the importer's depth-first walk: the link indexes from
+// the root. Lexicographic order is walk order.
+type walkPos []uint32
+
+func (p walkPos) less(q walkPos) bool {
+	for i := 0; i < len(p) && i < len(q); i++ {
+		if p[i] != q[i] {
+			return p[i] < q[i]
+		}
+	}
+	return len(p) < len(q)
+}
+
+type walkItem struct {
+	id  IPFSCID
+	pos walkPos
+}
+type walkQueue []walkItem
+
+func (q walkQueue) Len() int           { return len(q) }
+func (q walkQueue) Less(i, j int) bool { return q[i].pos.less(q[j].pos) }
+func (q walkQueue) Swap(i, j int)      { q[i], q[j] = q[j], q[i] }
+func (q *walkQueue) Push(x any)        { *q = append(*q, x.(walkItem)) }
+func (q *walkQueue) Pop() any {
+	old := *q
+	x := old[len(old)-1]
+	*q = old[:len(old)-1]
+	return x
 }
 
 func (s *GatewaySource) get(ctx context.Context, id IPFSCID) ([]byte, error) {

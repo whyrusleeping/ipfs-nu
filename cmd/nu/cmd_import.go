@@ -13,7 +13,7 @@ import (
 
 var cmdImport = &command{name: "import", summary: "verified, one-way content migration", sub: []*command{cmdImportIPFS, cmdImportCutover}}
 
-var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] [--dataset <ds> [--cluster]] <ipfs-cid> | --pins <pins.json> [--car-dir <dir>] [--dry-run]",
+var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] [--dataset <ds> [--cluster]] <ipfs-cid|dnslink-name> | --pins <pins.json> [--car-dir <dir>] [--dry-run]",
 	summary: "verify and convert IPFS UnixFS roots from CARv1 archives or the IPFS network (Bitswap/Amino and HTTP gateways)", run: func(ctx context.Context, e *env, args []string) error {
 		fs := e.flags()
 		req := apiv0.IPFSImportRequest{}
@@ -27,7 +27,7 @@ var cmdImportIPFS = &command{name: "ipfs", args: "[--car <file>] [--dry-run] [--
 			return err
 		}
 		if (req.Pins == "") == (fs.NArg() != 1) {
-			return usagef("import ipfs needs one IPFS root CID, or --pins <inventory>")
+			return usagef("import ipfs needs one IPFS root CID or DNSLink/ENS name (example.org, vitalik.eth), or --pins <inventory>")
 		}
 		req.Root = fs.Arg(0)
 		if *clusterScope {
@@ -73,6 +73,9 @@ func printItems(w io.Writer, label string, items []apiv0.IPFSItem) {
 }
 
 func printIPFSImport(w io.Writer, r apiv0.IPFSImportResult) {
+	if r.Name != "" {
+		fmt.Fprintf(w, "%s resolved to /ipfs/%s\n", r.Name, r.IPFSRoot)
+	}
 	if r.DryRun {
 		complete := r.Complete == nil || *r.Complete
 		fmt.Fprintf(w, "dry run of IPFS %s from %s: %d files, %d directories, %d symlinks, %d bytes (%d structure blocks verified)\n",

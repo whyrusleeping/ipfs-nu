@@ -3,6 +3,7 @@ package apiv0
 // IPFSImportResult describes verified source-to-Nu conversion of one root, or its dry run.
 type IPFSImportResult struct {
 	IPFSRoot                 string `json:"ipfs_root"`
+	Name                     string `json:"name,omitempty"` // the DNSLink/ENS name resolved to IPFSRoot
 	Root                     string `json:"root,omitempty"`
 	Manifest                 string `json:"manifest,omitempty"`
 	Source                   string `json:"source,omitempty"` // car, or the network transports: bitswap, gateway or bitswap+gateway

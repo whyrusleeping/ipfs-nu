@@ -374,7 +374,8 @@ Try sources in this order:
 2. Publisher nodes from the name context, seeds first.
 3. For followed names, the [dataset swarm](follow.md#dataset-swarm), found through its swarm
    key and checked via `/nu/have/1`.
-4. Candidate connected/LAN peers via `/nu/have/1`.
+4. Candidate connected/LAN peers via `/nu/have/1`. LAN peers are those heard over mDNS
+   ([D13](networking.md#v0-lookup-cache-and-mdns)).
 5. Amino DHT provider records.
 6. Delegated routing: `GET /routing/v1/providers/{cid}`. Today only the IPFS importer uses
    it, for `transport-ipfs-gateway-http` providers ([migration](migration.md#sources-and-transport)).

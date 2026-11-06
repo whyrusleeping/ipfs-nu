@@ -1367,6 +1367,15 @@ There is one socket per interface and family, and each handles only the packets 
 arrived on its own interface (the kernel delivers the group's packets to every socket
 bound to 5353).
 
+mDNS also supplies content-provider candidates ([D15](data.md#d15-content-provider-discovery)
+step 4), so a bare-CID get finds a LAN holder without link hints, a connection or the DHT.
+For each fetch the swarm sends a query and, for at most 3 s, dials up to 16 peers with
+fresh mDNS entries in parallel. A peer becomes a candidate once its identify lists a `/nu`
+data protocol (mDNS also finds Kubo and other libp2p nodes); `/nu/have/1` then confirms it.
+The walk starts with the first candidate from any source, and LAN answers usually arrive
+before DHT bootstrap completes. Private/isolated sessions still admit only members, and
+where mDNS is off nothing changes.
+
 ## D16. Testing and diagnostics
 
 - Fuzz every parser. Use libp2p `unified-testing` for QUIC-v1 and black-box Kubo and Helia

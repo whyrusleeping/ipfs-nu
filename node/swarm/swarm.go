@@ -1,7 +1,7 @@
 // Package swarm assembles a node's networking from the p2p and data-protocol packages:
 // the QUIC host with identify/ping, peer lookup (persisted address cache, mDNS), peer
 // sessions, the /nu/bytes and /nu/have servers over the store, and a fetcher whose
-// providers are share-link hints plus connected peers. A Swarm implements node.Fetcher
+// providers are share-link hints plus connected, mDNS-heard and DHT peers. A Swarm implements node.Fetcher
 // and node.Net; the daemon runs one for its lifetime and daemonless commands run one
 // for the command.
 package swarm
@@ -230,7 +230,7 @@ func Start(ctx context.Context, cfg Config) (*Swarm, error) {
 		}
 		fc := cfg.Fetch
 		fc.Store = cfg.Store
-		fc.Providers = fetch.Multi{connected{s}, dhtProviders{s}}
+		fc.Providers = fetch.Multi{connected{s}, lan{s}, dhtProviders{s}}
 		s.fetcher = fetch.New(fc)
 	}
 	if err := s.startDHT(bg); err != nil {
@@ -387,7 +387,7 @@ func (s *Swarm) FetchWithSource(ctx context.Context, root cid.CID, hints []link.
 	if hintErr != nil {
 		s.log.Debug("some link hints are unusable", "err", hintErr)
 	}
-	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil {
+	if len(peers) == 0 && len(s.host.Connections()) == 0 && src == nil && s.DHT() == nil && s.lookup.MDNS() == nil {
 		return apiv0.Errorf(apiv0.CodeUnavailable, "no one to fetch %s from: the link names no reachable provider and no peer is connected", root).
 			WithAction("use a share link with its provider (`peer=`/`addr=`), be on the same network as a node that holds the content, or bind a non-loopback swarm.listen so the DHT can be used")
 	}
@@ -479,6 +479,44 @@ func (c connected) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) 
 		}
 		found(fetch.SessionPeer(sess))
 	}
+	return nil
+}
+
+// lan offers peers heard over mDNS as candidates (D15 step 4), so a bare-CID get finds
+// a LAN holder it is not connected to. It dials them in parallel and offers only those
+// whose identify shows a Nu data protocol (mDNS also finds Kubo and other libp2p nodes);
+// sessions keep private/isolated gating, and the fetcher confirms each with /nu/have/1.
+// It listens for lanWindow and dials at most lanMax peers, so a retry after a failed
+// walk, which waits for every source, does not wait on it for long.
+type lan struct{ s *Swarm }
+
+const (
+	lanWindow = 3 * time.Second
+	lanMax    = 16
+)
+
+func (l lan) Find(ctx context.Context, _ cid.CID, found func(fetch.Peer)) error {
+	m := l.s.lookup.MDNS()
+	if m == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, lanWindow)
+	defer cancel()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	n := 0
+	_ = m.Peers(ctx, func(id wire.PeerID) bool {
+		n++
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sess, err := l.s.sessions.Connect(ctx, id)
+			if err == nil && l.s.servesNuData(ctx, id) {
+				found(fetch.SessionPeer(sess))
+			}
+		}()
+		return n < lanMax
+	})
 	return nil
 }
 

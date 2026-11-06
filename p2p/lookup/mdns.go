@@ -458,5 +458,35 @@ func (m *MDNS) Lookup(ctx context.Context, id wire.PeerID, emit func(Address) bo
 		}
 	}
 }
+
+// Peers emits each peer with a fresh mDNS advertisement once: those already heard, then
+// new ones as they are heard (it sends a query first), until ctx ends or emit returns
+// false. Advertisements are address claims; dialing authenticates the peer.
+func (m *MDNS) Peers(ctx context.Context, emit func(wire.PeerID) bool) error {
+	m.query()
+	sent := make(map[wire.PeerID]bool)
+	for {
+		m.cache.mu.Lock()
+		peers := m.cache.peersLocked("mdns")
+		changed := m.cache.changed
+		m.cache.mu.Unlock()
+		for _, id := range peers {
+			if sent[id] {
+				continue
+			}
+			sent[id] = true
+			if !emit(id) {
+				return ctx.Err()
+			}
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-m.ctx.Done():
+			return m.ctx.Err()
+		}
+	}
+}
 func (m *MDNS) Close() error   { m.once.Do(func() { m.cancel(); m.wg.Wait() }); return nil }
 func (m *MDNS) String() string { return fmt.Sprintf("mDNS %s", m.service) }

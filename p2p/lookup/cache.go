@@ -230,6 +230,23 @@ func (c *Cache) addressesLocked(id wire.PeerID) []Address {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Confidence > out[j].Confidence })
 	return out
 }
+
+// peersLocked lists the peers with an unexpired entry from source.
+func (c *Cache) peersLocked(source string) []wire.PeerID {
+	now := c.config.Now()
+	seen := make(map[string]bool)
+	var out []wire.PeerID
+	for _, e := range c.entries {
+		if e.Source != source || !e.Expires.After(now) || seen[e.Peer] {
+			continue
+		}
+		seen[e.Peer] = true
+		if id, err := wire.ParsePeerID(e.Peer); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 func (c *Cache) Lookup(ctx context.Context, id wire.PeerID, emit func(Address) bool) error {
 	for _, a := range c.Addresses(id) {
 		if !emit(a) {

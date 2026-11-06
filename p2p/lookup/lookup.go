@@ -82,6 +82,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	return s, nil
 }
 func (s *Service) Cache() *Cache { return s.cache }
+
+// MDNS is the running LAN discovery, nil when it is disabled.
+func (s *Service) MDNS() *MDNS { return s.mdns }
 func (s *Service) RememberHints(ctx context.Context, hints []Hint) error {
 	for _, h := range hints {
 		if err := s.cache.Remember(ctx, h, "hint", 0.6, 24*time.Hour); err != nil {

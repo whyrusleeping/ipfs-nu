@@ -1,10 +1,10 @@
 ---
 id: "0025"
 title: '0b+ exit: real-hardware NAT lab, opt-in telemetry, published per-pair success table'
-status: todo
+status: blocked
 priority: 3
 created: "2026-09-24"
-updated: "2026-09-24"
+updated: "2026-11-06"
 depends_on:
     - "0021"
     - "0019"

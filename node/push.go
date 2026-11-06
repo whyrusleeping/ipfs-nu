@@ -36,7 +36,9 @@ var IngestHTTP func(*httpsrc.Config)
 // httpClient builds the URL-import client from trusted local config: ingest.allow_http
 // (plain HTTP sources, e.g. a producer's LAN web seed) and ingest.allow_ips (address
 // prefixes exempt from the SSRF guard, e.g. that producer's subnet).
-func (n *Local) httpClient() *httpsrc.Client {
+func (n *Local) httpClient() *httpsrc.Client { return httpsrc.New(n.httpConfig()) }
+
+func (n *Local) httpConfig() httpsrc.Config {
 	var cfg httpsrc.Config
 	if v, err := n.Repo.ConfigGet("ingest.allow_http"); err == nil {
 		cfg.AllowHTTP, _ = v.(bool)
@@ -55,7 +57,7 @@ func (n *Local) httpClient() *httpsrc.Client {
 	if IngestHTTP != nil {
 		IngestHTTP(&cfg)
 	}
-	return httpsrc.New(cfg)
+	return cfg
 }
 
 type producerKey struct{}

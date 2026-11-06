@@ -16,6 +16,7 @@ import (
 	"github.com/whyrusleeping/nu/cluster"
 	"github.com/whyrusleeping/nu/core/mst"
 	"github.com/whyrusleeping/nu/core/tree"
+	"github.com/whyrusleeping/nu/httpsrc"
 	"github.com/whyrusleeping/nu/kad"
 	"github.com/whyrusleeping/nu/node/op"
 	"github.com/whyrusleeping/nu/p2p/host"
@@ -625,7 +626,9 @@ func (n *Local) newGatewaySource() *bridge.GatewaySource {
 	if routing == "" || routing == "off" {
 		return nil
 	}
-	src := bridge.NewGatewaySource(n.httpClient(), routing)
+	cfg := n.httpConfig()
+	cfg.KeepAlive = true // many small block requests to the same gateways
+	src := bridge.NewGatewaySource(httpsrc.New(cfg), routing)
 	if ipfsGatewayHook != nil {
 		ipfsGatewayHook(src)
 	}

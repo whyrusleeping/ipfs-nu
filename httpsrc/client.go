@@ -38,6 +38,11 @@ type Config struct {
 	// checked IP:port literals and must connect to that address, without resolving
 	// or substituting another destination. Nil uses net.Dialer.
 	DialContext func(context.Context, string, string) (net.Conn, error)
+	// KeepAlive lets Fetch reuse HTTP/1.1 connections between requests to the same origin
+	// with the same IdleTimeout (each connection was checked when dialed). A pooled
+	// connection closes after IdleTimeout without traffic. For clients that make many
+	// small requests, such as IPFS gateway blocks; call CloseIdleConnections when done.
+	KeepAlive bool
 }
 
 // Client is safe for concurrent use. It holds only policy and a bounded, ephemeral
@@ -46,6 +51,48 @@ type Client struct {
 	cfg      Config
 	mu       sync.Mutex
 	failures map[string]time.Time
+	pools    map[time.Duration]*http.Transport // KeepAlive transports by IdleTimeout
+}
+
+// maxIdlePerHost bounds the connections KeepAlive keeps open to one origin.
+const maxIdlePerHost = 32
+
+// transport returns the Fetch transport for an idle timeout: a new single-use one, or with
+// KeepAlive the client's shared one.
+func (c *Client) transport(idle time.Duration) *http.Transport {
+	newTransport := func() *http.Transport {
+		return &http.Transport{
+			Proxy: nil, DisableKeepAlives: !c.cfg.KeepAlive, DisableCompression: true,
+			MaxResponseHeaderBytes: 64 << 10, MaxIdleConnsPerHost: maxIdlePerHost, IdleConnTimeout: idle,
+			TLSHandshakeTimeout: idle, ResponseHeaderTimeout: idle,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return c.dial(ctx, network, addr, idle)
+			},
+		}
+	}
+	if !c.cfg.KeepAlive {
+		return newTransport()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tr := c.pools[idle]
+	if tr == nil {
+		if c.pools == nil {
+			c.pools = map[time.Duration]*http.Transport{}
+		}
+		tr = newTransport()
+		c.pools[idle] = tr
+	}
+	return tr
+}
+
+// CloseIdleConnections closes the connections KeepAlive keeps open.
+func (c *Client) CloseIdleConnections() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, tr := range c.pools {
+		tr.CloseIdleConnections()
+	}
 }
 
 func New(cfg Config) *Client {
@@ -138,15 +185,10 @@ func (c *Client) fetch(ctx context.Context, rawURL, method string, body []byte, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
-	tr := &http.Transport{
-		Proxy: nil, DisableKeepAlives: true, DisableCompression: true,
-		MaxResponseHeaderBytes: 64 << 10,
-		TLSHandshakeTimeout:    opts.IdleTimeout, ResponseHeaderTimeout: opts.IdleTimeout,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return c.dial(ctx, network, addr, opts.IdleTimeout)
-		},
+	tr := c.transport(opts.IdleTimeout)
+	if !c.cfg.KeepAlive {
+		defer tr.CloseIdleConnections()
 	}
-	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if method != http.MethodGet {
 			return fmt.Errorf("%w: upload redirects forbidden", ErrPolicy)

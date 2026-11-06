@@ -81,8 +81,13 @@ func NewGatewaySource(c *httpsrc.Client, routing string) *GatewaySource {
 		ctx: ctx, cancel: cancel}
 }
 
-// Close stops reading ahead.
-func (s *GatewaySource) Close() { s.cancel() }
+// Close stops reading ahead and closes kept-alive gateway connections.
+func (s *GatewaySource) Close() {
+	s.cancel()
+	if s.Client != nil {
+		s.Client.CloseIdleConnections()
+	}
+}
 
 func (s *GatewaySource) GetBlock(ctx context.Context, id IPFSCID) ([]byte, error) {
 	s.mu.Lock()

@@ -262,3 +262,29 @@ func TestBoundsAndDemotion(t *testing.T) {
 		t.Fatal("scoreboard eviction failed")
 	}
 }
+
+// KeepAlive reuses one checked connection for sequential requests to an origin; the default
+// client dials for every request.
+func TestKeepAlive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("block")) }))
+	defer srv.Close()
+	for _, keep := range []bool{false, true} {
+		var dials atomic.Int32
+		cfg := localConfig()
+		cfg.KeepAlive = keep
+		cfg.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
+		c := httpsrc.New(cfg)
+		for i := 0; i < 4; i++ {
+			if _, err := c.Fetch(context.Background(), srv.URL, discard, limits()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c.CloseIdleConnections()
+		if want := map[bool]int32{false: 4, true: 1}[keep]; dials.Load() != want {
+			t.Fatalf("keepalive=%v: %d dials, want %d", keep, dials.Load(), want)
+		}
+	}
+}

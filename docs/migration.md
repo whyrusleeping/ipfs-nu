@@ -138,7 +138,9 @@ keeps `peer` records listing `transport-ipfs-gateway-http`, and turns their
 `/http`) addresses into at most 8 gateway base URLs. It fetches
 `GET <gateway>/ipfs/<CIDv1>?format=raw` through `httpsrc` (the URL-import SSRF policy and
 `ingest.allow_http`/`allow_ips`; 2 MiB per block, as for Bitswap; 10 s idle, 60 s per
-request), trying gateways one at a time, and verifies the bytes against the CID. A gateway
+request; HTTP/1.1 connections are kept alive and reused per gateway, at most 32 idle
+per origin, each closed after 10 s idle), trying gateways one at a time, and verifies the
+bytes against the CID. A gateway
 that serves wrong bytes is demoted and the next is tried. Gateways that already served a
 block are asked first for later blocks, so a DAG held by one provider needs one routing
 lookup. Gateways answer one block per request, so the transport reads ahead in walk order: every

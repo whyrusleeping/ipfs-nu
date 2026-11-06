@@ -67,7 +67,7 @@ jobs:
 
   natlab:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -91,7 +91,7 @@ jobs:
           set -o pipefail
           for package in natlab portmap netmon disco; do
             sudo env NU_NATLAB_RESULTS="$RUNNER_TEMP/natlab-results.ndjson" NU_MINIUPNPD=/usr/sbin/miniupnpd \
-              "$RUNNER_TEMP/$package.test" -test.v -test.timeout=120s \
+              "$RUNNER_TEMP/$package.test" -test.v -test.timeout=600s \
               2>&1 | tee -a "$RUNNER_TEMP/natlab.log"
           done
           # Real daemons: relay matrix, failover, direct upgrade, metrics, hotspot

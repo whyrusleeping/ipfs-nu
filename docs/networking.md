@@ -679,8 +679,10 @@ an operator's exact `probe_allow` grant may explicitly admit a trusted peer's IP
 No hostname is resolved, subnet searched, third IP inferred or UDP observation treated
 as permission. Unlike v1, the jointly consented extension permits **only ports
 1024–65535 on that one IP**, for a finite attempt. Prediction transmits to at most
-513 ports in an adaptive ±64–256 window; random search transmits to 1024 distinct
-cryptographically sampled ports. A valid incoming ping on that consented IP can be
+513 ports in an adaptive ±64–256 window; random search transmits to 2048 distinct
+cryptographically sampled ports. Against the other side's 256 fresh mappings that
+misses with probability ≈ (1 − 256/64512)^2048 ≈ 0.03 % (1024 ports missed ≈ 1.7 %,
+too close to the 98 % EIM↔random target). A valid incoming ping on that consented IP can be
 answered and challenged at its source port, within the same budget. A successful
 round trip admits **only the proven remote endpoint and local socket**, while the
 original reflexive anchor remains current/unexpired and policy still permits it.
@@ -708,7 +710,7 @@ ancillary data. No additional reader competes on the primary socket.
 
 **Hard limits:** one pending/active attempt per service, an eight-second UDP window,
 4096 outgoing packets per direction/attempt **including pongs and failed sends**, at
-most 1280 pending challenges, 256 auxiliary sockets service-wide **including retained
+most 2304 pending challenges, 256 auxiliary sockets service-wide **including retained
 winners**, and at most one retained winning socket per peer. The random EDM side
 primes up to 256 fresh sockets toward the other endpoint; the other side probes the
 bounded port set from its primary socket. During an attempt the shared token buckets
@@ -1150,6 +1152,16 @@ CGNAT quotas and IPS-like drops. Test consumer routers, OpenWrt, pfSense/OPNsens
 without endpoint-independent NAT, and hotspots on two carriers. Field telemetry is opt-in:
 NAT-profile pair, strategy, outcome and time to direct. Publish a per-pair success table for
 each release; the hard-NAT targets are in the [milestones](../spec.md#milestones).
+
+The table is built by `p2p/natlab/cmd/nattable` from `natlab.Outcome` NDJSON records
+(`scenario: "pair"`, side labels, `direct`/`relayed`, time to direct); hardware-lab and
+telemetry records use the same shape. Gate: a pair with at least one EIM, public,
+router-mapped or IPv6 side is always direct, except EIM↔random-APDM, which must be direct
+in ≥ 98 % of at least the campaign's trials (50 per release). APDM↔APDM pairs and other
+scenarios are reported, not gated. `scripts/nat-table.sh` runs the software lab
+(`TestHardNATLab` pair matrix plus the public/IPv6/router-mapped rows); the release
+workflow attaches the table and fails on a missing or failed gated row. The current
+table is in [validation](validation.md#per-pair-nat-success-table-0097).
 
 ## D11b. Standard-peer hole punching (extensions)
 

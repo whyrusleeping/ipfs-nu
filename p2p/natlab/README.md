@@ -167,7 +167,9 @@ to append standalone records (including through isolation re-execs), or capture
 `go test -json`. Records identify scenario, pair, outcome and elapsed nanoseconds.
 Optional `time_to_first_byte_ns`/`time_to_direct_ns` fields are omitted when not
 measured; these protocol smoke tests do not pretend to measure file transfers.
-The on-demand CI job collects standalone records as an artifact.
+The on-demand CI job collects standalone records as an artifact. `natlab.Record` appends
+one record from any lab test; `scenario: "pair"` records with outcome `direct`/`relayed`
+feed the per-pair success table (`cmd/nattable`, `scripts/nat-table.sh`).
 
 `p2p/netcheck`'s `TestNetcheckNATLab` (own helpers, `relay.New` observers) classifies
 six single-NAT fixture combinations, an EIM home NAT behind an ADM/ADF/sequential

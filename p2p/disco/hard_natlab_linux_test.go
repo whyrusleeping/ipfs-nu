@@ -75,37 +75,93 @@ chain post { type nat hook postrouting priority srcnat; oifname "wan" meta l4pro
 }`, maps, external, generator)))
 }
 
+// hardLabSides are the per-side NAT kinds of the pair matrix. Every APDM side
+// uses APDF filtering; "public" has no NAT at all. Labels are the table's.
+var hardLabSides = map[string]string{"public": "public", "eim-eif": "EIM/EIF", "eim-apdf": "EIM/APDF", "sequential": "APDM-seq/APDF", "random": "APDM-random/APDF"}
+
+func eimLike(kind string) bool { return kind == "public" || strings.HasPrefix(kind, "eim") }
+
+// hardLabWant mirrors the per-pair acceptance (0025/0097): direct whenever one
+// side is EIM/public, except EIM/APDF <-> random APDM, which is a birthday
+// search held to >= 98 % by the table tool over a campaign; APDM <-> APDM is
+// reported (relay fallback), not gated.
+func hardLabWant(a, b string) string {
+	switch {
+	case !eimLike(a) && !eimLike(b):
+		return "relay"
+	case a == "random" && b == "eim-apdf" || b == "random" && a == "eim-apdf":
+		return "98%"
+	}
+	return "direct"
+}
+
 func TestHardNATLab(t *testing.T) {
-	if !natlab.IsolateTimeout(t, 30*time.Minute) {
+	if !natlab.IsolateTimeout(t, 55*time.Minute) {
 		return
 	}
-	trials := 3
-	if text := os.Getenv("NU_HARD_TRIALS"); text != "" {
-		n, err := strconv.Atoi(text)
-		check(t, err)
-		if n < 1 || n > 200 {
-			t.Fatal("NU_HARD_TRIALS must be 1..200")
+	trials := hardLabTrials(t, "NU_HARD_TRIALS", 3)
+	campaign := hardLabTrials(t, "NU_HARD_RANDOM_TRIALS", trials)
+	kinds := []string{"public", "eim-eif", "eim-apdf", "sequential", "random"}
+	type row struct{ a, b, scenario string }
+	var rows []row
+	for i := range kinds {
+		for j := i; j < len(kinds); j++ {
+			rows = append(rows, row{kinds[j], kinds[i], "pair"})
 		}
-		trials = n
 	}
-	for _, pair := range [][3]string{{"sequential", "eim", "eif"}, {"sequential", "eim", "apdf"}, {"random", "eim", "eif"}, {"random", "eim", "apdf"}, {"sequential", "sequential", "apdf"}, {"sequential", "random", "apdf"}, {"random", "random", "apdf"}, {"random", "eim", "ips"}} {
-		if selected := os.Getenv("NU_HARD_CASE"); selected != "" && selected != strings.Join(pair[:], "-") {
+	rows = append(rows, row{"random", "eim-apdf", "ips-drop"})
+	for _, r := range rows {
+		name := r.a + "+" + r.b
+		if r.scenario != "pair" {
+			name = r.scenario + ":" + name
+		}
+		if selected := os.Getenv("NU_HARD_CASE"); selected != "" && selected != name {
 			continue
 		}
-		t.Run(pair[0]+"-"+pair[1]+"-"+pair[2], func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
+			want, n := hardLabWant(r.a, r.b), trials
+			if r.scenario != "pair" {
+				want = "relay"
+			} else if want == "98%" || (r.a == "random" && eimLike(r.b)) {
+				n = campaign
+			}
 			success := 0
-			for trial := 0; trial < trials; trial++ {
+			for trial := 0; trial < n; trial++ {
 				t.Run(strconv.Itoa(trial), func(t *testing.T) {
-					if hardLabCase(t, pair) {
+					start := time.Now()
+					ok, ttd := hardLabCase(t, r.a, r.b, r.scenario == "ips-drop")
+					outcome := "relayed"
+					if ok {
 						success++
+						outcome = "direct"
 					}
+					check(t, natlab.Record(natlab.Outcome{Scenario: r.scenario, From: hardLabSides[r.a], To: hardLabSides[r.b], Outcome: outcome, Elapsed: time.Since(start), TimeToDirect: ttd}))
 				})
 			}
-			t.Logf("MEASURE %v: %d/%d both-direct; failures retain relay (not a waived success target)", pair, success, trials)
+			t.Logf("MEASURE %s %s <-> %s: %d/%d both-direct (want %s)", r.scenario, hardLabSides[r.a], hardLabSides[r.b], success, n, want)
+			if want == "direct" && success != n {
+				t.Errorf("%d/%d direct; this pair must always go direct", success, n)
+			}
 		})
 	}
 }
-func hardLabCase(t *testing.T, pair [3]string) bool {
+func hardLabTrials(t *testing.T, env string, def int) int {
+	text := os.Getenv(env)
+	if text == "" {
+		return def
+	}
+	n, err := strconv.Atoi(text)
+	check(t, err)
+	if n < 1 || n > 200 {
+		t.Fatalf("%s must be 1..200", env)
+	}
+	return n
+}
+
+// hardLabCase builds a fresh topology and identities, then reports whether both
+// sides selected a direct path and the later side's time to direct.
+func hardLabCase(t *testing.T, kindA, kindB string, ips bool) (bool, time.Duration) {
+	kinds := [2]string{kindA, kindB}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	l, err := natlab.New(ctx)
@@ -126,37 +182,49 @@ func hardLabCase(t *testing.T, pair [3]string) bool {
 	var clients [2]*natlab.Namespace
 	var cfg [2]labConfig
 	for i := range clients {
+		external := fmt.Sprintf("198.18.0.%d", 20+i)
+		clients[i], err = l.Namespace("peer")
+		check(t, err)
+		cfg[i] = labConfig{Advertise: external + ":4000", Hard: true, Observers: observers}
+		if kinds[i] == "public" {
+			check(t, wan.Attach(clients[i], "eth0", external+"/24", ""))
+			continue
+		}
 		router, e := l.Namespace("router")
 		check(t, e)
-		external := fmt.Sprintf("198.18.0.%d", 20+i)
 		check(t, wan.Attach(router, "wan", external+"/24", ""))
 		lan, e := router.Segment("lan", fmt.Sprintf("10.%d.0.1/24", i))
 		check(t, e)
-		clients[i], e = l.Namespace("peer")
-		check(t, e)
 		inside := fmt.Sprintf("10.%d.0.2", i)
 		check(t, lan.Attach(clients[i], "eth0", inside+"/24", fmt.Sprintf("10.%d.0.1", i)))
-		hardLabNAT(t, router, inside, external, pair[i], pair[2])
-		cfg[i] = labConfig{Advertise: external + ":4000", Hard: true, Observers: observers}
-		if pair[i] == "sequential" {
+		allocation, filter, _ := strings.Cut(kinds[i], "-")
+		if allocation == "eim" {
+			hardLabNAT(t, router, inside, external, "eim", filter)
+		} else {
+			hardLabNAT(t, router, inside, external, allocation, "apdf")
+		}
+		if kinds[i] == "sequential" {
 			cfg[i].Noise = 200 * time.Millisecond
 		}
 	}
 	peers := startLabPair(t, clients, cfg)
 	for i, p := range peers {
 		r := p.call(t, labCommand{Op: "profile"}).Report
-		t.Logf("peer%d measured: %s; last allocation=%v", i, r.Profile, r.IPv4.Samples)
-		if pair[i] != "eim" && r.Profile.Mapping != netcheck.MappingAddressPortDependent {
+		t.Logf("peer%d (%s) measured: %s; last allocation=%v", i, kinds[i], r.Profile, r.IPv4.Samples)
+		if !eimLike(kinds[i]) && r.Profile.Mapping != netcheck.MappingAddressPortDependent {
 			t.Fatalf("fixture did not measure APDM: %s", r.Profile)
 		}
-		if pair[i] == "sequential" && r.Profile.Allocation != netcheck.AllocSequential {
+		if eimLike(kinds[i]) && !eim(r.Profile) {
+			t.Fatalf("fixture did not measure EIM: %s", r.Profile)
+		}
+		if kinds[i] == "sequential" && r.Profile.Allocation != netcheck.AllocSequential {
 			t.Fatalf("fixture did not measure sequential allocation: %s", r.Profile)
 		}
-		if pair[i] == "random" && r.Profile.Allocation != netcheck.AllocRandom {
+		if kinds[i] == "random" && r.Profile.Allocation != netcheck.AllocRandom {
 			t.Fatalf("fixture did not measure random allocation: %s", r.Profile)
 		}
 	}
-	if pair[2] == "ips" {
+	if ips {
 		check(t, clients[0].NFT(`table inet ips {
  chain output { type filter hook output priority filter; meta l4proto udp @th,64,32 0x016e7564 drop; }
 }`))
@@ -173,6 +241,10 @@ func hardLabCase(t *testing.T, pair [3]string) bool {
 		if a.HardBackoffs > 0 && b.HardBackoffs > 0 {
 			break
 		}
+		// Past the 3 s cheap-method wait with no attempt negotiated: none will start.
+		if time.Since(start) > 5*time.Second && a.HardAttempts == 0 && b.HardAttempts == 0 {
+			break
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	success := a.Selected.IsValid() && b.Selected.IsValid()
@@ -182,18 +254,18 @@ func hardLabCase(t *testing.T, pair [3]string) bool {
 			t.Fatal("hard bounds exceeded", st)
 		}
 	}
-	if pair[0] != "random" || pair[1] != "random" {
+	switch {
+	case kinds[0] == "random" && kinds[1] == "random":
+		if a.HardSent != 0 || b.HardSent != 0 || a.HardAttempts != 0 || b.HardAttempts != 0 {
+			t.Fatal("both-random must stay relayed")
+		}
+	case !eimLike(kinds[0]) || !eimLike(kinds[1]):
 		if a.HardAttempts != 1 || b.HardAttempts != 1 {
 			t.Fatal("extension did not negotiate an attempt", a, b)
 		}
-	} else if a.HardSent != 0 || b.HardSent != 0 || a.HardAttempts != 0 || b.HardAttempts != 0 {
-		t.Fatal("both-random must stay relayed")
 	}
-	if pair[2] == "ips" && (success || a.HardBackoffs != 1 || b.HardBackoffs != 1 || a.HardSockets != 0 || b.HardSockets != 0) {
+	if ips && (success || a.HardBackoffs != 1 || b.HardBackoffs != 1 || a.HardSockets != 0 || b.HardSockets != 0) {
 		t.Fatal("IPS-like drop did not cancel/back off and release sockets", a, b)
-	}
-	if pair[0] == "sequential" && pair[1] == "eim" && !success {
-		t.Fatal("predictable APDM/EIM did not recover")
 	}
 	// Whether direct or relayed, the same inner connection must still work.
 	peers[0].call(t, labCommand{Op: "transfer", Bytes: 64 << 10})
@@ -201,5 +273,8 @@ func hardLabCase(t *testing.T, pair [3]string) bool {
 	if r.Progress != 64<<10 || !r.Alive {
 		t.Fatal("inner transfer did not survive", r)
 	}
-	return success
+	if !success {
+		return false, 0
+	}
+	return true, max(a.TimeToDirect, b.TimeToDirect)
 }

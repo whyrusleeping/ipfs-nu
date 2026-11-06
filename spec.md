@@ -313,8 +313,9 @@ gates the gate-1 and gate-2a exits below but not v0.
 | **4 — Scale and optimization** | D19/D20 scale targets, full retention schedules/span index, large swarms, hard-NAT tuning/datagram/peer relays, air-gap workflows | Measured representative update/storage/repair costs; 10M-entry churn and 1k-follower PDS-load benchmark; PB/100-member sizing validated progressively; complete/incremental bundle tests; published hardware/field NAT pair results |
 | **5 — Extensions** | Standard-peer DCUtR, FISL serving/Web Tiles rendering, browser-native transports/client adapters, optional gossipsub, encryption/Spaces, self-hosted single-account names, other OSes | Separate negotiated interoperability/security gates; do not imply stock Helia serves Nu formats or encrypted sharing exists sooner |
 
-Hard-NAT ≥98% EIM↔random-EDM direct remains a conditional lab hypothesis to measure, not
-an initial release requirement. Names target cached resolution without name-plane requests
+Hard-NAT ≥98% EIM↔random-EDM direct is gated per release only in the software NAT lab
+([per-pair table](docs/networking.md#6-measurement)); hardware and field rates remain to
+measure and are not an initial release requirement. Names target cached resolution without name-plane requests
 and benchmarked cold p95 <1 s under a declared healthy environment, not a PDS SLA. Extreme
 scale and complete air-gap features do not delay first sharing or basic trusted archival.
 

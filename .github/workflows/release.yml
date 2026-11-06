@@ -1,5 +1,6 @@
 # Release: static Linux tarballs, macOS per-arch and universal tarballs (signed and
-# notarized when the signing secrets exist), SHA256SUMS, and a draft GitHub release.
+# notarized when the signing secrets exist), SHA256SUMS, the per-pair NAT success table
+# (nat-pairs.md; a failed or missing gated pair blocks publishing), and a draft GitHub release.
 # Secrets are referenced by NAME only; with none configured the macOS binaries ship
 # unsigned and the job says so. What a human must provide: docs/operations.md
 # "Distribution".
@@ -104,8 +105,30 @@ jobs:
           name: bin-darwin
           path: out/bin/darwin_*
 
+  nat-table:
+    # Release checklist gate: software NAT-lab per-pair success table (scripts/nat-table.sh).
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: namespace tools and router daemon
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iproute2 nftables util-linux procps miniupnpd-nftables
+      - name: per-pair table (root only runs the compiled test binary)
+        run: NAT_SUDO=1 NU_MINIUPNPD=/usr/sbin/miniupnpd scripts/nat-table.sh out/nat
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nat-pairs
+          path: |
+            out/nat/nat-pairs.md
+            out/nat/results.ndjson
+            out/nat/natlab.log
+
   publish:
-    needs: [build, macos]
+    needs: [build, macos, nat-table]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -119,6 +142,10 @@ jobs:
         with:
           name: bin-darwin
           path: out/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: nat-pairs
+          path: out/nat
       - run: scripts/release.sh package "${{ needs.build.outputs.version }}" out
       - name: install/upgrade smoke test (Linux, binary only)
         run: |
@@ -132,8 +159,9 @@ jobs:
           path: |
             out/*.tar.gz
             out/SHA256SUMS
+            out/nat/nat-pairs.md
       - name: draft release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" out/*.tar.gz out/SHA256SUMS
+        run: gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" out/*.tar.gz out/SHA256SUMS out/nat/nat-pairs.md

@@ -7,6 +7,7 @@ package natlab
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -249,4 +250,27 @@ type Outcome struct {
 	Elapsed         time.Duration `json:"elapsed_ns"`
 	TimeToFirstByte time.Duration `json:"time_to_first_byte_ns,omitempty"`
 	TimeToDirect    time.Duration `json:"time_to_direct_ns,omitempty"`
+}
+
+// Record appends o as one NDJSON line to $NU_NATLAB_RESULTS when set (a no-op
+// otherwise). Scenario "pair" records with an outcome of "direct" or "relayed"
+// feed the per-pair success table (p2p/natlab/cmd/nattable).
+func Record(o Outcome) error {
+	path := os.Getenv("NU_NATLAB_RESULTS")
+	if path == "" {
+		return nil
+	}
+	b, err := json.Marshal(o)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

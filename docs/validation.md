@@ -102,6 +102,72 @@ its own 6 s limit) and `p2p/disco.TestInnerUpgradeFallbackRecovery` 2.5 s (not t
 the package is under active change). Per-test timings were identical at load 7 and at
 load 42, i.e. the suite no longer depends on the machine's disk or CPU headroom.
 
+## Per-pair NAT success table (0097, 2026-11-06)
+
+**Software NAT lab only** (rootless Linux namespaces + nftables NATs, real miniupnpd 2.2.3
+for the mapped row): **not consumer routers, OPNsense/pfSense, OpenWrt or carrier CGNAT**
+(0025's hardware lab) and not field rates. Baseline `f05f5f0` plus 0097; Go 1.26.2,
+kernel 5.15.0-176, dev host. The release workflow regenerates and attaches this table
+(`nat-table` job, campaign 50) and fails on a missing or failed gated row; gate rules are
+in [networking §6](networking.md#6-measurement).
+
+Every row builds fresh topologies and identities per trial, **measures** each side's
+mapping/allocation with netcheck from two observer IPs (rows whose fixture measures a
+different class abort), and byte-verifies 64 KiB on the same inner QUIC connection
+whether direct or relayed. APDM fixtures use run-time nft allocation (sequential with
+background allocation noise, or `fully-random`) and APDF filtering; "public" has no NAT.
+Time to direct is from opening the path session (includes the 3 s cheap-method wait for
+hard-NAT rows). The framed relay leg is a stable Unix-stream bridge, as in 0021.
+
+| Pair | Scenario | Required | Direct / trials | Rate | Time to direct (median / max) | Result |
+|---|---|---|---:|---:|---|---|
+| APDM-random/APDF ↔ EIM/APDF | ips-drop | reported | 0 / 3 | 0.0 % | – | info |
+| APDM-random/APDF ↔ APDM-random/APDF | pair | reported | 0 / 3 | 0.0 % | – | info |
+| APDM-random/APDF ↔ APDM-seq/APDF | pair | reported | 0 / 3 | 0.0 % | – | info |
+| APDM-random/APDF ↔ EIM/APDF | pair | ≥ 98 % direct, ≥ 100 trials | 100 / 100 | 100.0 % | 5.241s / 10.133s | pass |
+| APDM-random/APDF ↔ EIM/EIF | pair | ≥ 98 % direct, ≥ 100 trials | 100 / 100 | 100.0 % | 4.111s / 4.84s | pass |
+| APDM-random/APDF ↔ public | pair | always direct | 100 / 100 | 100.0 % | 4.108s / 4.561s | pass |
+| APDM-seq/APDF ↔ APDM-seq/APDF | pair | reported | 0 / 3 | 0.0 % | – | info |
+| APDM-seq/APDF ↔ EIM/APDF | pair | always direct | 3 / 3 | 100.0 % | 4.182s / 4.187s | pass |
+| APDM-seq/APDF ↔ EIM/EIF | pair | always direct | 3 / 3 | 100.0 % | 4.021s / 4.021s | pass |
+| APDM-seq/APDF ↔ public | pair | always direct | 3 / 3 | 100.0 % | 4.015s / 4.02s | pass |
+| EIM/APDF ↔ EIM/APDF | pair | always direct | 3 / 3 | 100.0 % | 38ms / 40ms | pass |
+| EIM/APDF ↔ EIM/EIF | pair | always direct | 3 / 3 | 100.0 % | 32ms / 38ms | pass |
+| EIM/APDF ↔ mapped (UPnP) | pair | always direct | 1 / 1 | 100.0 % | 4ms / 4ms | pass |
+| EIM/APDF ↔ public | pair | always direct | 4 / 4 | 100.0 % | 37ms / 39ms | pass |
+| EIM/EIF ↔ EIM/EIF | pair | always direct | 3 / 3 | 100.0 % | 12ms / 12ms | pass |
+| EIM/EIF ↔ public | pair | always direct | 3 / 3 | 100.0 % | 11ms / 12ms | pass |
+| IPv6 ↔ IPv6 | pair | always direct | 1 / 1 | 100.0 % | 4ms / 4ms | pass |
+| public ↔ public | pair | always direct | 3 / 3 | 100.0 % | 5ms / 5ms | pass |
+
+**EIM↔random-APDM:** the only probabilistic row is EIM/APDF ↔ random APDM (with EIF or
+public on the other side, the random side's fanout pings arrive directly). 0021's
+1024-port search measured 31/32 there, consistent with its analytic ≈ 1.7 % miss
+(256 random mappings vs 1024 probed ports out of 64,512), too close to 98 %. 0097 raised
+the search to **2048 ports** (≈ 0.03 % miss, same 256 sockets, 4096-packet and 8 s
+bounds): **100/100** in this run (95 % Wilson interval 96.3–100 %; the 98 % claim rests on
+the measured rate plus the birthday arithmetic, not on the interval alone). APDM↔APDM
+rows stay relayed by design (see 0021); the IPS-like drop cancels, backs off and
+releases sockets.
+
+Not covered: address-dependent mapping (ADM) sides, NAT64/IPv6-only hard NATs,
+varying external IPs, per-subscriber CGNAT quotas, long-idle mappings and real hardware.
+The whole run took 31.8 min (TestHardNATLab 1905 s); the release campaign of 50 is
+about half of that.
+
+Reproduce (Linux; ip, nft, unshare, nsenter; miniupnpd e.g. extracted from Ubuntu's
+`miniupnpd-nftables` deb):
+
+```sh
+CAMPAIGN=100 NU_MINIUPNPD=/path/to/miniupnpd scripts/nat-table.sh /tmp/nat
+# one row: NU_HARD_CASE=random+eim-apdf NU_HARD_RANDOM_TRIALS=32 go test -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=60m
+```
+
+Local artifacts: `/tmp/nat0097/full/results.ndjson` (342 records) SHA-256
+`a48f586fbf3727c30425db805f884aec3199be1abd270fd4281948712d53d143`, `natlab.log`
+SHA-256 `35c7f3ea5e81fd397e792545ac07e5c9463ccb48c3da017cb4e9809dd765ec4a`. A remote
+release-workflow run of the `nat-table` job is **pending**, not claimed.
+
 ## Cooperative hard-NAT rendezvous (0021)
 
 Local Linux/rootless results, 2026-10-22, baseline `678714c` plus this implementation,
@@ -170,11 +236,13 @@ assume suitable independent
 allocations, overlap, no filtering/IPS interference and sufficient pinhole lifetime;
 MACs or birthday arithmetic do not guarantee those conditions.
 
-Reproduce (Linux, unshare/user namespaces, ip/nft/nsenter; no Docker or root needed):
+Reproduce (Linux, unshare/user namespaces, ip/nft/nsenter; no Docker or root needed).
+Since 0097 the test is the full pair matrix with `a+b` case names and a 2048-port search,
+so these commands no longer reproduce the 1024-port numbers above:
 
 ```sh
-GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=30m
-NU_HARD_CASE=random-eim-apdf NU_HARD_TRIALS=32 GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=10m
+GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=60m
+NU_HARD_CASE=random+eim-apdf NU_HARD_RANDOM_TRIALS=32 GOMAXPROCS=8 go test -p 1 -tags natlab ./p2p/disco -run '^TestHardNATLab$' -v -count=1 -timeout=10m
 ```
 
 Local raw logs: `/tmp/nu-hard-matrix-final3.log` SHA-256

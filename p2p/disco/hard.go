@@ -25,7 +25,7 @@ const HardCapability = "/nu/path/hard/1"
 const (
 	hardSocketLimit = 256  // per attempt AND service, including retained winners
 	hardPacketLimit = 4096 // per direction/attempt, including pongs and failed sends
-	hardSearchPorts = 1024
+	hardSearchPorts = 2048 // vs 256 random mappings: ~0.03% miss (1024 missed ~1.7%)
 	hardDuration    = 8 * time.Second
 )
 

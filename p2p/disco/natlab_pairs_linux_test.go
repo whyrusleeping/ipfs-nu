@@ -54,14 +54,20 @@ func startLabPair(t *testing.T, clients [2]*natlab.Namespace, cfg [2]labConfig) 
 	}
 	return peers
 }
-func assertLabDirect(t *testing.T, peers [2]*labPeer, scenario string) {
+
+// assertLabDirect fails unless both sides go direct, then records the trial as a
+// per-pair table row (scenario "pair", labels from/to).
+func assertLabDirect(t *testing.T, peers [2]*labPeer, from, to string) {
 	t.Helper()
+	scenario := from + " <-> " + to
 	start := time.Now()
 	peers[0].call(t, labCommand{Op: "open"})
 	eventually(t, func() bool {
 		return peers[0].call(t, labCommand{Op: "status"}).Status.Selected.IsValid() && peers[1].call(t, labCommand{Op: "status"}).Status.Selected.IsValid()
 	})
-	t.Logf("%s: both direct in %v; peer0=%s peer1=%s", scenario, time.Since(start), peers[0].call(t, labCommand{Op: "status"}).Status.Selected, peers[1].call(t, labCommand{Op: "status"}).Status.Selected)
+	a, b := peers[0].call(t, labCommand{Op: "status"}).Status, peers[1].call(t, labCommand{Op: "status"}).Status
+	t.Logf("%s: both direct in %v; peer0=%s peer1=%s", scenario, time.Since(start), a.Selected, b.Selected)
+	check(t, natlab.Record(natlab.Outcome{Scenario: "pair", From: from, To: to, Outcome: "direct", Elapsed: time.Since(start), TimeToDirect: max(a.TimeToDirect, b.TimeToDirect)}))
 	peers[0].call(t, labCommand{Op: "transfer"})
 	r := peers[0].call(t, labCommand{Op: "result"})
 	if r.Progress != 4<<20 || !r.Alive {
@@ -95,7 +101,7 @@ func TestNATLabPublicEIM(t *testing.T) {
 	_, err = router.NAT(natlab.NATConfig{WAN: "wan", LAN: "lan", ExternalIP: netip.MustParseAddr("198.18.0.20"), Inside: []netip.AddrPort{netip.MustParseAddrPort("10.0.0.2:4000")}, Destinations: []netip.AddrPort{netip.MustParseAddrPort("198.18.0.30:4000")}, Mapping: natlab.EndpointIndependent, Filtering: natlab.FilterAddressPortDependent})
 	check(t, err)
 	peers := startLabPair(t, [2]*natlab.Namespace{public, private}, [2]labConfig{{Advertise: "198.18.0.30:4000"}, {Advertise: "198.18.0.20:4000"}})
-	assertLabDirect(t, peers, "public IPv4 <-> EIM/APDF")
+	assertLabDirect(t, peers, "public", "EIM/APDF")
 }
 func TestNATLabIPv6(t *testing.T) {
 	if !natlab.Isolate(t) {
@@ -121,7 +127,7 @@ func TestNATLabIPv6(t *testing.T) {
 		check(t, wan.Attach(clients[i], "eth0", ip+"/64", ""))
 		cfg[i] = labConfig{Advertise: "[" + ip + "]:4000", Listen: "[::]:4000", Scope: "2001:db8:1::/64"}
 	}
-	assertLabDirect(t, startLabPair(t, clients, cfg), "IPv6 <-> IPv6, no NAT")
+	assertLabDirect(t, startLabPair(t, clients, cfg), "IPv6", "IPv6")
 }
 func TestNATLabMappedMiniUPnPd(t *testing.T) {
 	binary := os.Getenv("NU_MINIUPNPD")
@@ -187,5 +193,5 @@ func TestNATLabMappedMiniUPnPd(t *testing.T) {
 		t.Fatal("miniupnpd did not install actual mapping", string(rules))
 	}
 	t.Logf("portmap UPnP lease: %s -> %s, expires %s", m.Internal, m.External, m.Expires)
-	assertLabDirect(t, peers, "real miniupnpd mapped side <-> EIM/APDF")
+	assertLabDirect(t, peers, "mapped (UPnP)", "EIM/APDF")
 }

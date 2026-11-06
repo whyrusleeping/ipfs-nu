@@ -570,7 +570,10 @@ was rotated after the backup needs `nu login` again) and, per cluster (`local`, 
   packages reproducible tarballs `nu_<version>_<os>_<arch>.tar.gz` (binary, LICENSE,
   NOTICE, `install.sh`, the service definitions) plus `SHA256SUMS`. The release workflow
   (`.github/workflows/release.yml`, on `v*` tags) adds `darwin_universal` (lipo), smoke
-  tests the macOS binary natively, and drafts the GitHub release.
+  tests the macOS binary natively, and drafts the GitHub release. Its `nat-table` job runs
+  `scripts/nat-table.sh` and attaches the per-pair NAT success table `nat-pairs.md`; a
+  failed or missing gated pair ([networking §6](networking.md#6-measurement)) blocks the
+  release.
 - **I2 macOS signing and notarization** run in the workflow only when the repository has
   the secrets, referenced by name: `MACOS_SIGN_P12_BASE64` (Developer ID Application
   certificate and key, base64 .p12), `MACOS_SIGN_P12_PASSWORD`, `MACOS_SIGN_IDENTITY`

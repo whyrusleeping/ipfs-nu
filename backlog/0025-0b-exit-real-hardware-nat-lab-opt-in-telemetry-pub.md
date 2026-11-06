@@ -28,3 +28,4 @@ Measure hard-NAT work in the real world (D11c step 6), and produce the per-pair 
 ## Acceptance criteria
 
 ## Work log
+- 2026-11-06: split the agent-doable parts. 0097 (done, 450dadf): software NAT-lab per-pair table, release gate, EIM↔random ≥98 % (100/100 locally after 2048-port search). 0098 (todo): opt-in field telemetry. Blocked on the rest: the real-hardware lab needs physical consumer routers, OpenWrt, pfSense/OPNsense (with/without EIM) and phone hotspots on two carriers. Unblock: a human with that equipment runs the standard scenarios and records `natlab.Outcome` pair records, which `p2p/natlab/cmd/nattable` already ingests; close 0025 once 0098 is also done.

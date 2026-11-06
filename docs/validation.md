@@ -2601,10 +2601,18 @@ Scaled to the v0-era test policy (Linux, 2026-10-22). Rules are
 | CLI round trip and permissions | by hand, `nu repo export/backup/restore/import/unpin` | backup tar and its entries `0600`, bundle files `0600`; restore into a fresh `NU_PATH` then import; `nu repo unpin` removes a pin of any source |
 | Release build (I1) | `scripts/release.sh build/package` by hand | static linux/amd64 binary; tarballs with fixed order/owner/mtime and `0644`/`0755` modes; packaging twice gives identical SHA-256 |
 | Install, upgrade, pre-upgrade backup (I4/I5) | `dist/install.sh` by hand on this Linux workstation (systemd user unit), then removed | install from a tarball (checksum verified), daemon up under `systemctl --user`; upgrade v0.0.1 → v0.0.2 stops the unit, writes a `0600` authority backup, swaps the binary, restarts; held content still served; a corrupted tarball is refused by its checksum; `--no-service` install/upgrade twice in a prefix |
+| `--system` install as root on a real server (I3/I5, 0073, 2026-11-06) | `install.sh --system` by hand on alphac-3 (Ubuntu 26.04, systemd 259) from release tarballs v0.0.1 → v0.0.2 → v0.0.3, then removed | checksum verified; `nu` system user (nologin) and `/var/lib/nu` `0700` created, every repo file `0600`; daemon up in ~1 s as uid `nu` with no effective capabilities; upgrades with `--backup /var/backups/nu` stop the unit, write `0600` authority backups in a `0700` `nu`-owned directory, swap the binary, restart; pins and content survive both upgrades; the backup restores into a fresh `NU_PATH` as the same peer; `kill -9` of the daemon → restarted by `Restart=on-failure` (`NRestarts=1`); a 2 GiB + 4-file tree added from `/srv` was fetched by alphac-1 over the LAN in 2.7 s, byte-exact; loopback gateway serves it; `systemd-analyze verify` clean |
 
 Bugs found: the installer's readiness probe used `nu status`, which falls back to an
 in-process node and took the repo lock from the starting daemon; it now probes with
-`nu operations` (daemon only).
+`nu operations` (daemon only). On the server, the system unit's `PrivateTmp=yes` gave the
+daemon its own `/tmp`: `nu add /tmp/f` failed with "no such file" for a file the operator
+could see, and `nu get -o /tmp/out` reported success while writing into the daemon's
+private `/tmp`, invisible outside the unit. The unit now shares the host `/tmp`
+(verified on v0.0.3: both work). `ProtectSystem=full` stays: `get -o` under `/usr` fails
+with "read-only file system". `systemd-analyze security` rates the unit 7.6 ("exposed");
+tightening (capability bounding set, address families, syscall filter) is left to the
+security review below.
 
 **Human or CI only (not run here):**
 
@@ -2619,9 +2627,6 @@ in-process node and took the repo lock from the starting daemon; it now probes w
 - Signing and notarization: needs an Apple Developer ID certificate and notary
   credentials as repository secrets (I2); until then macOS binaries ship unsigned and
   Gatekeeper will warn on browser-downloaded copies.
-- `--system` install on a Linux server as root (user creation, `/var/lib/nu`, unit
-  hardening under real workloads; `systemd-analyze verify` passes apart from the absent
-  binary).
 - Security review of backup/restore (archive parsing limits, plaintext key handling,
   restore preconditions) and of the units' hardening, per the independent review plan.
 - Re-genesis (B8) as an end-to-end drill; there is no `nu cluster leave`, so it is a manual

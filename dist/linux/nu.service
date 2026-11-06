@@ -27,7 +27,8 @@ Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
 NoNewPrivileges=yes
-PrivateTmp=yes
+# No PrivateTmp: the daemon opens the caller's `add` and `get -o` paths, and a private /tmp
+# made `nu get -o /tmp/x` report success while writing into a /tmp nobody else can see.
 ProtectSystem=full
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

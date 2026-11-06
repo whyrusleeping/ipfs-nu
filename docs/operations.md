@@ -585,7 +585,9 @@ was rotated after the backup needs `nu login` again) and, per cluster (`local`, 
   `NU_PATH=/var/lib/nu` (`StateDirectory`, mode 0700, `UMask=0077`), clean SIGTERM stop,
   restart on failure, basic systemd hardening. CLI commands run as that user
   (`sudo -u nu NU_PATH=/var/lib/nu nu status`). The daemon reads `add` sources and writes
-  `get -o` destinations itself, so those paths must be accessible to `nu`.
+  `get -o` destinations itself, so those paths must be accessible to `nu`. The unit
+  shares the host's `/tmp` (no `PrivateTmp`) so those paths mean the same thing to the
+  CLI and the daemon; `ProtectSystem=full` keeps `/usr`, `/boot` and `/etc` read-only.
 - **I4 Workstations** run a per-user service with state in `~/.nu`: the systemd user unit
   `dist/linux/nu-user.service` (`loginctl enable-linger` keeps it running logged out) or
   the LaunchAgent `dist/macos/io.ipfs.nu.daemon.plist` (log in `~/Library/Logs/nu.log`).

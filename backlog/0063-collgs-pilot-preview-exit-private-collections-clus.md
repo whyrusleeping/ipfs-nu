@@ -4,7 +4,7 @@ title: 'CollGS pilot preview exit: private collections cluster usable by vmx'
 status: in_review
 priority: 2
 created: "2026-10-21"
-updated: "2026-10-22"
+updated: "2026-11-11"
 depends_on:
     - "0068"
     - "0057"
@@ -25,3 +25,4 @@ Acceptance: CollGS pilot criteria in docs/validation.md#pilot-candidates met on 
 ## Work log
 - 2026-10-21: Carried from 0057: produce the ≥20k items/day from ≥2 union writers run, measured catalog bytes/item, index cost and re-evaluation cost, and a multi-host private-mode run without multicast (0057 only has in-process evidence). Scaling notes from 0057: every writer head change walks that writer's whole catalog; item listing/status scan the whole items table; release sweep is a full store GC.
 - 2026-10-22: Agent parts done (77c4b02..579d7a0 + merge fb5dbb7 with 0058; merged a680e40). Perf: incremental writer-catalog sync (head change 5.0 s → ~40 ms at 20k, 127 ms at 200k), pushes_todo queue index (push 109 → 260 items/s), items?holders=true; bug fixed: receiving members now hold every item in their own writer head. Figures (shared EPYC, load): 20k items pushed to two members at 119 items/s, none lost/duplicated, 0 conflicts, 2000 resends deduped, restart mid-run; catalog 934 B/item; collections DB 3.2 KiB/item (receiver); 200k queries: rarest page 294 ms, status 587 ms, facet query 4.1 s, full re-eval 11.2 s. Contract versioned collgs-preview-1 with preview limits; pilot runbook; scripts/pilot (collgs-cluster.sh SSH setup tested on loopback only; collgs-dash shim for vmx's dashboard API). Remaining (human): run on vmx's deployment with his producer/dashboard, multi-host run (needs hardware go-ahead), runbook tested by someone else. Product questions raised: shim vs subcommand vs port, transfer/rate fields, O(N) facet queries.
+- 2026-11-11: multi-host run on alphac-1/2/3 (user go-ahead; LAN, mDNS off, 30 s interval, producer on a separate host via producer listeners). 20k items from 2 writers: 350 items/s, resends deduped, alphac-2 restart mid-run, merged catalog identical on 3 hosts within 5 s. Fixed: collgs-cluster.sh read a remote peer's ID from status (stray member, removed); member fetch loop drained only 256 holdings per 30 s tick (index at 2 copies 15 min after last push → 43 s after the fix, 40k items). Recorded in docs/validation.md. Remaining (human): vmx's deployment/producer/dashboard, runbook tested by someone else.

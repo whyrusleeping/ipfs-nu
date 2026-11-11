@@ -1873,9 +1873,8 @@ facet predicates. The release sweep is still a full store GC.
 
 `scripts/pilot/collgs-cluster.sh up|smoke|status|down HOST[=ADDR]…` sets up the cluster
 over SSH with `swarm.mdns = false` (members meet through invite boot addresses, member
-records and heartbeats). It has **not** been run on remote hosts; that needs the
-hardware owner's go-ahead. Validated locally with `--local DIR` (three NU_PATHs on
-loopback, distinct ports): `up` founds a private cluster, joins two members, creates the
+records and heartbeats). Validated first with `--local DIR` (three NU_PATHs on loopback,
+distinct ports): `up` founds a private cluster, joins two members, creates the
 collection with two writer keys and push tokens, starts producer listeners; `smoke` pushed
 20 items to both receiving members over their loopback APIs plus one through a producer
 listener with a push token, and the index counted 41 complete holdings (two per item, one
@@ -1883,15 +1882,48 @@ for the producer item) 47 s later (heartbeat-driven). `collgs-dash` against the 
 member answered `/api/overview`, `/api/nodes`, `/api/node/<addr>` and
 `/api/dataset/<info_hash>` (with the metadata record) with the prototype's field names.
 
+**Remote hosts (2026-11-11).** alphac-1/2/3 (Intel Core Ultra 9 285HX, 24 threads, NVMe,
+Ubuntu, kernel 7.0), one LAN subnet, RTT 0.23–0.29 ms; default cluster interval (30 s
+heartbeats), 10 s head interval. alphac-1 founds the cluster, runs the holdings index and
+is a receiving member; alphac-2 is the other receiving member; alphac-3 a plain member.
+The producer is a separate machine (the dev host) pushing to both producer listeners over
+plain HTTP with push tokens, 8 items in flight, the [push bench](#ingest--20k-itemsday-from-two-union-writers)'s
+item shape (driver not kept in the repo).
+
+- `up` failed on the first try: the script read the *last* `"peer_id"` in
+  `nu --json status`, which on a real network is a remote peer's path entry, so the
+  pre-authorized invite named a stranger (on loopback it was always the node's own).
+  Fixed to read the first; the stray member was removed with `nu cluster member rm`.
+- `smoke`: 20 items to both receiving members; the index counted 40 complete holdings
+  18 s after the last push.
+- 20,000 items in two halves (as in the push bench): 0–9,999 accepted at **350 items/s**
+  (upload+push p50 3.6 ms, p99 107 ms); a resend of 9,000–9,999 answered 2,000
+  `duplicate`; 10,000–19,999 at 245 items/s with alphac-2's daemon killed and restarted
+  4 s in (14 producer retries, none given up). The merged catalog (20,020 items with the
+  smoke items, one root, 0 conflicts) was identical on all three members within 5 s of
+  the last push.
+- **Bug found:** the holdings index reached 2 copies of every item only **15 min** after
+  the last push. A member's fetch loop took 256 holdings in state `fetching` per pass and
+  then waited for the next cluster tick (30 s), even though the bytes were already local;
+  the push bench uses 1 s intervals, which hid it. The loop now starts the next pass as
+  soon as a full batch that completed items is done (a batch of only failures still waits
+  for the tick).
+- After the fix (redeployed, another 20,000 items, 20,000–39,999, 159 items/s on the
+  larger database): holdings were complete while the push ran (38,909 of 39,876 at its
+  end), and the index counted **2 copies of all 40,020 items 43 s after the last push**.
+- `nu.db` at 40,020 items: 120.6 MB on each receiving member (3.0 KiB/item, store and
+  collections together), 73.8 MB on the plain member (1.8 KiB/item).
+
 ### Remaining for the 0063 exit
 
 Agent work: none blocking; optional are indexed facet predicates and incremental copy
-counts (above), and a remote-host run of the script once hardware is approved.
+counts (above).
 
 Human (needs the deployment owner):
 
 - Run `collgs-cluster.sh` (or the runbook) on multiple real hosts of vmx's deployment
-  (private mode, no multicast) and record hosts, network path and RTT.
+  (private mode, no multicast) and record hosts, network path and RTT; the alphac run
+  above is one LAN, not his network.
 - vmx's producer pushing through the item API (Matadisco/STAC/GDAL kept, torrent building,
   publisher and web seed replaced), including restarts, and his dashboard frontend against
   `collgs-dash` (or a port of it).

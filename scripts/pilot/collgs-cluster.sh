@@ -102,7 +102,7 @@ rsh() {
 }
 
 # json_field KEY reads the first "KEY": "value" (or number) from JSON on stdin.
-json_field() { tr -d '\n' | sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\).*/\1/p"; }
+json_field() { tr -d '\n' | grep -o "\"$1\": *\"\{0,1\}[^\",}]*" | head -1 | sed "s/^\"$1\": *\"\{0,1\}//"; }
 
 install() {
 	spec=$1

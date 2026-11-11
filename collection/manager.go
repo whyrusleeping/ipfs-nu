@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/whyrusleeping/nu/cluster"
@@ -1082,7 +1083,8 @@ func (m *Manager) fetchLoop() {
 		case <-m.fkick:
 		case <-t.C:
 		}
-		rows, err := m.db.Query(`SELECT ds, path, entry, tries FROM holdings WHERE state = ? ORDER BY tries, path LIMIT 256`, StateFetching)
+		const batch = 256
+		rows, err := m.db.Query(`SELECT ds, path, entry, tries FROM holdings WHERE state = ? ORDER BY tries, path LIMIT ?`, StateFetching, batch)
 		if err != nil {
 			continue
 		}
@@ -1101,6 +1103,8 @@ func (m *Manager) fetchLoop() {
 			}
 		}
 		rows.Close()
+		var bwg sync.WaitGroup
+		var progress atomic.Bool
 		for _, j := range jobs {
 			key := j.ds + "\x00" + j.path
 			m.fmu.Lock()
@@ -1118,21 +1122,39 @@ func (m *Manager) fetchLoop() {
 				return
 			}
 			wg.Add(1)
+			bwg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer bwg.Done()
 				defer func() { <-sem }()
 				defer func() {
 					m.fmu.Lock()
 					delete(m.inflight, key)
 					m.fmu.Unlock()
 				}()
-				m.fetchItem(j.ds, j.path, j.entry)
+				if m.fetchItem(j.ds, j.path, j.entry) {
+					progress.Store(true)
+				}
+			}()
+		}
+		// A full batch that completed items may have more behind it: start the next pass
+		// when this batch is done rather than at the next tick (a 20k backlog took 15 min
+		// at one batch per 30 s interval). A batch of only failures waits for the tick.
+		if len(jobs) == batch {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				bwg.Wait()
+				if progress.Load() {
+					m.kickFetch()
+				}
 			}()
 		}
 	}
 }
 
-func (m *Manager) fetchItem(name, path string, entry cid.CID) {
+// fetchItem fetches one item in state fetching and reports whether it marked it complete.
+func (m *Manager) fetchItem(name, path string, entry cid.CID) bool {
 	pin := store.Pin{CID: entry, Mode: store.Recursive, Profile: "nu-tree"}
 	complete := func() bool {
 		ws, err := m.cfg.Store.Walk(m.ctx, pin, nil)
@@ -1152,19 +1174,20 @@ func (m *Manager) fetchItem(name, path string, entry cid.CID) {
 	defer m.mu.Unlock()
 	cur, err := m.holding(name, path)
 	if err != nil || cur == nil || cur.entry != entry || cur.state != StateFetching {
-		return
+		return false
 	}
 	if !ok {
 		_, _ = m.db.Exec(`UPDATE holdings SET tries = tries + 1 WHERE ds = ? AND path = ?`, name, path)
-		return
+		return false
 	}
 	if _, err := m.db.Exec(`UPDATE holdings SET state = ?, tries = 0 WHERE ds = ? AND path = ?`, StateComplete, name, path); err != nil {
-		return
+		return false
 	}
 	_ = m.appendLog(name, path, entry, StateComplete, cur.src, cur.bytes)
 	if cur.src == SrcFloor {
 		m.updateReport(name, true)
 	}
+	return true
 }
 
 // splitPath validates an item path.

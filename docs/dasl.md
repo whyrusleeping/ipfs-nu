@@ -205,9 +205,13 @@ scheme are later work, done once the spec stabilises.
   demoted candidates are tried only after every other candidate failed. Every indexer
   answering with no usable location is `not_found`; no indexer answering is
   `unavailable` with the per-indexer causes.
-- No public FISL indexer was known when this was written; `fisl.TestLive` is an opt-in
-  check (`NU_LIVE_FISL=<indexer>,<cid>`) for when one appears. A FISL interop run against
-  a reference indexer is therefore still open.
+- Interop (2026-11-11): `fisl.TestLive` (opt-in, `NU_LIVE_FISL=<indexer>,<cid>`) against
+  the public indexer `https://index.content-router.com` (fed by `cidsync`) passed for
+  `bafyreib4mkuic6epif3kssxiamqv3ujxjsuwixbbjf5zu6ptumdfj67rty`, a 3,641-byte DRISL
+  descriptor published by `did:web:anymirror.michel.id`: one record (with the `range`
+  extension field, ignored), fetched from the publisher's URL and verified by CID. The
+  indexer answers `{"locations":[]}` / an empty `jsonl` body for unknown CIDs. BLAKE3
+  retrieval was not exercised live: the only BLAKE3 CID found listed is a 138 GB file.
 
 ## atproto repository profile
 
